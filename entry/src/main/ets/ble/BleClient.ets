@@ -91,28 +91,33 @@ export class BleClient {
     const not1Obj = (this.not1Char ?? this.obj(NOT1)) as ble.BLECharacteristic;
     const c = this.gattClient as Object as Record<string, Function>;
 
-    // BOTH: register callback (even if fails) + write CCCD for indication
+    // Step 1: PAIR CCN (register callback, may fail for indication-only chars)
     c['setCharacteristicChangeNotification'](pairObj, true, (err: BusinessError) => {
       hilog.info(0x0001, TAG, err ? `[P] PAIR CCN ERR ${err.code}` : `[P] PAIR CCN OK`);
-      // Now write CCCD descriptor to enable indication (0x02 = indication, 0x00 = disabled)
-      const cccdBuf = new ArrayBuffer(2);
-      const cccdV = new Uint8Array(cccdBuf);
-      cccdV[0] = 0x02; cccdV[1] = 0x00;
-      const descObj: Record<string, Object> = {
-        'serviceUuid': SVC,
-        'characteristicUuid': PAIR,
-        'descriptorUuid': '00002902-0000-1000-8000-00805F9B34FB',
-        'descriptorValue': cccdBuf,
-      };
-      c['writeDescriptorValue'](descObj, (err2: BusinessError) => {
-        hilog.info(0x0001, TAG, err2 ? `[P] PAIR desc ERR ${err2.code}` : `[P] PAIR desc OK`);
-        // NOT1 notification
-        c['setCharacteristicChangeNotification'](not1Obj, true, (err3: BusinessError) => {
-          hilog.info(0x0001, TAG, err3 ? `[P] NOT1 ERR ${err3.code}` : `[P] NOT1 OK`);
-          hilog.info(0x0001, TAG, `[P] done`);
-          onDone();
+      // Delay to let BLE stack settle before next operation
+      setTimeout(() => {
+        // Step 2: PAIR CCCD descriptor (0x02 = indication)
+        const cccdBuf = new ArrayBuffer(2);
+        const cccdV = new Uint8Array(cccdBuf);
+        cccdV[0] = 0x02; cccdV[1] = 0x00;
+        const descObj: Record<string, Object> = {
+          'serviceUuid': SVC,
+          'characteristicUuid': PAIR,
+          'descriptorUuid': '00002902-0000-1000-8000-00805F9B34FB',
+          'descriptorValue': cccdBuf,
+        };
+        c['writeDescriptorValue'](descObj, (err2: BusinessError) => {
+          hilog.info(0x0001, TAG, err2 ? `[P] PAIR desc ERR ${err2.code}` : `[P] PAIR desc OK`);
+          setTimeout(() => {
+            // Step 3: NOT1 notification
+            c['setCharacteristicChangeNotification'](not1Obj, true, (err3: BusinessError) => {
+              hilog.info(0x0001, TAG, err3 ? `[P] NOT1 ERR ${err3.code}` : `[P] NOT1 OK`);
+              hilog.info(0x0001, TAG, `[P] done`);
+              onDone();
+            });
+          }, 200);
         });
-      });
+      }, 200);
     });
   }
 

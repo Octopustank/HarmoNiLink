@@ -22,6 +22,7 @@ const REQUIRED_PERMISSIONS: string[] = [
   'ohos.permission.DISCOVER_BLUETOOTH',
   'ohos.permission.APPROXIMATELY_LOCATION',
   'ohos.permission.LOCATION',
+  'ohos.permission.LOCATION_IN_BACKGROUND',
   'ohos.permission.KEEP_BACKGROUND_RUNNING',
 ];
 

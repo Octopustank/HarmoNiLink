@@ -215,6 +215,7 @@ export class CameraService {
   // GPS state — shared with UI via @Observed
   gpsData: GpsData = new GpsData();
   private gpsStep: number = 0; // 0=TIME, 1=GEO — alternating
+  private isForeground: boolean = true;
 
   sendFakeGeo(): void {
     if (!this.bleClient.isConnected()) {
@@ -228,12 +229,13 @@ export class CameraService {
   }
 
   startGpsLoop(intervalMs: number = 1500): void {
-    hilog.info(0x0001, TAG, `[GPS] startGpsLoop: interval=${intervalMs}ms`);
+    const interval = this.isForeground ? intervalMs : 5000;
+    hilog.info(0x0001, TAG, `[GPS] startGpsLoop: interval=${interval}ms fg=${this.isForeground}`);
     this.stopGpsLoop();
     this.gpsStep = 0;
     // Send TIME immediately, then alternate TIME/GEO
     this.sendGpsTick();
-    this.gpsTimer = setInterval(() => { this.sendGpsTick(); }, intervalMs);
+    this.gpsTimer = setInterval(() => { this.sendGpsTick(); }, interval);
     this.startBackgroundTask();
   }
 
@@ -332,7 +334,8 @@ export class CameraService {
         this.bleClient.prepare(() => {
           hilog.info(0x0001, TAG, '[CHECKPOINT] prepare done, beginning handshake');
           this.setState(ConnectionState.Pairing, 'Handshaking...');
-          this.beginHandshake();
+          // Delay to let BLE stack settle after prepare
+          setTimeout(() => { this.beginHandshake(); }, 500);
         });
       } else {
         hilog.info(0x0001, TAG, `[CHECKPOINT] ServicesDiscovered ignored (pairingStep=${this.pairingStep})`);
@@ -349,6 +352,7 @@ export class CameraService {
       hilog.info(0x0001, TAG, '[CHECKPOINT] BLE Disconnected');
       if (this._state === ConnectionState.Ready) {
         this.stopGpsLoop();
+        this.setState(ConnectionState.Idle, 'Camera disconnected. Tap Reconnect.');
         return;
       }
       if (this._state === ConnectionState.Idle || this._state === ConnectionState.Bonding) {
@@ -696,24 +700,22 @@ export class CameraService {
 
     try {
       const ctx = this.abilityContext;
-      const bgBT = backgroundTaskManager.BackgroundMode.BLUETOOTH_INTERACTION;
-      const bgLoc = backgroundTaskManager.BackgroundMode.LOCATION;
+      const startBg = backgroundTaskManager.startBackgroundRunning as Function;
 
-      const start = backgroundTaskManager.startBackgroundRunning as Function;
-      start(ctx, bgBT).then(() => {
-        hilog.info(0x0001, TAG, '[CHECKPOINT] Background task (BLUETOOTH_INTERACTION) started');
-        this.backgroundTaskStarted = true;
-      }).catch((err: Error) => {
-        hilog.warn(0x0001, TAG,
-          `[CHECKPOINT] Background task start failed: ${err.message}`);
-      });
+      startBg(ctx, backgroundTaskManager.BackgroundMode.BLUETOOTH_INTERACTION)
+        .then(() => {
+          hilog.info(0x0001, TAG, '[BG] BLUETOOTH_INTERACTION started');
+          this.backgroundTaskStarted = true;
+        }).catch((err: Error) => {
+          hilog.warn(0x0001, TAG, `[BG] BLUETOOTH_INTERACTION fail: ${err.message}`);
+        });
 
-      start(ctx, bgLoc).catch((err: Error) => {
-        hilog.warn(0x0001, TAG,
-          `[CHECKPOINT] Location background task start failed: ${err.message}`);
-      });
+      startBg(ctx, backgroundTaskManager.BackgroundMode.LOCATION)
+        .catch((err: Error) => {
+          hilog.warn(0x0001, TAG, `[BG] LOCATION fail: ${err.message}`);
+        });
     } catch (err) {
-      hilog.warn(0x0001, TAG, `[CHECKPOINT] startBackgroundTask error: ${JSON.stringify(err)}`);
+      hilog.warn(0x0001, TAG, `[BG] startBackgroundTask error: ${JSON.stringify(err)}`);
     }
   }
 
