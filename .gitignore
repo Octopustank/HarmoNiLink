@@ -1,0 +1,25 @@
+# Build output
+.ohpm/
+build/
+.hvigor/
+oh_modules/
+.cxx/
+
+# Codegraph index
+.codegraph/
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Compiler generated
+*.abc
+*.tsbuildinfo
+*.sourcemaps
+
+# Logs
+*.log
