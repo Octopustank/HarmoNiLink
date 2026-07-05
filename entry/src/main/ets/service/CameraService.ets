@@ -23,6 +23,7 @@ import { PairedCamera, NikonPairingEngine } from '../ble/protocol/NikonPairingEn
 import { PairingMessage } from '../ble/protocol/PairingMessage';
 import { GeoPayloadGenerator, GpsPosition } from '../ble/protocol/GeoPayloadGenerator';
 import { TimePayloadGenerator } from '../ble/protocol/TimePayloadGenerator';
+import { GpsData } from './GpsData';
 import { BleScanner, DiscoveredCamera } from '../ble/BleScanner';
 import { BleClient } from '../ble/BleClient';
 import {
@@ -211,6 +212,8 @@ export class CameraService {
 
   // ==================== GPS ====================
 
+  // GPS state — shared with UI via @Observed
+  gpsData: GpsData = new GpsData();
   private gpsStep: number = 0; // 0=TIME, 1=GEO — alternating
 
   sendFakeGeo(): void {
@@ -245,10 +248,37 @@ export class CameraService {
       this.bleClient.writeTime(timePayload);
       this.gpsStep = 1;
     } else {
-      const geoPayload = GeoPayloadGenerator.buildFake();
-      hilog.info(0x0001, TAG, `[GPS] GEO ${geoPayload.length}B`);
-      this.bleClient.writeGeo(geoPayload);
       this.gpsStep = 0;
+      try {
+        geoLocationManager.getCurrentLocation({
+          priority: geoLocationManager.LocationRequestPriority.FIRST_FIX,
+          timeoutMs: 5000
+        }).then((pos) => {
+          if (!this.bleClient.isConnected()) return;
+          // Update shared GPS state
+          const lat = pos.latitude;
+          const lon = pos.longitude;
+          const alt = Math.round(pos.altitude);
+          const sats = 6;
+          this.gpsData.hasFix = true;
+          this.gpsData.latitude = lat;
+          this.gpsData.longitude = lon;
+          this.gpsData.altitude = alt;
+          this.gpsData.satellites = sats;
+          this.gpsData.lastUpdateTime = new Date().toLocaleTimeString();
+
+          const gps: GpsPosition = {
+            latitude: lat, longitude: lon, altitude: alt,
+            satellites: sats, timestamp: new Date()
+          };
+          hilog.info(0x0001, TAG, `[GPS] GEO real lat=${lat.toFixed(6)} lon=${lon.toFixed(6)}`);
+          this.bleClient.writeGeo(GeoPayloadGenerator.buildReal(gps));
+        }).catch(() => {
+          hilog.debug(0x0001, TAG, '[GPS] GEO skip — no location');
+        });
+      } catch (e) {
+        hilog.debug(0x0001, TAG, '[GPS] GEO skip — exception');
+      }
     }
   }
 

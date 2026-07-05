@@ -14,6 +14,7 @@
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { common } from '@kit.AbilityKit';
 import { CameraService, ConnectionState } from '../service/CameraService';
+import { GpsData } from '../service/GpsData';
 import { PairedCamera } from '../ble/protocol/NikonPairingEngine';
 import { DiscoveredCamera } from '../ble/BleScanner';
 
@@ -31,6 +32,7 @@ struct Index {
   @State discoveredCameras: DiscoveredCamera[] = [];
   @State savedCameras: PairedCamera[] = [];
   @State isScanning: boolean = false;
+  @State gpsDisplay: string = 'Waiting for GPS...';
 
   private cameraService: CameraService = new CameraService();
   private scanTimeoutId: number = -1;
@@ -66,6 +68,7 @@ struct Index {
       }
 
       this.addLog(`[STATE] ${state}: ${message}`);
+      this.refreshGpsDisplay();
     });
 
     // Load saved cameras after init completes (small delay for async store init)
@@ -107,6 +110,10 @@ struct Index {
       if (this.serialText) {
         Text(this.serialText).fontSize(12).fontColor('#00AA00').padding({ left: 16, right: 16 })
       }
+
+      // GPS data display
+      Text(`GPS: ${this.gpsDisplay}`).fontSize(13).fontColor('#0066CC')
+        .width('100%').padding({ left: 16, right: 16 }).margin({ top: 2 })
 
       Divider().margin({ top: 8, bottom: 8 })
 
@@ -302,6 +309,13 @@ struct Index {
     this.logMessages = [...this.logMessages, msg];
     if (this.logMessages.length > 50) {
       this.logMessages = this.logMessages.slice(-50);
+    }
+  }
+
+  private refreshGpsDisplay(): void {
+    const gps = this.cameraService.gpsData;
+    if (gps.hasFix) {
+      this.gpsDisplay = `${gps.latitude.toFixed(6)}, ${gps.longitude.toFixed(6)} ±${gps.altitude}m @ ${gps.lastUpdateTime}`;
     }
   }
 }
