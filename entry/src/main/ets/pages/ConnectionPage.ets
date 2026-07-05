@@ -227,9 +227,9 @@ export struct ConnectionPage {
               .onClick(() => { this.onDisconnect(); })
           }
 
-          Text('💡 尼康相机休眠后会保持低功耗蓝牙连接。\nGPS 数据仍可通过 BLE 持续传输，无需手动唤醒相机。')
+          Text('Tips：相机休眠时保持 BLE 连接，GPS 可持续传输。\n若连接意外中断，App 将自动重试恢复，无需干预。')
             .fontSize(11).fontColor($r('app.color.text_secondary'))
-            .width('100%').padding({ left: 4, right: 4 })
+            .width('100%').textAlign(TextAlign.Center).padding({ left: 4, right: 4 })
             .lineHeight(16)
 
           this.savedDevicesSection()
