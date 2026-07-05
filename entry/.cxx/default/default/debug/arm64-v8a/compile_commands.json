@@ -1,0 +1,14 @@
+[
+{
+  "directory": "/home/octopustank/Repo/Project/HarmoNikon/entry/.cxx/default/default/debug/arm64-v8a",
+  "command": "/home/octopustank/Repo/InstallPackage/harmony-cli-tools/command-line-tools/sdk/default/openharmony/native/llvm/bin/clang++ --target=aarch64-linux-ohos --gcc-toolchain=/home/octopustank/Repo/InstallPackage/harmony-cli-tools/command-line-tools/sdk/default/openharmony/native/llvm --sysroot=/home/octopustank/Repo/InstallPackage/harmony-cli-tools/command-line-tools/sdk/default/openharmony/native/sysroot -Dblowfish_EXPORTS -I/home/octopustank/Repo/InstallPackage/harmony-cli-tools/command-line-tools/sdk/default/hms/native/sysroot/usr/include -I/include -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -fno-addrsig -Wa,--noexecstack -Wformat -Werror=format-security   -D__MUSL__ -O0 -g -fno-limit-debug-info  -fPIC -o CMakeFiles/blowfish.dir/blowfish_core.cpp.o -c /home/octopustank/Repo/Project/HarmoNikon/entry/src/main/cpp/blowfish_core.cpp",
+  "file": "/home/octopustank/Repo/Project/HarmoNikon/entry/src/main/cpp/blowfish_core.cpp",
+  "output": "CMakeFiles/blowfish.dir/blowfish_core.cpp.o"
+},
+{
+  "directory": "/home/octopustank/Repo/Project/HarmoNikon/entry/.cxx/default/default/debug/arm64-v8a",
+  "command": "/home/octopustank/Repo/InstallPackage/harmony-cli-tools/command-line-tools/sdk/default/openharmony/native/llvm/bin/clang++ --target=aarch64-linux-ohos --gcc-toolchain=/home/octopustank/Repo/InstallPackage/harmony-cli-tools/command-line-tools/sdk/default/openharmony/native/llvm --sysroot=/home/octopustank/Repo/InstallPackage/harmony-cli-tools/command-line-tools/sdk/default/openharmony/native/sysroot -Dblowfish_EXPORTS -I/home/octopustank/Repo/InstallPackage/harmony-cli-tools/command-line-tools/sdk/default/hms/native/sysroot/usr/include -I/include -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -fno-addrsig -Wa,--noexecstack -Wformat -Werror=format-security   -D__MUSL__ -O0 -g -fno-limit-debug-info  -fPIC -o CMakeFiles/blowfish.dir/blowfish.cpp.o -c /home/octopustank/Repo/Project/HarmoNikon/entry/src/main/cpp/blowfish.cpp",
+  "file": "/home/octopustank/Repo/Project/HarmoNikon/entry/src/main/cpp/blowfish.cpp",
+  "output": "CMakeFiles/blowfish.dir/blowfish.cpp.o"
+}
+]

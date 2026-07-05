@@ -1,0 +1,9 @@
+{
+  "name": "harmonikon",
+  "version": "1.0.0",
+  "description": "HarmoNikon — Nikon smart-device GPS provider for HarmonyOS NEXT",
+  "main": "",
+  "author": "",
+  "license": "ISC",
+  "dependencies": {}
+}

@@ -1,0 +1,89 @@
+{
+	"cmake" : 
+	{
+		"generator" : 
+		{
+			"multiConfig" : false,
+			"name" : "Ninja"
+		},
+		"paths" : 
+		{
+			"cmake" : "/home/octopustank/Repo/InstallPackage/harmony-cli-tools/command-line-tools/sdk/default/openharmony/native/build-tools/cmake/bin/cmake",
+			"cpack" : "/home/octopustank/Repo/InstallPackage/harmony-cli-tools/command-line-tools/sdk/default/openharmony/native/build-tools/cmake/bin/cpack",
+			"ctest" : "/home/octopustank/Repo/InstallPackage/harmony-cli-tools/command-line-tools/sdk/default/openharmony/native/build-tools/cmake/bin/ctest",
+			"root" : "/home/octopustank/Repo/InstallPackage/harmony-cli-tools/command-line-tools/sdk/default/openharmony/native/build-tools/cmake/share/cmake-3.28"
+		},
+		"version" : 
+		{
+			"isDirty" : false,
+			"major" : 3,
+			"minor" : 28,
+			"patch" : 2,
+			"string" : "3.28.2",
+			"suffix" : ""
+		}
+	},
+	"objects" : 
+	[
+		{
+			"jsonFile" : "codemodel-v2-8cf1aacaf8e92c3827fe.json",
+			"kind" : "codemodel",
+			"version" : 
+			{
+				"major" : 2,
+				"minor" : 6
+			}
+		},
+		{
+			"jsonFile" : "cache-v2-524b4b2f33e17a1443d2.json",
+			"kind" : "cache",
+			"version" : 
+			{
+				"major" : 2,
+				"minor" : 0
+			}
+		},
+		{
+			"jsonFile" : "cmakeFiles-v1-e82ea803bca082a9117d.json",
+			"kind" : "cmakeFiles",
+			"version" : 
+			{
+				"major" : 1,
+				"minor" : 0
+			}
+		}
+	],
+	"reply" : 
+	{
+		"cache-v2" : 
+		{
+			"jsonFile" : "cache-v2-524b4b2f33e17a1443d2.json",
+			"kind" : "cache",
+			"version" : 
+			{
+				"major" : 2,
+				"minor" : 0
+			}
+		},
+		"cmakeFiles-v1" : 
+		{
+			"jsonFile" : "cmakeFiles-v1-e82ea803bca082a9117d.json",
+			"kind" : "cmakeFiles",
+			"version" : 
+			{
+				"major" : 1,
+				"minor" : 0
+			}
+		},
+		"codemodel-v2" : 
+		{
+			"jsonFile" : "codemodel-v2-8cf1aacaf8e92c3827fe.json",
+			"kind" : "codemodel",
+			"version" : 
+			{
+				"major" : 2,
+				"minor" : 6
+			}
+		}
+	}
+}

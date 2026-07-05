@@ -1,0 +1,10 @@
+{
+  "string": [
+    { "name": "module_desc", "value": "Nikon GPS Provider" },
+    { "name": "EntryAbility_desc", "value": "Main Entry" },
+    { "name": "EntryAbility_label", "value": "HarmoNikon" },
+    { "name": "location_reason", "value": "GPS data is required to provide location to the Nikon camera" },
+    { "name": "bluetooth_reason", "value": "Bluetooth is required to communicate with the Nikon camera" },
+    { "name": "background_reason", "value": "Background running is required to continuously provide GPS data" }
+  ]
+}
