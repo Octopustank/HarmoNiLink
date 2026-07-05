@@ -21,7 +21,7 @@ HarmoNiLink 让 HarmonyOS 手机/平板替代 SnapBridge，向尼康 Z 系列相
 尼康相机进入休眠后维持 BLE 低功耗连接，GPS 数据持续写入。若连接意外中断（深度休眠 / 超出距离），自动执行指数退避重连。
 
 ### 原生鸿蒙体验
-- **HDS 设计套件** — 沉浸式模糊标题栏、自适应背景材质、毛玻璃效果
+- **HDS 设计套件** — 沉浸光感、模糊标题栏、自适应背景材质
 - **亮/暗主题跟随** — 自动跟随系统色彩模式
 - **NAPI 原生性能** — Blowfish 配对加密用 C++ 实现，编译为 `libblowfish.so`
 
@@ -97,6 +97,8 @@ Service  0xDE00
 
 ## 构建
 
+环境：[DevEco Studio](https://developer.huawei.com/consumer/cn/deveco-studio/) 或 [Command Line Tools for HMOS](https://developer.huawei.com/consumer/en/download/command-line-tools-for-hmos)
+
 ```bash
 hvigorw assembleHap --mode module -p module=entry@default -p product=default
 ```
@@ -107,7 +109,7 @@ hvigorw assembleHap --mode module -p module=entry@default -p product=default
 
 ## 灵感来源
 
-本项目为独立重实现，未使用上游仓库的任何代码。
+本项目为独立重实现
 
 ### [nsg](https://github.com/hurui200320/nsg)
 由 **skyblond** 开发的 Android Kotlin 参考实现（AGPL-3.0）。本项目的协议流程、配对握手、载荷格式均基于其公开的协议分析重新实现。
