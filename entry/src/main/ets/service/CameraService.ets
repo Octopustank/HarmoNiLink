@@ -249,6 +249,15 @@ export class CameraService {
       this.gpsStep = 1;
     } else {
       this.gpsStep = 0;
+      // Check if location service is enabled
+      try {
+        const locEnabled = geoLocationManager.isLocationEnabled?.() ?? true;
+        if (!locEnabled) {
+          hilog.warn(0x0001, TAG, '[GPS] Location service disabled, skip GEO');
+          return;
+        }
+      } catch (e) { /* proceed anyway */ }
+
       try {
         geoLocationManager.getCurrentLocation({
           priority: geoLocationManager.LocationRequestPriority.FIRST_FIX,
@@ -339,16 +348,16 @@ export class CameraService {
     } else if (event instanceof BleDisconnected) {
       hilog.info(0x0001, TAG, '[CHECKPOINT] BLE Disconnected');
       if (this._state === ConnectionState.Ready) {
-        // Bonding completed, BLE drop is expected — stop GPS, stay in Ready
         this.stopGpsLoop();
         return;
       }
-      if (this._state === ConnectionState.Idle) {
+      if (this._state === ConnectionState.Idle || this._state === ConnectionState.Bonding) {
         return;
       }
-      if (this._state !== ConnectionState.Bonding) {
-        this.setState(ConnectionState.Error, 'Camera disconnected unexpectedly.');
-      }
+      // During reconnect/pairing, BLE drop is transient — graceful reset
+      this.pairingStep = 0;
+      this.currentStage1 = null;
+      this.setState(ConnectionState.Idle, 'Connection lost. Tap Reconnect to retry.');
     } else if (event instanceof BleError) {
       hilog.error(0x0001, TAG, `[CHECKPOINT] BLE Error: ${event.message}`);
       if (this._state !== ConnectionState.Ready && this._state !== ConnectionState.Idle) {

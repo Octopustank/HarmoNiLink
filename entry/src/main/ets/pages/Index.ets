@@ -73,6 +73,9 @@ struct Index {
 
     // Load saved cameras after init completes (small delay for async store init)
     setTimeout(() => { this.loadSavedCameras(); }, 500);
+
+    // Poll GPS display every 2 seconds
+    setInterval(() => { this.refreshGpsDisplay(); }, 2000);
   }
 
   build() {
@@ -316,6 +319,10 @@ struct Index {
     const gps = this.cameraService.gpsData;
     if (gps.hasFix) {
       this.gpsDisplay = `${gps.latitude.toFixed(6)}, ${gps.longitude.toFixed(6)} ±${gps.altitude}m @ ${gps.lastUpdateTime}`;
+    } else if (this.stateText === 'Ready') {
+      this.gpsDisplay = 'Acquiring GPS...';
+    } else {
+      this.gpsDisplay = 'Connect camera first';
     }
   }
 }
