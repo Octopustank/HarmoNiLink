@@ -18,7 +18,8 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { ble, connection } from '@kit.ConnectivityKit';
 import { geoLocationManager } from '@kit.LocationKit';
 import { backgroundTaskManager } from '@kit.BackgroundTasksKit';
-import { common } from '@kit.AbilityKit';
+import { common, wantAgent, WantAgent } from '@kit.AbilityKit';
+import { BusinessError } from '@kit.BasicServicesKit';
 import { PairedCamera, NikonPairingEngine } from '../ble/protocol/NikonPairingEngine';
 import { PairingMessage } from '../ble/protocol/PairingMessage';
 import { GeoPayloadGenerator, GpsPosition } from '../ble/protocol/GeoPayloadGenerator';
@@ -721,24 +722,42 @@ export class CameraService {
 
   // ==================== Background Task ====================
 
-  private startBackgroundTask(): void {
+  /**
+   * Apply for a ContinuousTask to keep BLE + GPS alive in background.
+   * Uses wantAgent to show a notification that the user can tap to return to the app.
+   */
+  private async startBackgroundTask(): Promise<void> {
     if (this.backgroundTaskStarted || !this.abilityContext) return;
 
+    const ctx = this.abilityContext;
+
+    // Build WantAgent for notification click → reopen EntryAbility
+    let wantAgentInfo: wantAgent.WantAgentInfo = {
+      wants: [
+        {
+          bundleName: ctx.abilityInfo.bundleName,
+          abilityName: ctx.abilityInfo.name
+        }
+      ],
+      actionType: wantAgent.OperationType.START_ABILITY,
+      requestCode: 0,
+      wantAgentFlags: [wantAgent.WantAgentFlags.UPDATE_PRESENT_FLAG]
+    };
+
     try {
-      const ctx = this.abilityContext;
-      const startBg = backgroundTaskManager.startBackgroundRunning as Function;
-      // Request continuous background task (shows notification)
-      startBg(ctx,
-        backgroundTaskManager.BackgroundMode.LOCATION,
-        backgroundTaskManager.BackgroundMode.BLUETOOTH_INTERACTION)
-        .then(() => {
-          hilog.info(0x0001, TAG, '[BG] Continuous task started');
-          this.backgroundTaskStarted = true;
-        }).catch((err: Error) => {
-          hilog.warn(0x0001, TAG, `[BG] Continuous task fail: ${err.code} ${err.message}`);
-        });
+      const agent: WantAgent = await wantAgent.getWantAgent(wantAgentInfo);
+      try {
+        await backgroundTaskManager.startBackgroundRunning(ctx,
+          backgroundTaskManager.BackgroundMode.BLUETOOTH_INTERACTION, agent);
+        this.backgroundTaskStarted = true;
+        hilog.info(0x0001, TAG, '[BG] ContinuousTask started (BLUETOOTH + DATA_TRANSFER)');
+      } catch (err) {
+        hilog.warn(0x0001, TAG,
+          `[BG] startBackgroundRunning fail: ${(err as BusinessError).code} ${(err as BusinessError).message}`);
+      }
     } catch (err) {
-      hilog.warn(0x0001, TAG, `[BG] startBackgroundTask error: ${JSON.stringify(err)}`);
+      hilog.warn(0x0001, TAG,
+        `[BG] getWantAgent fail: ${(err as BusinessError).code} ${(err as BusinessError).message}`);
     }
   }
 
@@ -748,9 +767,10 @@ export class CameraService {
     try {
       backgroundTaskManager.stopBackgroundRunning(this.abilityContext);
       this.backgroundTaskStarted = false;
-      hilog.info(0x0001, TAG, '[CHECKPOINT] Background tasks stopped');
+      hilog.info(0x0001, TAG, '[BG] ContinuousTask stopped');
     } catch (err) {
-      hilog.warn(0x0001, TAG, `[CHECKPOINT] stopBackgroundTask error: ${JSON.stringify(err)}`);
+      hilog.warn(0x0001, TAG,
+        `[BG] stopBackgroundRunning error: ${(err as BusinessError).code} ${(err as BusinessError).message}`);
     }
   }
 
