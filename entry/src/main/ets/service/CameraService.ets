@@ -51,7 +51,7 @@ export type StateListener = (state: ConnectionState, message: string) => void;
 
 export class CameraService {
   // Public state
-  private stateListener: StateListener | null = null;
+  private stateListeners: StateListener[] = [];
   private _state: ConnectionState = ConnectionState.Idle;
   private _statusMessage: string = 'Ready.';
 
@@ -82,7 +82,7 @@ export class CameraService {
   // ==================== Public API ====================
 
   setStateListener(listener: StateListener): void {
-    this.stateListener = listener;
+    this.stateListeners.push(listener);
   }
 
   getState(): ConnectionState {
@@ -780,8 +780,11 @@ export class CameraService {
     this._state = state;
     this._statusMessage = message;
     hilog.info(0x0001, TAG, `[CHECKPOINT] STATE: ${state} — ${message}`);
-    if (this.stateListener) {
-      this.stateListener(state, message);
+    for (let i = 0; i < this.stateListeners.length; i++) {
+      this.stateListeners[i](state, message);
     }
   }
 }
+
+// Global singleton — shared across all pages
+export const cameraService = new CameraService();
