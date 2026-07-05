@@ -216,6 +216,7 @@ export class CameraService {
   gpsData: GpsData = new GpsData();
   private gpsStep: number = 0; // 0=TIME, 1=GEO — alternating
   private isForeground: boolean = true;
+  private reconnectRetries: number = 0; // backoff counter
 
   sendFakeGeo(): void {
     if (!this.bleClient.isConnected()) {
@@ -326,6 +327,7 @@ export class CameraService {
   private handleBleEvent(event: BleEvent): void {
     if (event instanceof BleConnected) {
       hilog.info(0x0001, TAG, '[CHECKPOINT] BLE Connected');
+      this.reconnectRetries = 0; // reset backoff on success
       this.setState(ConnectionState.Discovering, 'Discovering services...');
     } else if (event instanceof BleServicesDiscovered) {
       hilog.info(0x0001, TAG, '[CHECKPOINT] Services Discovered');
@@ -352,7 +354,12 @@ export class CameraService {
       hilog.info(0x0001, TAG, '[CHECKPOINT] BLE Disconnected');
       if (this._state === ConnectionState.Ready) {
         this.stopGpsLoop();
-        this.setState(ConnectionState.Idle, 'Camera disconnected. Tap Reconnect.');
+        if (this.savedCamera) {
+          // Auto-reconnect with backoff (camera may be sleeping)
+          this.scheduleReconnect();
+        } else {
+          this.setState(ConnectionState.Idle, 'Camera disconnected. Tap Reconnect.');
+        }
         return;
       }
       if (this._state === ConnectionState.Idle || this._state === ConnectionState.Bonding) {
@@ -361,7 +368,11 @@ export class CameraService {
       // During reconnect/pairing, BLE drop is transient — graceful reset
       this.pairingStep = 0;
       this.currentStage1 = null;
-      this.setState(ConnectionState.Idle, 'Connection lost. Tap Reconnect to retry.');
+      if (this.savedCamera && this.reconnectRetries < 10) {
+        this.scheduleReconnect();
+      } else {
+        this.setState(ConnectionState.Idle, 'Connection lost. Tap Reconnect to retry.');
+      }
     } else if (event instanceof BleError) {
       hilog.error(0x0001, TAG, `[CHECKPOINT] BLE Error: ${event.message}`);
       if (this._state !== ConnectionState.Ready && this._state !== ConnectionState.Idle) {
@@ -662,6 +673,21 @@ export class CameraService {
     }, 20000);
   }
 
+  private scheduleReconnect(): void {
+    if (!this.savedCamera) return;
+    // Exponential backoff: 1s, 2s, 4s, 8s, 16s, 30s...
+    const delays = [1000, 2000, 4000, 8000, 16000, 30000, 30000, 30000, 60000, 60000];
+    const delay = delays[Math.min(this.reconnectRetries, delays.length - 1)];
+    this.reconnectRetries++;
+    hilog.info(0x0001, TAG, `[RECONNECT] attempt ${this.reconnectRetries} in ${delay}ms`);
+    this.setState(ConnectionState.Idle, `Reconnecting (attempt ${this.reconnectRetries})...`);
+    setTimeout(() => {
+      if (this.savedCamera) {
+        this.connectToSavedCamera(this.savedCamera);
+      }
+    }, delay);
+  }
+
   private finishBonding(): void {
     this.bondingDiscoveryActive = false;
     try { connection.stopBluetoothDiscovery(); } catch (e) {}
@@ -701,18 +727,15 @@ export class CameraService {
     try {
       const ctx = this.abilityContext;
       const startBg = backgroundTaskManager.startBackgroundRunning as Function;
-
-      startBg(ctx, backgroundTaskManager.BackgroundMode.BLUETOOTH_INTERACTION)
+      // Request continuous background task (shows notification)
+      startBg(ctx,
+        backgroundTaskManager.BackgroundMode.LOCATION,
+        backgroundTaskManager.BackgroundMode.BLUETOOTH_INTERACTION)
         .then(() => {
-          hilog.info(0x0001, TAG, '[BG] BLUETOOTH_INTERACTION started');
+          hilog.info(0x0001, TAG, '[BG] Continuous task started');
           this.backgroundTaskStarted = true;
         }).catch((err: Error) => {
-          hilog.warn(0x0001, TAG, `[BG] BLUETOOTH_INTERACTION fail: ${err.message}`);
-        });
-
-      startBg(ctx, backgroundTaskManager.BackgroundMode.LOCATION)
-        .catch((err: Error) => {
-          hilog.warn(0x0001, TAG, `[BG] LOCATION fail: ${err.message}`);
+          hilog.warn(0x0001, TAG, `[BG] Continuous task fail: ${err.code} ${err.message}`);
         });
     } catch (err) {
       hilog.warn(0x0001, TAG, `[BG] startBackgroundTask error: ${JSON.stringify(err)}`);
