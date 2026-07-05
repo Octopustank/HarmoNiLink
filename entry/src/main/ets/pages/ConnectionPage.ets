@@ -226,6 +226,12 @@ export struct ConnectionPage {
               .backgroundColor($r('app.color.danger')).fontColor(Color.White).padding({ left: 36, right: 36 })
               .onClick(() => { this.onDisconnect(); })
           }
+
+          Text('💡 尼康相机休眠后会保持低功耗蓝牙连接。\nGPS 数据仍可通过 BLE 持续传输，无需手动唤醒相机。')
+            .fontSize(11).fontColor($r('app.color.text_secondary'))
+            .width('100%').padding({ left: 4, right: 4 })
+            .lineHeight(16)
+
           this.savedDevicesSection()
           Text('找不到相机？请前往「配对」页面搜索设备')
             .fontSize(13).fontColor($r('app.color.text_secondary'))
