@@ -26,7 +26,7 @@
  */
 import { hilog } from '@kit.PerformanceAnalysisKit';
 
-const TAG = 'HarmoNikon-GeoPayload';
+const TAG = 'HarmoNiLink-GeoPayload';
 
 const HEADER: number = 0x007F;
 

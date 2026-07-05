@@ -10,7 +10,7 @@
  *   6. Reconnect flow for saved cameras
  *
  * [CHECKPOINT] Every state transition, handshake step, and error is logged via HiLog.
- * For debugging, use: hdc shell hilog -T HarmoNikon
+ * For debugging, use: hdc shell hilog -T HarmoNiLink
  *
  * Based on nsg/android/.../CameraConnectionService.kt
  */
@@ -33,8 +33,8 @@ import {
 } from '../ble/BleEvent';
 import { PreferencesRepository } from '../data/PreferencesRepository';
 
-const TAG = 'HarmoNikon-CameraService';
-const DEFAULT_CONTROLLER_NAME: string = 'HarmoNikon';
+const TAG = 'HarmoNiLink-CameraService';
+const DEFAULT_CONTROLLER_NAME: string = 'HarmoNiLink';
 
 export enum ConnectionState {
   Idle = 'Idle',

@@ -13,7 +13,7 @@ import { PairingMessage } from './PairingMessage';
 import { BlowfishHasher } from './BlowfishHasher';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 
-const TAG = 'HarmoNikon-PairingEngine';
+const TAG = 'HarmoNiLink-PairingEngine';
 
 /**
  * Persisted camera data for reconnection.

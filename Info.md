@@ -1,6 +1,6 @@
 > `./nsg` 是参考项目（`https://github.com/hurui200320/nsg`）仓库
 
-# HarmoNikon — nsg (Nikon Smart GPS) 鸿蒙移植调研
+# HarmoNiLink — nsg (Nikon Smart GPS) 鸿蒙移植调研
 
 ---
 

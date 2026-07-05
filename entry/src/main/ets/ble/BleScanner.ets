@@ -2,7 +2,7 @@ import { ble, connection } from '@kit.ConnectivityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 
-const TAG = 'HarmoNikon-BleScanner';
+const TAG = 'HarmoNiLink-BleScanner';
 
 export interface DiscoveredCamera {
   deviceId: string; deviceName: string; rssi: number;

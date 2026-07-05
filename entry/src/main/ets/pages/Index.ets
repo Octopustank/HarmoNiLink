@@ -1,5 +1,5 @@
 /**
- * Index.ets — Main page for HarmoNikon
+ * Index.ets — Main page for HarmoNiLink
  *
  * Minimal functional UI for testing:
  *   - Scan button + discovered cameras list
@@ -18,7 +18,7 @@ import { GpsData } from '../service/GpsData';
 import { PairedCamera } from '../ble/protocol/NikonPairingEngine';
 import { DiscoveredCamera } from '../ble/BleScanner';
 
-const TAG = 'HarmoNikon-Index';
+const TAG = 'HarmoNiLink-Index';
 
 @Entry
 @Component
@@ -28,7 +28,7 @@ struct Index {
   @State stateColor: string = '#999999';
   @State stepText: string = '';
   @State serialText: string = '';
-  @State logMessages: string[] = ['[BOOT] HarmoNikon v1.0.0 started.'];
+  @State logMessages: string[] = ['[BOOT] HarmoNiLink v1.0.0 started.'];
   @State discoveredCameras: DiscoveredCamera[] = [];
   @State savedCameras: PairedCamera[] = [];
   @State isScanning: boolean = false;
@@ -81,7 +81,7 @@ struct Index {
   build() {
     Column() {
       // Header
-      Text('HarmoNikon')
+      Text('HarmoNiLink')
         .fontSize(22)
         .fontWeight(FontWeight.Bold)
         .margin({ top: 16, bottom: 4 })

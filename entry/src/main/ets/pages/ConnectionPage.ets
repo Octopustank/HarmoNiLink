@@ -10,7 +10,7 @@ import { cameraService, ConnectionState } from '../service/CameraService';
 import { PairedCamera } from '../ble/protocol/NikonPairingEngine';
 import { HdsNavDestination, ScrollEffectType, hdsMaterial } from '@kit.UIDesignKit';
 
-const TAG = 'HarmoNikon-ConnectionPage';
+const TAG = 'HarmoNiLink-ConnectionPage';
 
 @Component
 export struct ConnectionPage {

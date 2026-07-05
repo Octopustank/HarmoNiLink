@@ -7,7 +7,7 @@ import {
   BleWriteDone, BleError, BleEvent
 } from './BleEvent';
 
-const TAG = 'HarmoNikon-BleClient';
+const TAG = 'HarmoNiLink-BleClient';
 
 const SVC = '0000DE00-3DD4-4255-8D62-6DC7B9BD5561';
 const PAIR = '00002000-3DD4-4255-8D62-6DC7B9BD5561';

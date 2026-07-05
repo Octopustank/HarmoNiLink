@@ -16,7 +16,7 @@
 #undef LOG_DOMAIN
 #undef LOG_TAG
 #define LOG_DOMAIN 0x0001
-#define LOG_TAG "HarmoNikon-Blowfish"
+#define LOG_TAG "HarmoNiLink-Blowfish"
 
 // Full type definitions (must match blowfish_core.cpp)
 struct bfish_t {

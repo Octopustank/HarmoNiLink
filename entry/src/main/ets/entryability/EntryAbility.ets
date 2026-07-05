@@ -1,5 +1,5 @@
 /**
- * EntryAbility.ets — Main UIAbility for HarmoNikon
+ * EntryAbility.ets — Main UIAbility for HarmoNiLink
  *
  * Handles:
  *   - Permission requests at startup
@@ -14,7 +14,7 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
 import { BusinessError } from '@kit.BasicServicesKit';
 
-const TAG = 'HarmoNikon-EntryAbility';
+const TAG = 'HarmoNiLink-EntryAbility';
 
 const REQUIRED_PERMISSIONS: string[] = [
   'ohos.permission.ACCESS_BLUETOOTH',

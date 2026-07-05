@@ -12,8 +12,8 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { common } from '@kit.AbilityKit';
 import { PairedCamera } from '../ble/protocol/NikonPairingEngine';
 
-const TAG = 'HarmoNikon-Prefs';
-const STORE_NAME = 'harmonikon_prefs';
+const TAG = 'HarmoNiLink-Prefs';
+const STORE_NAME = 'harmonilink_prefs';
 const KEY_CAMERAS = 'paired_cameras';
 
 interface SerializedCamera {

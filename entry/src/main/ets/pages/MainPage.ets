@@ -1,5 +1,5 @@
 /**
- * MainPage.ets — Tab container for HarmoNikon
+ * MainPage.ets — Tab container for HarmoNiLink
  *
  * Wraps HdsTabs in HdsNavigation (critical: HdsNavDestination requires
  * HdsNavigation context for correct title bar positioning).
@@ -14,7 +14,7 @@ import { PairingPage } from './PairingPage';
 import { ConnectionPage } from './ConnectionPage';
 import { HdsNavigation, HdsTabs, HdsTabsController, hdsMaterial } from '@kit.UIDesignKit';
 
-const TAG = 'HarmoNikon-MainPage';
+const TAG = 'HarmoNiLink-MainPage';
 
 @Entry
 @Component

@@ -8,7 +8,7 @@
  */
 import { hilog } from '@kit.PerformanceAnalysisKit';
 
-const TAG = 'HarmoNikon-BlowfishHasher';
+const TAG = 'HarmoNiLink-BlowfishHasher';
 
 // Nikon smart-device Blowfish key (8 bytes)
 const KEY: number[] = [0xFF, 0xFF, 0xAA, 0x55, 0x11, 0x22, 0x33, 0x00];
