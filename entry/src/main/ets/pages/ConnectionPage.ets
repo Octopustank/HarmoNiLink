@@ -5,6 +5,7 @@
  * WlanSection card pattern for paired device list.
  */
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import { promptAction } from '@kit.ArkUI';
 import { cameraService, ConnectionState } from '../service/CameraService';
 import { PairedCamera } from '../ble/protocol/NikonPairingEngine';
 import { HdsNavDestination, ScrollEffectType, hdsMaterial } from '@kit.UIDesignKit';
@@ -20,7 +21,6 @@ export struct ConnectionPage {
   @State savedCameras: PairedCamera[] = [];
   @State logMessages: string[] = [];
   @State showLogs: boolean = false;
-  @State titleSub: string = '';
   // GPS data mirrored as @State so ArkUI detects changes
   @State gpsLat: string = '--';
   @State gpsLon: string = '--';
@@ -31,6 +31,14 @@ export struct ConnectionPage {
   private scroller: Scroller = new Scroller();
   private gpsTimer: number = -1;
 
+  // Derived: true when connection is busy (connecting/pairing/bonding)
+  private isBusy(): boolean {
+    return this.state === ConnectionState.Connecting
+      || this.state === ConnectionState.Discovering
+      || this.state === ConnectionState.Pairing
+      || this.state === ConnectionState.Bonding;
+  }
+
   aboutToAppear(): void {
     hilog.info(0x0001, TAG, '[CHECKPOINT] ConnectionPage aboutToAppear');
     this.loadSavedCameras();
@@ -38,11 +46,9 @@ export struct ConnectionPage {
       this.state = s; this.statusMsg = msg;
       this.serial = cameraService.getCameraSerial();
       this.step = cameraService.getPairingStep();
-      this.titleSub = s === ConnectionState.Ready ? `已连接 · ${this.serial || 'Camera'}` : '';
       this.logMessages = [...this.logMessages.slice(-49),
         `[${new Date().toLocaleTimeString()}] ${s}: ${msg}`];
     });
-    // Poll GPS data independently — state listener only fires on connection changes
     this.gpsTimer = setInterval(() => { this.syncGps(); }, 1000);
   }
 
@@ -65,11 +71,33 @@ export struct ConnectionPage {
     catch (e) { hilog.warn(0x0001, TAG, `loadSavedCameras err: ${JSON.stringify(e)}`); }
   }
 
-  private onReconnect(cam: PairedCamera): void { cameraService.connectToSavedCamera(cam); }
-  private async onForget(cam: PairedCamera): Promise<void> {
-    try { await cameraService.removeCamera(cam.name); await this.loadSavedCameras(); }
-    catch (e) { hilog.warn(0x0001, TAG, `Forget err: ${JSON.stringify(e)}`); }
+  private onReconnect(cam: PairedCamera): void {
+    if (this.isBusy()) return;
+    cameraService.connectToSavedCamera(cam);
   }
+
+  private onForget(cam: PairedCamera): void {
+    if (this.isBusy()) return;
+    // Must disconnect before deleting if this camera is connected
+    if (cameraService.getCameraSerial() === cam.name) {
+      cameraService.disconnect();
+    }
+    const dialog = promptAction.showDialog({
+      title: '删除已配对设备',
+      message: `确定删除「${cam.name}」？\n\n删除后需同时在系统蓝牙设置和相机端清除配对信息，否则可能无法重新连接。`,
+      buttons: [
+        { text: '取消', color: $r('app.color.brand') },
+        { text: '删除', color: $r('app.color.danger') }
+      ]
+    });
+    dialog.then((result) => {
+      if (result.index === 1) {
+        cameraService.removeCamera(cam.name).then(() => this.loadSavedCameras())
+          .catch((e: Error) => hilog.warn(0x0001, TAG, `Forget err: ${e.message}`));
+      }
+    });
+  }
+
   private onDisconnect(): void { cameraService.disconnect(); }
 
   private getStateColor(): string {
@@ -96,19 +124,19 @@ export struct ConnectionPage {
         Circle({ width: 8, height: 8 }).fill(this.getStateColor())
         Text(this.getStateLabel()).fontSize(13).fontColor(this.getStateColor())
       }.margin({ bottom: 8 })
-      if (this.serial) Text(this.serial).fontSize(15).fontColor('#E6000000').fontWeight(FontWeight.Medium).margin({ bottom: 4 })
-      if (this.statusMsg) Text(this.statusMsg).fontSize(13).fontColor('#99000000').maxLines(2)
+      if (this.serial) Text(this.serial).fontSize(15).fontColor($r('app.color.text_primary')).fontWeight(FontWeight.Medium).margin({ bottom: 4 })
+      if (this.statusMsg) Text(this.statusMsg).fontSize(13).fontColor($r('app.color.text_secondary')).maxLines(2)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
     }
     .width('100%').alignItems(HorizontalAlign.Start)
     .padding({ left: 16, right: 16, top: 16, bottom: 16 })
-    .borderRadius(16).backgroundColor('#FFFFFF')
+    .borderRadius(16).backgroundColor($r('app.color.card_background'))
     .shadow({ radius: 12, color: '#0D000000', offsetY: 2 })
   }
 
   @Builder gpsCard() {
     Column() {
-      Text('GPS 信息').fontSize(16).fontWeight(FontWeight.Medium).fontColor('#E6000000').width('100%').margin({ bottom: 10 })
+      Text('GPS 信息').fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary')).width('100%').margin({ bottom: 10 })
       GpsRow({ label: '纬度', value: this.gpsLat })
       GpsRow({ label: '经度', value: this.gpsLon })
       GpsRow({ label: '海拔', value: this.gpsAlt })
@@ -118,39 +146,45 @@ export struct ConnectionPage {
     }
     .width('100%').alignItems(HorizontalAlign.Start)
     .padding({ left: 16, right: 16, top: 16, bottom: 16 })
-    .borderRadius(16).backgroundColor('#FFFFFF')
+    .borderRadius(16).backgroundColor($r('app.color.card_background'))
     .shadow({ radius: 12, color: '#0D000000', offsetY: 2 })
   }
 
   @Builder savedDevicesSection() {
     Column() {
-      Text('已配对设备').fontSize(14).fontColor('#99000000')
+      Text('已配对设备').fontSize(14).fontColor($r('app.color.text_secondary'))
         .margin({ left: 12, bottom: 8, top: 28 }).alignSelf(ItemAlign.Start).fontWeight(500)
       if (this.savedCameras.length > 0) {
         Column() {
           ForEach(this.savedCameras, (cam: PairedCamera, i: number) => {
             Row() {
-              Text(cam.name).fontSize(16).fontWeight(500).fontColor('#E6000000')
+              Text(cam.name).fontSize(16).fontWeight(500).fontColor($r('app.color.text_primary'))
                 .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
               Row({ space: 8 }) {
-                Button('连接').fontSize(12).fontWeight(FontWeight.Medium).height(32).borderRadius(16)
-                  .backgroundColor('#007DFF').fontColor(Color.White).padding({ left: 16, right: 16 })
+                Button(this.isBusy() ? '…' : '连接')
+                  .fontSize(12).fontWeight(FontWeight.Medium).height(32).borderRadius(16)
+                  .backgroundColor(this.isBusy() ? $r('app.color.text_secondary') : $r('app.color.brand')).fontColor(Color.White)
+                  .padding({ left: 16, right: 16 })
+                  .enabled(!this.isBusy())
                   .onClick(() => { this.onReconnect(cam); })
-                Button('删除').fontSize(12).fontWeight(FontWeight.Medium).height(32).borderRadius(16)
-                  .backgroundColor('#FF3B30').fontColor(Color.White).padding({ left: 16, right: 16 })
+                Button('删除')
+                  .fontSize(12).fontWeight(FontWeight.Medium).height(32).borderRadius(16)
+                  .backgroundColor(this.isBusy() ? $r('app.color.text_secondary') : $r('app.color.danger')).fontColor(Color.White)
+                  .padding({ left: 16, right: 16 })
+                  .enabled(!this.isBusy())
                   .onClick(() => { this.onForget(cam); })
               }
             }.width('100%').height(48).padding({ left: 8, right: 8 })
             if (i < this.savedCameras.length - 1) {
-              Divider().strokeWidth(0.5).color('#1A000000').margin({ left: 8, right: 8 })
+              Divider().strokeWidth(0.5).color($r('app.color.divider')).margin({ left: 8, right: 8 })
             }
           }, (cam: PairedCamera, i: number) => cam.name + i)
         }
-        .width('100%').backgroundColor('#FFFFFF').borderRadius(16).padding(4)
+        .width('100%').backgroundColor($r('app.color.card_background')).borderRadius(16).padding(4)
         .shadow({ radius: 12, color: '#0D000000', offsetY: 2 })
       } else {
-        Column() { Text('暂无已配对设备').fontSize(13).fontColor('#99000000').textAlign(TextAlign.Center) }
-        .width('100%').height(48).backgroundColor('#FFFFFF').borderRadius(16)
+        Column() { Text('暂无已配对设备').fontSize(13).fontColor($r('app.color.text_secondary')).textAlign(TextAlign.Center) }
+        .width('100%').height(48).backgroundColor($r('app.color.card_background')).borderRadius(16)
         .padding({ left: 8, right: 8 })
       }
     }.width('100%').alignItems(HorizontalAlign.Start)
@@ -159,22 +193,22 @@ export struct ConnectionPage {
   @Builder logSection() {
     Column() {
       Row() {
-        Text('日志').fontSize(16).fontWeight(FontWeight.Medium).fontColor('#E6000000'); Blank()
-        Text(this.showLogs ? '收起' : '展开').fontSize(13).fontColor('#007DFF')
+        Text('日志').fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary')); Blank()
+        Text(this.showLogs ? '收起' : '展开').fontSize(13).fontColor($r('app.color.brand'))
       }.width('100%').onClick(() => { this.showLogs = !this.showLogs; })
       if (this.showLogs) {
         Column() {
           if (this.logMessages.length > 0) {
             ForEach(this.logMessages.slice(-20), (msg: string) => {
-              Text(msg).fontSize(10).fontColor('#99000000').width('100%').padding({ top: 1, bottom: 1 })
+              Text(msg).fontSize(10).fontColor($r('app.color.text_secondary')).width('100%').padding({ top: 1, bottom: 1 })
             })
-          } else { Text('暂无日志').fontSize(12).fontColor('#99000000').padding({ top: 8 }) }
+          } else { Text('暂无日志').fontSize(12).fontColor($r('app.color.text_secondary')).padding({ top: 8 }) }
         }.width('100%').margin({ top: 8 })
       }
     }
     .width('100%').alignItems(HorizontalAlign.Start)
     .padding({ left: 16, right: 16, top: 16, bottom: 16 })
-    .borderRadius(16).backgroundColor('#FFFFFF')
+    .borderRadius(16).backgroundColor($r('app.color.card_background'))
     .shadow({ radius: 12, color: '#0D000000', offsetY: 2 })
   }
 
@@ -188,22 +222,26 @@ export struct ConnectionPage {
           if (this.state === ConnectionState.Ready) { this.gpsCard() }
           if (this.state === ConnectionState.Ready) {
             Button('断开连接').fontSize(14).fontWeight(FontWeight.Medium).height(40).borderRadius(20)
-              .backgroundColor('#FF3B30').fontColor(Color.White).padding({ left: 36, right: 36 })
+              .backgroundColor($r('app.color.danger')).fontColor(Color.White).padding({ left: 36, right: 36 })
               .onClick(() => { this.onDisconnect(); })
           }
           this.savedDevicesSection()
+          Text('找不到相机？请前往「配对」页面搜索设备')
+            .fontSize(13).fontColor($r('app.color.text_secondary'))
+            .textAlign(TextAlign.Center).width('100%').padding({ top: 12, bottom: 4 })
           this.logSection()
+          Blank().layoutWeight(1)
         }
         .padding({ left: 16, right: 16, bottom: 56 })
       }
+      .height('100%')
       .edgeEffect(EdgeEffect.Spring)
       .scrollBar(BarState.Off)
-      .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
     }
-    .backgroundColor('#F1F3F5')
+    .backgroundColor($r('app.color.page_background'))
     .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
     .titleBar({
-      content: { title: { mainTitle: '连接', subTitle: this.titleSub || undefined } },
+      content: { title: { mainTitle: '连接' } },
       style: {
         scrollEffectOpts: { scrollEffectType: ScrollEffectType.GRADIENT_BLUR },
         systemMaterialEffect: {
@@ -222,8 +260,8 @@ struct GpsRow {
   @Prop value: string = '--';
   build() {
     Row() {
-      Text(this.label).fontSize(13).fontColor('#99000000').width(64)
-      Text(this.value).fontSize(13).fontColor('#E6000000').layoutWeight(1)
+      Text(this.label).fontSize(13).fontColor($r('app.color.text_secondary')).width(64)
+      Text(this.value).fontSize(13).fontColor($r('app.color.text_primary')).layoutWeight(1)
     }.width('100%').padding({ top: 2, bottom: 2 })
   }
 }
