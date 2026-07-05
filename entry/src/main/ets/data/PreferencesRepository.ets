@@ -122,6 +122,7 @@ export class PreferencesRepository {
       const json = JSON.stringify(filtered);
       await this.store.put(KEY_CAMERAS, json);
       await this.store.flush();
+      this.cache = filtered; // sync memory cache
       hilog.info(0x0001, TAG, `[CHECKPOINT] removeCamera: removed '${name}' (${filtered.length} remaining)`);
     } catch (err) {
       hilog.error(0x0001, TAG, `removeCamera ERROR: ${JSON.stringify(err)}`);

@@ -46,6 +46,7 @@ export struct ConnectionPage {
       this.state = s; this.statusMsg = msg;
       this.serial = cameraService.getCameraSerial();
       this.step = cameraService.getPairingStep();
+      if (s === ConnectionState.Ready) { this.loadSavedCameras(); }
       this.logMessages = [...this.logMessages.slice(-49),
         `[${new Date().toLocaleTimeString()}] ${s}: ${msg}`];
     });
@@ -78,10 +79,6 @@ export struct ConnectionPage {
 
   private onForget(cam: PairedCamera): void {
     if (this.isBusy()) return;
-    // Must disconnect before deleting if this camera is connected
-    if (cameraService.getCameraSerial() === cam.name) {
-      cameraService.disconnect();
-    }
     const dialog = promptAction.showDialog({
       title: '删除已配对设备',
       message: `确定删除「${cam.name}」？\n\n删除后需同时在系统蓝牙设置和相机端清除配对信息，否则可能无法重新连接。`,
@@ -92,6 +89,10 @@ export struct ConnectionPage {
     });
     dialog.then((result) => {
       if (result.index === 1) {
+        // Disconnect first if this camera is connected
+        if (cameraService.getCameraSerial() === cam.name) {
+          cameraService.disconnect();
+        }
         cameraService.removeCamera(cam.name).then(() => this.loadSavedCameras())
           .catch((e: Error) => hilog.warn(0x0001, TAG, `Forget err: ${e.message}`));
       }
@@ -184,7 +185,7 @@ export struct ConnectionPage {
         .shadow({ radius: 12, color: '#0D000000', offsetY: 2 })
       } else {
         Column() { Text('暂无已配对设备').fontSize(13).fontColor($r('app.color.text_secondary')).textAlign(TextAlign.Center) }
-        .width('100%').height(48).backgroundColor($r('app.color.card_background')).borderRadius(16)
+        .width('100%').height(48).justifyContent(FlexAlign.Center).backgroundColor($r('app.color.card_background')).borderRadius(16)
         .padding({ left: 8, right: 8 })
       }
     }.width('100%').alignItems(HorizontalAlign.Start)

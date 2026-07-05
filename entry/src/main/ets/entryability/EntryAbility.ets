@@ -40,25 +40,13 @@ export default class EntryAbility extends UIAbility {
 
     this.requestPermissions();
 
-    windowStage.loadContent('pages/MainPage', async (err) => {
+    windowStage.loadContent('pages/MainPage', async (err: BusinessError) => {
       if (err.code) {
         hilog.error(0x0001, TAG,
           `[CHECKPOINT] loadContent FAILED: code=${err.code} msg=${err.message}`);
         return;
       }
       hilog.info(0x0001, TAG, '[CHECKPOINT] loadContent OK');
-
-      try {
-        const mainWindow = windowStage.getMainWindowSync();
-        // NO setWindowLayoutFullScreen — expandSafeArea alone extends blur into
-        // the status bar via draw-only extension (docs: "仅做绘制延伸")
-        mainWindow.setWindowSystemBarProperties({
-          statusBarColor: '#00000000',
-          statusBarContentColor: '#000000'
-        });
-      } catch (e) {
-        hilog.warn(0x0001, TAG, `[CHECKPOINT] Window setup failed: ${JSON.stringify(e)}`);
-      }
     });
   }
 

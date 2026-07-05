@@ -137,7 +137,8 @@ export class CameraService {
     hilog.info(0x0001, TAG,
       `[CHECKPOINT] selectDiscoveredCamera: name='${camera.deviceName}' id=${camera.deviceId}`);
 
-    this.stopScan();
+    // Stop BLE scan only (no state change — avoids spurious Idle that resets PairingPage isPairing)
+    this.scanner.stopScan();
 
     // Check if we have saved data for this camera — if so, use reconnect mode
     const saved = this.prefs.loadSavedCamerasSync();
@@ -208,6 +209,8 @@ export class CameraService {
     this.bleClient.disconnect();
     this.pairingStep = 0;
     this.currentStage1 = null;
+    this.cameraSerial = '';
+    this.cameraName = '';
     this.setState(ConnectionState.Idle, 'Disconnected.');
   }
 

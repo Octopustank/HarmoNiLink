@@ -5,6 +5,7 @@
  * WlanSection card pattern for device list.
  */
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import { promptAction } from '@kit.ArkUI';
 import { cameraService, ConnectionState } from '../service/CameraService';
 import { DiscoveredCamera } from '../ble/BleScanner';
 import { HdsNavDestination, ScrollEffectType, hdsMaterial } from '@kit.UIDesignKit';
@@ -37,7 +38,18 @@ export struct PairingPage {
         || s === ConnectionState.Discovering
         || s === ConnectionState.Pairing
         || s === ConnectionState.Bonding;
-      if (!isBusy && this.isPairing) {
+      // Pairing completed successfully
+      if (!isBusy && this.isPairing && s === ConnectionState.Ready) {
+        this.isPairing = false;
+        this.pairingTarget = '';
+        this.isScanning = false; this.stopPolling(); this.titleSub = '';
+        cameraService.disconnect();
+        promptAction.showDialog({
+          title: '配对成功',
+          message: '已添加到已配对设备列表。\n断开连接后，请前往「连接」页面手动连接相机。',
+          buttons: [{ text: '好的', color: $r('app.color.brand') }]
+        });
+      } else if (!isBusy && this.isPairing) {
         this.isPairing = false; this.pairingTarget = '';
       }
     });
@@ -130,6 +142,8 @@ export struct PairingPage {
           Text('将相机置于配对模式，确保蓝牙已开启')
             .fontSize(11).fontColor($r('app.color.text_secondary')).textAlign(TextAlign.Center).width('100%')
             .padding({ top: 20 })
+
+          Blank().layoutWeight(1)
         }
         .padding({ left: 16, right: 16, bottom: 56 })
       }
