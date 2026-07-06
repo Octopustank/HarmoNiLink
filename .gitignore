@@ -24,3 +24,7 @@ Thumbs.db
 # Logs
 *.log
 .omo/
+signing/
+private.key
+build/
+sign.sh
