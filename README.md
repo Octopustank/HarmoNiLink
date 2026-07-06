@@ -5,7 +5,22 @@
 > Inspired by [hurui200320/nsg](https://github.com/hurui200320/nsg)，
 > 基于 [gkoh/furble](https://github.com/gkoh/furble) 逆向的 Nikon BLE 智能设备协议。
 
-HarmoNiLink 让 HarmonyOS 手机/平板替代 SnapBridge，向尼康 Z 系列相机**持续分发 GPS 坐标**。一次配对后全自动运行 — 相机休眠时保持低功耗连接，App 在后台静默传输位置数据。
+HarmoNiLink 让 HarmonyOS 手机/平板替代 SnapBridge，向尼康 Z 系列相机**持续分发 GPS 坐标**。连接后全自动运行 — 相机休眠时保持低功耗连接，App 在后台静默传输位置数据。
+
+由于鸿蒙系统在卓易通使用 SnapBridge 存在功能异常（截止作者测试），遂开发此应用代替之
+
+---
+
+## 截图
+
+| 配对 & 扫描 | 连接 & GPS |
+|:---:|:---:|
+| ![配对页](pics/pair.png) | ![连接页](pics/connected.png) |
+
+<details>
+<summary>原生鸿蒙 HDS UI</summary>
+<img src="pics/hm_ui.png" alt="HarmonyOS UI Design" width="400">
+</details>
 
 ---
 
