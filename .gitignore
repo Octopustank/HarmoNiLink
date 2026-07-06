@@ -28,3 +28,4 @@ signing/
 private.key
 build/
 sign.sh
+.cxx/
