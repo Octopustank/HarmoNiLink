@@ -95,14 +95,15 @@ Service  0xDE00
 环境：[DevEco Studio](https://developer.huawei.com/consumer/cn/deveco-studio/) 或 [Command Line Tools for HMOS](https://developer.huawei.com/consumer/en/download/command-line-tools-for-hmos)
 
 ```bash
-# 开发调试 — .hap（模块包，无签名）
-hvigorw assembleHap --mode module -p module=entry@default -p product=default
+make hap     # 开发调试 — 未签名 .hap
+make app     # 未签名 .app
+make build   # 两个都构建
 
-# 发布 — 签名 .hap + .app（需提前配置 .env 签名凭据）
-./sign.sh
+make sign    # 构建 + 双层签名 → .hap + .app（需先 cp .env.example .env 并填密码）
+make clean   # 清理构建产物
 ```
 
-产物：
+产物 (`make sign` 后)：
 - `build/outputs/default/HarmoNiLink-default-signed.hap` — 签名模块包
 - `build/outputs/default/HarmoNiLink-default-signed.app` — 签名应用包
 
