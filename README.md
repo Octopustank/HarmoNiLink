@@ -17,11 +17,6 @@ HarmoNiLink 让 HarmonyOS 手机/平板替代 SnapBridge，向尼康 Z 系列相
 |:---:|:---:|
 | ![配对页](pics/pair.png) | ![连接页](pics/connected.png) |
 
-<details>
-<summary>原生鸿蒙 HDS UI</summary>
-<img src="pics/hm_ui.png" alt="HarmonyOS UI Design" width="400">
-</details>
-
 ---
 
 ## 特性
