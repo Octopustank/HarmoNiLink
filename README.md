@@ -100,10 +100,16 @@ Service  0xDE00
 环境：[DevEco Studio](https://developer.huawei.com/consumer/cn/deveco-studio/) 或 [Command Line Tools for HMOS](https://developer.huawei.com/consumer/en/download/command-line-tools-for-hmos)
 
 ```bash
+# 开发调试 — 输出 .hap（模块包）
 hvigorw assembleHap --mode module -p module=entry@default -p product=default
+# → entry/build/default/outputs/default/entry-default-unsigned.hap
+
+# 发布 — 输出 .app（应用包，含签名）
+hvigorw assembleApp -p product=default
+# → build/outputs/default/HarmoNikon-default-unsigned.app
 ```
 
-产物 → `entry/build/default/outputs/default/entry-default-unsigned.hap`
+> 发布需在 `build-profile.json5` 中配置 `signingConfigs` 签名信息。
 
 ---
 
