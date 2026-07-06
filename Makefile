@@ -41,8 +41,8 @@ sign:
 	@if [ ! -f "$(TOOL)" ]; then echo "ERROR: $(TOOL) not found"; exit 1; fi
 	@set -a; . ./.env; set +a; \
 	if [ -z "$$SIGN_KEYSTORE_PASS" ]; then echo "ERROR: SIGN_KEYSTORE_PASS empty"; exit 1; fi; \
-	echo ">>> 1/4 Build HAP"; \
-	$(HVIGORW) assembleHap --mode module -p module=entry@default -p product=default || exit 1; \
+	echo ">>> 1/4 Build HAP (release)"; \
+	$(HVIGORW) assembleHap --mode module -p module=entry@default -p product=default -p buildMode=release || exit 1; \
 	echo ">>> 2/4 Sign HAP"; \
 	java -jar $(TOOL) sign-app -mode localSign \
 		-keyAlias "$${SIGN_KEY_ALIAS:-HarmoNiLink-Release}" \
@@ -55,8 +55,8 @@ sign:
 		-keystorePwd "$$SIGN_KEYSTORE_PASS" \
 		-outFile $(U_HAP:.hap=-signed.hap) \
 		-compatibleVersion "$${SIGN_COMPAT_VERSION:-23}" -signCode 1 || exit 1; \
-	echo ">>> 3/4 Build APP + repack"; \
-	$(HVIGORW) assembleApp -p product=default || exit 1; \
+	echo ">>> 3/4 Build APP (release) + repack"; \
+	$(HVIGORW) assembleApp -p product=default -p buildMode=release || exit 1; \
 	TMP=$$(mktemp -d); \
 	unzip -o "$(CURDIR)/$(U_APP)" -d $$TMP >/dev/null; \
 	cp $(U_HAP:.hap=-signed.hap) $$TMP/entry-default.hap; \
