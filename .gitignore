@@ -29,3 +29,4 @@ private.key
 build/
 sign.sh
 .cxx/
+.env
