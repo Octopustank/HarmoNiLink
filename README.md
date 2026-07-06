@@ -23,7 +23,7 @@ HarmoNiLink 让 HarmonyOS 手机/平板替代 SnapBridge，向尼康 Z 系列相
 ### 原生鸿蒙体验
 - **HDS 设计套件** — 沉浸光感、模糊标题栏、自适应背景材质
 - **亮/暗主题跟随** — 自动跟随系统色彩模式
-- **NAPI 原生性能** — Blowfish 配对加密用 C++ 实现，编译为 `libblowfish.so`
+- **纯 ArkTS 实现** — Blowfish 加密全程 ArkTS 运算，零原生依赖
 
 ---
 
@@ -47,7 +47,7 @@ entry/src/main/ets/
 │   ├── BleScanner.ets                 — BLE 设备扫描
 │   └── protocol/
 │       ├── NikonPairingEngine.ets      — 4 阶段配对握手
-│       ├── BlowfishHasher.ets          — Blowfish hash（NAPI → C++）
+│       ├── BlowfishHasher.ets          — Blowfish hash（纯 ArkTS）
 │       ├── GeoPayloadGenerator.ets     — 41 字节 GPS 载荷
 │       └── TimePayloadGenerator.ets    — 时间载荷
 ├── pages/
@@ -60,10 +60,6 @@ entry/src/main/ets/
 │   └── PreferencesRepository.ets      — 已配对设备持久化
 └── entryability/
     └── EntryAbility.ets               — 入口 & 权限申请
-
-entry/src/main/cpp/
-├── blowfish_core.cpp   — Blowfish/ECB 纯 C 实现
-└── blowfish.cpp        — NAPI 桥接
 ```
 
 | 层 | 技术 |
@@ -72,7 +68,6 @@ entry/src/main/cpp/
 | BLE | `@ohos.bluetooth.ble` · `@ohos.bluetooth.connection` |
 | 定位 | `@kit.LocationKit` |
 | 后台 | `backgroundTaskManager` — `BLUETOOTH_INTERACTION` · `LOCATION` |
-| 加密 | NAPI C++ · `libblowfish.so` |
 | 构建 | Hvigor 6.0.0 · arm64-v8a |
 
 ---
