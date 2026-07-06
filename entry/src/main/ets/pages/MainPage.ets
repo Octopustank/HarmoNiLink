@@ -34,10 +34,10 @@ struct MainPage {
     Column() {
       SymbolGlyph(icon)
         .fontSize(22)
-        .fontColor([this.currentIndex === index ? '#007DFF' : '#99000000'])
+        .fontColor([this.currentIndex === index ? $r('app.color.brand') : $r('app.color.text_secondary')])
       Text(label)
         .fontSize(10)
-        .fontColor(this.currentIndex === index ? '#007DFF' : '#99000000')
+        .fontColor(this.currentIndex === index ? $r('app.color.brand') : $r('app.color.text_secondary'))
         .fontWeight(this.currentIndex === index ? FontWeight.Medium : FontWeight.Normal)
         .margin({ top: 2 })
     }
@@ -75,7 +75,7 @@ struct MainPage {
       .onChange((index: number) => { this.currentIndex = index; })
       .width('100%')
       .height('100%')
-      .backgroundColor('#F1F3F5')
+      .backgroundColor($r('app.color.page_background'))
       .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
     }
     .hideTitleBar(true)

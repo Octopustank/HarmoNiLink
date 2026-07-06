@@ -101,11 +101,11 @@ export struct ConnectionPage {
 
   private onDisconnect(): void { cameraService.disconnect(); }
 
-  private getStateColor(): string {
-    if (this.state === ConnectionState.Ready) return '#34C759';
-    if (this.state === ConnectionState.Error) return '#FF3B30';
-    if (this.state === ConnectionState.Idle) return '#99000000';
-    return '#FF9500';
+  private getStateColor(): ResourceColor {
+    if (this.state === ConnectionState.Ready) return $r('app.color.success');
+    if (this.state === ConnectionState.Error) return $r('app.color.danger');
+    if (this.state === ConnectionState.Idle) return $r('app.color.text_secondary');
+    return $r('app.color.warning');
   }
   private getStateLabel(): string {
     if (this.state === ConnectionState.Ready) return '已连接';
