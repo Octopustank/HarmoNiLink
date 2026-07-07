@@ -9,10 +9,11 @@
  * [CHECKPOINT] Every lifecycle event is logged via HiLog.
  */
 
-import { AbilityConstant, UIAbility, Want, abilityAccessCtrl, common } from '@kit.AbilityKit';
+import { AbilityConstant, UIAbility, Want, abilityAccessCtrl, common, bundleManager } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
 import { BusinessError } from '@kit.BasicServicesKit';
+import { cameraService } from '../service/CameraService';
 
 const TAG = 'HarmoNiLink-EntryAbility';
 
@@ -28,7 +29,8 @@ const REQUIRED_PERMISSIONS: string[] = [
 
 export default class EntryAbility extends UIAbility {
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
-    hilog.info(0x0001, TAG, '[CHECKPOINT] EntryAbility.onCreate()');
+    hilog.info(0x0001, TAG, `[CHECKPOINT] EntryAbility.onCreate()`);
+    this.logAppVersion();
   }
 
   onDestroy(): void {
@@ -56,14 +58,28 @@ export default class EntryAbility extends UIAbility {
 
   onForeground(): void {
     hilog.info(0x0001, TAG, '[CHECKPOINT] onForeground()');
+    cameraService.onAppForeground();
   }
 
   onBackground(): void {
     hilog.info(0x0001, TAG, '[CHECKPOINT] onBackground()');
+    cameraService.onAppBackground();
   }
 
   onNewWant(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     hilog.info(0x0001, TAG, '[CHECKPOINT] onNewWant()');
+  }
+
+  // ==================== Version ====================
+
+  private logAppVersion(): void {
+    try {
+      const info = bundleManager.getBundleInfoForSelfSync(bundleManager.BundleFlag.GET_BUNDLE_INFO_WITH_APPLICATION);
+      hilog.info(0x0001, TAG,
+        `══════════════ HarmoNiLink v${info.versionName} (${info.versionCode}) ══════════════`);
+    } catch (e) {
+      hilog.warn(0x0001, TAG, `[CHECKPOINT] BundleInfo read failed: ${JSON.stringify(e)}`);
+    }
   }
 
   // ==================== Permission Handling ====================

@@ -48,6 +48,7 @@ export enum ConnectionState {
 }
 
 export type StateListener = (state: ConnectionState, message: string) => void;
+export type OperationOwner = 'pairing' | 'connection' | 'none';
 
 export class CameraService {
   // Public state
@@ -79,6 +80,9 @@ export class CameraService {
   // Context (set from EntryAbility)
   private abilityContext: common.UIAbilityContext | null = null;
 
+  // Ownership — prevents cross-tab operation conflicts
+  private owner: OperationOwner = 'none';
+
   // ==================== Public API ====================
 
   setStateListener(listener: StateListener): void {
@@ -106,47 +110,75 @@ export class CameraService {
     this.prefs.init(ctx); // start async init — loadSavedCamerasSync will return cache once ready
   }
 
-  // ==================== Scan ====================
+  getOwner(): OperationOwner { return this.owner; }
+
+  /**
+   * Request operation ownership. Returns true if granted.
+   * If another operation is active, returns false (caller must handle).
+   */
+  requestOwnership(source: OperationOwner): boolean {
+    if (this.owner === 'none') { this.owner = source; return true; }
+    if (this.owner === source) { return true; } // already owned by same caller
+    hilog.warn(0x0001, TAG, `[OWNER] request denied: ${source} (active: ${this.owner})`);
+    return false;
+  }
+
+  private releaseOwnership(): void {
+    hilog.info(0x0001, TAG, `[OWNER] released: ${this.owner}`);
+    this.owner = 'none';
+    // Re-broadcast current state so listeners refresh ownership-based UI
+    for (let i = 0; i < this.stateListeners.length; i++) {
+      this.stateListeners[i](this._state, this._statusMessage);
+    }
+  }
+
+  // ==================== Scan (Pairing Page) ====================
 
   // Discovered cameras (populated by scanner callback)
   private discoveredList: DiscoveredCamera[] = [];
 
-  startScan(): void {
-    hilog.info(0x0001, TAG, '[CHECKPOINT] startScan() called');
+  startPairingScan(): boolean {
+    if (!this.requestOwnership('pairing')) return false;
+    hilog.info(0x0001, TAG, '[CHECKPOINT] startPairingScan() called');
     this.discoveredList = [];
     this.setState(ConnectionState.Scanning, 'Scanning for cameras...');
     this.scanner.startScan((cameras: DiscoveredCamera[]) => {
       this.discoveredList = cameras;
     });
+    return true;
   }
 
   getDiscoveredCameras(): DiscoveredCamera[] {
     return this.discoveredList;
   }
 
-  stopScan(): void {
+  stopPairingScan(): void {
     this.scanner.stopScan();
-    if (this._state === ConnectionState.Scanning) {
+    if (this._state === ConnectionState.Scanning && this.owner === 'pairing') {
+      this.releaseOwnership();
       this.setState(ConnectionState.Idle, 'Scan stopped.');
     }
   }
 
-  // ==================== Pair Flow ====================
+  // ==================== Pair Flow (Pairing Page) ====================
 
   selectDiscoveredCamera(camera: DiscoveredCamera): void {
+    if (this.owner !== 'pairing') {
+      hilog.warn(0x0001, TAG, '[OWNER] selectDiscoveredCamera ignored — not pairing owner');
+      return;
+    }
     hilog.info(0x0001, TAG,
       `[CHECKPOINT] selectDiscoveredCamera: name='${camera.deviceName}' id=${camera.deviceId}`);
 
     // Stop BLE scan only (no state change — avoids spurious Idle that resets PairingPage isPairing)
     this.scanner.stopScan();
 
-    // Check if we have saved data for this camera — if so, use reconnect mode
+    // Check if we have saved data for this camera — if so, proceed with pair mode anyway
+    // (ownership is pairing; reconnect flow requires connection ownership)
     const saved = this.prefs.loadSavedCamerasSync();
     const matched = saved.find((c: PairedCamera) => c.name === camera.deviceName);
     if (matched) {
-      hilog.info(0x0001, TAG, '[CHECKPOINT] Camera already paired — using RECONNECT mode');
-      this.connectToSavedCamera(matched);
-      return;
+      hilog.info(0x0001, TAG, '[CHECKPOINT] Camera already paired — re-pairing');
     }
 
     // New camera — pair mode
@@ -160,11 +192,12 @@ export class CameraService {
     this.connectToDevice(camera.deviceId);
   }
 
-  // ==================== Connect Flow (Reconnect to saved camera) ====================
+  // ==================== Connect Flow (Connection Page) ====================
 
-  connectToSavedCamera(camera: PairedCamera): void {
+  startReconnect(camera: PairedCamera): boolean {
+    if (!this.requestOwnership('connection')) return false;
     hilog.info(0x0001, TAG,
-      `[CHECKPOINT] connectToSavedCamera: name='${camera.name}' addr=${camera.address}`);
+      `[CHECKPOINT] startReconnect: name='${camera.name}' addr=${camera.address}`);
 
     this.isPairMode = false;
     this.savedCamera = camera;
@@ -192,12 +225,13 @@ export class CameraService {
 
     // Timeout: fall back to saved address after 10 seconds
     setTimeout(() => {
-      if (this._state === ConnectionState.Scanning) {
+      if (this._state === ConnectionState.Scanning && this.owner === 'connection') {
         hilog.info(0x0001, TAG, '[CHECKPOINT] reconnect scan timeout, using saved address');
         this.scanner.stopScan();
         this.connectToDevice(camera.address);
       }
     }, 10000);
+    return true;
   }
 
   // ==================== Disconnect ====================
@@ -211,6 +245,8 @@ export class CameraService {
     this.currentStage1 = null;
     this.cameraSerial = '';
     this.cameraName = '';
+    this.scanner.stopScan();
+    this.releaseOwnership();
     this.setState(ConnectionState.Idle, 'Disconnected.');
   }
 
@@ -329,6 +365,16 @@ export class CameraService {
   }
 
   private handleBleEvent(event: BleEvent): void {
+    // === Stale event guard ===
+    // All BLE events require active ownership. Without it, events are stale
+    // callbacks from a disconnected gattClient.
+    if (this.owner === 'none') {
+      if (event instanceof BleError) {
+        hilog.debug(0x0001, TAG, `[CHECKPOINT] BLE Error (stale, ignored): ${event.message}`);
+      }
+      return;
+    }
+
     if (event instanceof BleConnected) {
       hilog.info(0x0001, TAG, '[CHECKPOINT] BLE Connected');
       this.reconnectRetries = 0; // reset backoff on success
@@ -358,10 +404,12 @@ export class CameraService {
       hilog.info(0x0001, TAG, '[CHECKPOINT] BLE Disconnected');
       if (this._state === ConnectionState.Ready) {
         this.stopGpsLoop();
+        // Keep ownership during auto-reconnect — release only when retries exhausted
+        // or user explicitly disconnects via cancel button.
         if (this.savedCamera) {
-          // Auto-reconnect with backoff (camera may be sleeping)
           this.scheduleReconnect();
         } else {
+          this.releaseOwnership();
           this.setState(ConnectionState.Idle, 'Camera disconnected. Tap Reconnect.');
         }
         return;
@@ -375,6 +423,7 @@ export class CameraService {
       if (this.savedCamera && this.reconnectRetries < 10) {
         this.scheduleReconnect();
       } else {
+        this.releaseOwnership();
         this.setState(ConnectionState.Idle, 'Connection lost. Tap Reconnect to retry.');
       }
     } else if (event instanceof BleError) {
@@ -685,9 +734,10 @@ export class CameraService {
     this.reconnectRetries++;
     hilog.info(0x0001, TAG, `[RECONNECT] attempt ${this.reconnectRetries} in ${delay}ms`);
     this.setState(ConnectionState.Idle, `Reconnecting (attempt ${this.reconnectRetries})...`);
+    const cam = this.savedCamera;
     setTimeout(() => {
-      if (this.savedCamera) {
-        this.connectToSavedCamera(this.savedCamera);
+      if (this.owner === 'connection' && cam) {
+        this.startReconnect(cam);
       }
     }, delay);
   }
@@ -696,8 +746,17 @@ export class CameraService {
     this.bondingDiscoveryActive = false;
     try { connection.stopBluetoothDiscovery(); } catch (e) {}
     this.pairingStep = 6;
-    this.setState(ConnectionState.Ready,
-      `Paired! Serial: ${this.cameraSerial || 'unknown'}. Tap Reconnect to use.`);
+    // Pairing mode: BLE was disconnected for classic bonding. Set Idle — user must
+    // reconnect manually from ConnectionPage.
+    // Connection mode: BLE remains connected. Ready + GPS loop.
+    if (this.owner === 'pairing') {
+      this.setState(ConnectionState.Idle, '');
+      this.releaseOwnership(); // after setState so listener sees owner='pairing' for dialog
+    } else {
+      this.setState(ConnectionState.Ready,
+        `Ready. Serial: ${this.cameraSerial || 'unknown'}`);
+      this.startGpsLoop();
+    }
   }
 
   private onBonded(): void {
@@ -717,10 +776,40 @@ export class CameraService {
         `[CHECKPOINT] Paired camera saved: ${camera.name}`);
     }
 
-    this.setState(ConnectionState.Ready, `Ready. Serial: ${this.cameraSerial || 'unknown'}`);
+    // RECONNECT mode: BLE is still connected, go Ready + GPS
+    // PAIR mode: handled by checkBondedAndFinish → classic bonding → finishBonding
+    if (!this.isPairMode) {
+      this.setState(ConnectionState.Ready, `Ready. Serial: ${this.cameraSerial || 'unknown'}`);
+      this.startGpsLoop();
+    }
+  }
 
-    // Start GPS loop automatically
-    this.startGpsLoop();
+  // ==================== Lifecycle (App Background/Foreground) ====================
+
+  /**
+   * Called from EntryAbility.onBackground().
+   * Switches GPS to slow polling and ensures LOCATION background mode is active.
+   */
+  onAppBackground(): void {
+    hilog.info(0x0001, TAG, '[LIFECYCLE] App → Background');
+    this.isForeground = false;
+    if (this._state === ConnectionState.Ready) {
+      this.stopGpsLoop();
+      this.startGpsLoop(5000); // switch to slow background interval
+    }
+  }
+
+  /**
+   * Called from EntryAbility.onForeground().
+   * Restores fast GPS polling for foreground.
+   */
+  onAppForeground(): void {
+    hilog.info(0x0001, TAG, '[LIFECYCLE] App → Foreground');
+    this.isForeground = true;
+    if (this._state === ConnectionState.Ready) {
+      this.stopGpsLoop();
+      this.startGpsLoop(); // restore default 1500ms interval
+    }
   }
 
   // ==================== Background Task ====================
@@ -751,9 +840,10 @@ export class CameraService {
       const agent: WantAgent = await wantAgent.getWantAgent(wantAgentInfo);
       try {
         await backgroundTaskManager.startBackgroundRunning(ctx,
-          backgroundTaskManager.BackgroundMode.BLUETOOTH_INTERACTION, agent);
+          backgroundTaskManager.BackgroundMode.BLUETOOTH_INTERACTION |
+          backgroundTaskManager.BackgroundMode.LOCATION, agent);
         this.backgroundTaskStarted = true;
-        hilog.info(0x0001, TAG, '[BG] ContinuousTask started (BLUETOOTH + DATA_TRANSFER)');
+        hilog.info(0x0001, TAG, '[BG] ContinuousTask started (BLUETOOTH + LOCATION)');
       } catch (err) {
         hilog.warn(0x0001, TAG,
           `[BG] startBackgroundRunning fail: ${(err as BusinessError).code} ${(err as BusinessError).message}`);
