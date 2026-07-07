@@ -6,6 +6,7 @@
  */
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { promptAction } from '@kit.ArkUI';
+import { bundleManager } from '@kit.AbilityKit';
 import { cameraService, ConnectionState } from '../service/CameraService';
 import { PairedCamera } from '../ble/protocol/NikonPairingEngine';
 import { HdsNavDestination, ScrollEffectType, hdsMaterial } from '@kit.UIDesignKit';
@@ -28,6 +29,8 @@ export struct ConnectionPage {
   @State gpsSats: string = '--';
   @State gpsHasFix: boolean = false;
   @State gpsTime: string = '--';
+  @State appVersion: string = '';
+  @State titleSub: string = '';
   private scroller: Scroller = new Scroller();
   private gpsTimer: number = -1;
 
@@ -41,6 +44,7 @@ export struct ConnectionPage {
 
   aboutToAppear(): void {
     hilog.info(0x0001, TAG, '[CHECKPOINT] ConnectionPage aboutToAppear');
+    this.loadAppVersion();
     this.loadSavedCameras();
     cameraService.setStateListener((s: ConnectionState, msg: string) => {
       this.state = s; this.statusMsg = msg;
@@ -49,6 +53,15 @@ export struct ConnectionPage {
       if (s === ConnectionState.Ready) { this.loadSavedCameras(); }
       this.logMessages = [...this.logMessages.slice(-49),
         `[${new Date().toLocaleTimeString()}] ${s}: ${msg}`];
+      // Title bar subtitle
+      if (s === ConnectionState.Idle) { this.titleSub = ''; }
+      else if (s === ConnectionState.Scanning) { this.titleSub = '正在扫描设备…'; }
+      else if (s === ConnectionState.Connecting) { this.titleSub = '正在连接…'; }
+      else if (s === ConnectionState.Discovering) { this.titleSub = '正在发现服务…'; }
+      else if (s === ConnectionState.Pairing) { this.titleSub = `正在配对 (${this.step}/6)…`; }
+      else if (s === ConnectionState.Bonding) { this.titleSub = '正在绑定…'; }
+      else if (s === ConnectionState.Ready) { this.titleSub = ''; }
+      else if (s === ConnectionState.Error) { this.titleSub = ''; }
     });
     this.gpsTimer = setInterval(() => { this.syncGps(); }, 1000);
   }
@@ -70,6 +83,15 @@ export struct ConnectionPage {
   private async loadSavedCameras(): Promise<void> {
     try { this.savedCameras = await cameraService.getSavedCameras(); }
     catch (e) { hilog.warn(0x0001, TAG, `loadSavedCameras err: ${JSON.stringify(e)}`); }
+  }
+
+  private loadAppVersion(): void {
+    try {
+      const info = bundleManager.getBundleInfoForSelfSync(bundleManager.BundleFlag.GET_BUNDLE_INFO_WITH_APPLICATION);
+      this.appVersion = `HarmoNiLink v${info.versionName}`;
+    } catch (e) {
+      this.appVersion = '';
+    }
   }
 
   private onReconnect(cam: PairedCamera): void {
@@ -204,6 +226,10 @@ export struct ConnectionPage {
               Text(msg).fontSize(10).fontColor($r('app.color.text_secondary')).width('100%').padding({ top: 1, bottom: 1 })
             })
           } else { Text('暂无日志').fontSize(12).fontColor($r('app.color.text_secondary')).padding({ top: 8 }) }
+          if (this.appVersion) {
+            Text(this.appVersion).fontSize(11).fontColor($r('app.color.text_secondary'))
+              .width('100%').textAlign(TextAlign.Center).padding({ top: 8 })
+          }
         }.width('100%').margin({ top: 8 })
       }
     }
@@ -244,11 +270,12 @@ export struct ConnectionPage {
       .height('100%')
       .edgeEffect(EdgeEffect.Spring)
       .scrollBar(BarState.Off)
+      .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
     }
     .backgroundColor($r('app.color.page_background'))
     .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
     .titleBar({
-      content: { title: { mainTitle: '连接' } },
+      content: { title: { mainTitle: '连接', subTitle: this.titleSub || undefined } },
       style: {
         scrollEffectOpts: { scrollEffectType: ScrollEffectType.GRADIENT_BLUR },
         systemMaterialEffect: {

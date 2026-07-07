@@ -26,6 +26,7 @@ export class BleClient {
   private pairChar: Object | null = null;
   private not1Char: Object | null = null;
   private writeBusy: boolean = false; // prevent concurrent writes
+  private writeTimeoutId: number | null = null; // safety reset for stalled callbacks
   private servicesDiscovered: boolean = false; // prevent duplicate discovery
   private mtuTimeoutId: number = -1; // cancel MTU timeout when response arrives
 
@@ -176,7 +177,18 @@ export class BleClient {
     for (let i = 0; i < data.byteLength; i++) v[i] = data[i];
     const obj: ble.BLECharacteristic = { serviceUuid: SVC, characteristicUuid: uuid, characteristicValue: buf, descriptors: [] };
     const c = this.gattClient as Object as Record<string, Function>;
+
+    // Safety timeout: reset writeBusy if callback never fires (e.g. background suspension)
+    this.writeTimeoutId = setTimeout(() => {
+      this.writeBusy = false;
+      hilog.warn(0x0001, TAG, `[W] TIMEOUT reset writeBusy for ${uuid}`);
+    }, 10000);
+
     c['writeCharacteristicValue'](obj, 1, (err: BusinessError) => {
+      if (this.writeTimeoutId !== null) {
+        clearTimeout(this.writeTimeoutId);
+        this.writeTimeoutId = null;
+      }
       this.writeBusy = false;
       if (err) { hilog.error(0x0001, TAG, `[W] ERR ${err.code}: ${err.message}`); this.emit(new BleError(`Write: ${err.message}`)); }
       else { hilog.info(0x0001, TAG, `[W] OK`); this.emit(new BleWriteDone(uuid, 0)); }

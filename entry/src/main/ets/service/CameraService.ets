@@ -723,6 +723,34 @@ export class CameraService {
     this.startGpsLoop();
   }
 
+  // ==================== Lifecycle (App Background/Foreground) ====================
+
+  /**
+   * Called from EntryAbility.onBackground().
+   * Switches GPS to slow polling and ensures LOCATION background mode is active.
+   */
+  onAppBackground(): void {
+    hilog.info(0x0001, TAG, '[LIFECYCLE] App → Background');
+    this.isForeground = false;
+    if (this._state === ConnectionState.Ready) {
+      this.stopGpsLoop();
+      this.startGpsLoop(5000); // switch to slow background interval
+    }
+  }
+
+  /**
+   * Called from EntryAbility.onForeground().
+   * Restores fast GPS polling for foreground.
+   */
+  onAppForeground(): void {
+    hilog.info(0x0001, TAG, '[LIFECYCLE] App → Foreground');
+    this.isForeground = true;
+    if (this._state === ConnectionState.Ready) {
+      this.stopGpsLoop();
+      this.startGpsLoop(); // restore default 1500ms interval
+    }
+  }
+
   // ==================== Background Task ====================
 
   /**
@@ -751,9 +779,10 @@ export class CameraService {
       const agent: WantAgent = await wantAgent.getWantAgent(wantAgentInfo);
       try {
         await backgroundTaskManager.startBackgroundRunning(ctx,
-          backgroundTaskManager.BackgroundMode.BLUETOOTH_INTERACTION, agent);
+          backgroundTaskManager.BackgroundMode.BLUETOOTH_INTERACTION |
+          backgroundTaskManager.BackgroundMode.LOCATION, agent);
         this.backgroundTaskStarted = true;
-        hilog.info(0x0001, TAG, '[BG] ContinuousTask started (BLUETOOTH + DATA_TRANSFER)');
+        hilog.info(0x0001, TAG, '[BG] ContinuousTask started (BLUETOOTH + LOCATION)');
       } catch (err) {
         hilog.warn(0x0001, TAG,
           `[BG] startBackgroundRunning fail: ${(err as BusinessError).code} ${(err as BusinessError).message}`);
