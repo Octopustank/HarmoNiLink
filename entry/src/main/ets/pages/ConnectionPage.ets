@@ -164,22 +164,23 @@ export struct ConnectionPage {
       Row({ space: 8 }) {
         Circle({ width: 8, height: 8 }).fill(this.getStateColor())
         Text(this.getStateLabel()).fontSize(13).fontColor(this.getStateColor())
-      }.margin({ bottom: 8 })
+      }
       if (this.serial) {
         Text(this.serial).fontSize(15).fontColor($r('app.color.text_primary'))
-          .fontWeight(FontWeight.Medium).margin({ bottom: 4 })
+          .fontWeight(FontWeight.Medium).margin({ top: 6 })
       }
       if (this.isPairingOwner()) {
         Text('配对页正在进行设备配对，请稍候…').fontSize(13)
           .fontColor($r('app.color.text_secondary')).maxLines(2)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 6 })
       } else if (this.statusMsg) {
         Text(this.statusMsg).fontSize(13).fontColor($r('app.color.text_secondary'))
-          .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+          .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 6 })
       }
     }
     .width('100%').alignItems(HorizontalAlign.Start)
-    .padding({ left: 16, right: 16, top: 16, bottom: 16 })
+    .justifyContent(FlexAlign.Center)
+    .padding({ left: 16, right: 16, top: 12, bottom: 12 })
     .borderRadius(16).backgroundColor($r('app.color.card_background'))
     .shadow({ radius: 12, color: '#0D000000', offsetY: 2 })
   }
@@ -195,9 +196,10 @@ export struct ConnectionPage {
       GpsRow({ label: '更新时间', value: this.gpsTime })
     }
     .width('100%').alignItems(HorizontalAlign.Start)
-    .padding({ left: 16, right: 16, top: 16, bottom: 16 })
+    .padding({ left: 16, right: 16, top: 12, bottom: 16 })
     .borderRadius(16).backgroundColor($r('app.color.card_background'))
     .shadow({ radius: 12, color: '#0D000000', offsetY: 2 })
+    .margin({ top: 12 })
   }
 
   @Builder savedDevicesSection() {
@@ -262,15 +264,16 @@ export struct ConnectionPage {
       }
     }
     .width('100%').alignItems(HorizontalAlign.Start)
-    .padding({ left: 16, right: 16, top: 16, bottom: 16 })
+    .padding({ left: 16, right: 16, top: 12, bottom: 16 })
     .borderRadius(16).backgroundColor($r('app.color.card_background'))
     .shadow({ radius: 12, color: '#0D000000', offsetY: 2 })
+    .margin({ top: 12 })
   }
 
   build() {
     HdsNavDestination() {
       Scroll(this.scroller) {
-        Column({ space: 16 }) {
+        Column() {
           Blank().height(56)
 
           this.statusCard()
@@ -278,22 +281,26 @@ export struct ConnectionPage {
           if (this.showCancel()) {
             Button('取消').fontSize(14).fontWeight(FontWeight.Medium).height(40).borderRadius(20)
               .backgroundColor($r('app.color.warning')).fontColor(Color.White).padding({ left: 36, right: 36 })
+              .margin({ top: 12 })
               .onClick(() => { cameraService.disconnect(); })
           } else if (this.state === ConnectionState.Ready) {
             Button('断开连接').fontSize(14).fontWeight(FontWeight.Medium).height(40).borderRadius(20)
               .backgroundColor($r('app.color.danger')).fontColor(Color.White).padding({ left: 36, right: 36 })
+              .margin({ top: 12 })
               .onClick(() => { this.onDisconnect(); })
           }
 
           Text('Tips：相机休眠时保持 BLE 连接，GPS 可持续传输。\n若连接意外中断，App 将自动重试恢复，无需干预。')
             .fontSize(11).fontColor($r('app.color.text_secondary'))
             .width('100%').textAlign(TextAlign.Center).padding({ left: 4, right: 4 })
+            .margin({ top: 12 })
             .lineHeight(16)
 
           this.savedDevicesSection()
           Text('找不到相机？请前往「配对」页面搜索设备')
             .fontSize(13).fontColor($r('app.color.text_secondary'))
-            .textAlign(TextAlign.Center).width('100%').padding({ top: 12, bottom: 4 })
+            .textAlign(TextAlign.Center).width('100%').padding({ top: 4, bottom: 4 })
+            .margin({ top: 12 })
           this.logSection()
           Blank().layoutWeight(1)
         }

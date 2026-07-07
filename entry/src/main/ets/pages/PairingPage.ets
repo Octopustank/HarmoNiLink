@@ -76,11 +76,25 @@ export struct PairingPage {
 
   private startPolling(): void {
     this.stopPolling();
-    this.scanTimer = setInterval(() => { this.discoveredCameras = cameraService.getDiscoveredCameras(); }, 500);
+    this.scanTimer = setInterval(() => {
+      const latest = cameraService.getDiscoveredCameras();
+      // Skip re-render if the list hasn't changed (deviceId + rssi stable keys)
+      if (this.isSameList(latest)) return;
+      this.discoveredCameras = latest;
+    }, 500);
   }
 
   private stopPolling(): void {
     if (this.scanTimer !== -1) { clearInterval(this.scanTimer); this.scanTimer = -1; }
+  }
+
+  private isSameList(latest: DiscoveredCamera[]): boolean {
+    const prev = this.discoveredCameras;
+    if (latest.length !== prev.length) return false;
+    for (let i = 0; i < latest.length; i++) {
+      if (latest[i].deviceId !== prev[i].deviceId || latest[i].rssi !== prev[i].rssi) return false;
+    }
+    return true;
   }
 
   onScan(): void {
@@ -168,7 +182,7 @@ export struct PairingPage {
                 if (i < this.discoveredCameras.length - 1) {
                   Divider().strokeWidth(0.5).color($r('app.color.divider')).margin({ left: 8, right: 8 })
                 }
-              }, (cam: DiscoveredCamera, i: number) => cam.deviceId + i)
+              }, (cam: DiscoveredCamera) => cam.deviceId)
             }
             .width('100%').backgroundColor($r('app.color.card_background')).borderRadius(16).padding(4)
             .shadow({ radius: 12, color: '#0D000000', offsetY: 2 })
