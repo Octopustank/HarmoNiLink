@@ -19,29 +19,38 @@ export struct PairingPage {
   @State isPairing: boolean = false;
   @State pairingTarget: string = '';
   @State titleSub: string = '';
+  @State statusLabel: string = '准备就绪';
   private scroller: Scroller = new Scroller();
   private scanTimer: number = -1;
 
   aboutToAppear(): void {
     hilog.info(0x0001, TAG, '[CHECKPOINT] PairingPage aboutToAppear');
     cameraService.setStateListener((s: ConnectionState) => {
-      // Track scanning
+      const isBusy = s !== ConnectionState.Idle
+        && s !== ConnectionState.Ready
+        && s !== ConnectionState.Error;
+      // Track scanning — only if WE started it
       if (s === ConnectionState.Scanning) {
-        this.isScanning = true; this.titleSub = '正在扫描设备…';
+        if (this.isScanning) { this.titleSub = '正在扫描设备…'; }
       } else if (this.isScanning && s !== ConnectionState.Connecting
         && s !== ConnectionState.Discovering && s !== ConnectionState.Pairing
         && s !== ConnectionState.Bonding) {
         this.isScanning = false; this.stopPolling(); this.titleSub = '';
       }
-      // Track pairing — busy states mean we're pairing
-      const isBusy = s === ConnectionState.Connecting
-        || s === ConnectionState.Discovering
-        || s === ConnectionState.Pairing
-        || s === ConnectionState.Bonding;
-      // Pairing completed successfully
+      // Track pairing — only if WE started it
+      if (s === ConnectionState.Connecting && this.isPairing) {
+        this.statusLabel = `正在与 ${this.pairingTarget} 配对…`;
+      } else if (this.isScanning) {
+        this.statusLabel = '正在搜索附近的相机…';
+      } else if (isBusy && !this.isPairing && !this.isScanning) {
+        // External operation in progress (e.g. reconnect from ConnectionPage)
+        this.statusLabel = '连接页操作中，等待完成…';
+      } else if (!isBusy) {
+        this.statusLabel = this.pairingTarget ? '' : '准备就绪';
+      }
+      // Pairing completed successfully (our operation)
       if (!isBusy && this.isPairing && s === ConnectionState.Ready) {
-        this.isPairing = false;
-        this.pairingTarget = '';
+        this.isPairing = false; this.pairingTarget = ''; this.statusLabel = '';
         this.isScanning = false; this.stopPolling(); this.titleSub = '';
         cameraService.disconnect();
         promptAction.showDialog({
@@ -50,7 +59,7 @@ export struct PairingPage {
           buttons: [{ text: '好的', color: $r('app.color.brand') }]
         });
       } else if (!isBusy && this.isPairing) {
-        this.isPairing = false; this.pairingTarget = '';
+        this.isPairing = false; this.pairingTarget = ''; this.statusLabel = '配对失败，请重试';
       }
     });
   }
@@ -68,8 +77,15 @@ export struct PairingPage {
 
   onScan(): void {
     hilog.info(0x0001, TAG, `[CHECKPOINT] onScan isScanning=${this.isScanning}`);
-    if (this.isScanning) { cameraService.stopScan(); this.isScanning = false; this.stopPolling(); }
-    else { cameraService.startScan(); this.isScanning = true; this.startPolling(); }
+    if (this.isScanning) { cameraService.stopScan(); this.isScanning = false; this.stopPolling(); this.statusLabel = '扫描已停止'; }
+    else { cameraService.startScan(); this.isScanning = true; this.startPolling(); this.statusLabel = '正在搜索附近的相机…'; }
+  }
+
+  private isExternalBusy(): boolean {
+    const s = cameraService.getState();
+    return (s === ConnectionState.Scanning || s === ConnectionState.Connecting
+      || s === ConnectionState.Discovering || s === ConnectionState.Pairing
+      || s === ConnectionState.Bonding) && !this.isScanning && !this.isPairing;
   }
 
   onPair(cam: DiscoveredCamera): void {
@@ -78,6 +94,7 @@ export struct PairingPage {
     this.isPairing = true;
     this.pairingTarget = cam.deviceName;
     this.isScanning = false; this.stopPolling();
+    this.statusLabel = `正在与 ${cam.deviceName} 配对…`;
     cameraService.selectDiscoveredCamera(cam);
   }
 
@@ -87,12 +104,24 @@ export struct PairingPage {
         Column() {
           Blank().height(56)
 
+          // Status card
+          Row() {
+            Circle({ width: 8, height: 8 })
+              .fill(this.isScanning || this.isPairing ? $r('app.color.warning')
+                : this.isExternalBusy() ? $r('app.color.warning') : $r('app.color.text_secondary'))
+            Text(this.isExternalBusy() ? '连接页操作中' : this.statusLabel)
+              .fontSize(13).fontColor($r('app.color.text_secondary')).margin({ left: 8 })
+          }
+          .width('100%').padding({ left: 16, right: 16, top: 12, bottom: 12 })
+          .borderRadius(16).backgroundColor($r('app.color.card_background'))
+          .shadow({ radius: 12, color: '#0D000000', offsetY: 2 })
+
           Button(this.isScanning ? '停止扫描' : '开始扫描')
             .fontSize(15).fontWeight(FontWeight.Medium).height(44).borderRadius(22)
             .backgroundColor(this.isScanning ? $r('app.color.danger') : $r('app.color.brand')).fontColor(Color.White)
             .padding({ left: 48, right: 48 })
             .margin({ top: 12, bottom: 16 })
-            .enabled(!this.isPairing)
+            .enabled(!this.isPairing && !this.isExternalBusy())
             .onClick(() => { this.onScan(); })
 
           if (this.discoveredCameras.length > 0) {

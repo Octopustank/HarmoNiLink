@@ -247,7 +247,11 @@ export struct ConnectionPage {
 
           this.statusCard()
           if (this.state === ConnectionState.Ready) { this.gpsCard() }
-          if (this.state === ConnectionState.Ready) {
+          if (this.isBusy()) {
+            Button('取消').fontSize(14).fontWeight(FontWeight.Medium).height(40).borderRadius(20)
+              .backgroundColor($r('app.color.warning')).fontColor(Color.White).padding({ left: 36, right: 36 })
+              .onClick(() => { cameraService.disconnect(); })
+          } else if (this.state === ConnectionState.Ready) {
             Button('断开连接').fontSize(14).fontWeight(FontWeight.Medium).height(40).borderRadius(20)
               .backgroundColor($r('app.color.danger')).fontColor(Color.White).padding({ left: 36, right: 36 })
               .onClick(() => { this.onDisconnect(); })
