@@ -34,13 +34,9 @@ export struct ConnectionPage {
   private scroller: Scroller = new Scroller();
   private gpsTimer: number = -1;
 
-  // Derived: true when connection is busy (connecting/pairing/bonding)
-  private isBusy(): boolean {
-    return this.state === ConnectionState.Connecting
-      || this.state === ConnectionState.Discovering
-      || this.state === ConnectionState.Pairing
-      || this.state === ConnectionState.Bonding;
-  }
+  // Check if any operation is in progress (pairing tab or our own reconnect)
+  private isOperationBusy(): boolean { return cameraService.getOwner() !== 'none'; }
+  private isConnectionOwner(): boolean { return cameraService.getOwner() === 'connection'; }
 
   aboutToAppear(): void {
     hilog.info(0x0001, TAG, '[CHECKPOINT] ConnectionPage aboutToAppear');
@@ -95,12 +91,12 @@ export struct ConnectionPage {
   }
 
   private onReconnect(cam: PairedCamera): void {
-    if (this.isBusy()) return;
-    cameraService.connectToSavedCamera(cam);
+    if (this.isOperationBusy()) return;
+    cameraService.startReconnect(cam);
   }
 
   private onForget(cam: PairedCamera): void {
-    if (this.isBusy()) return;
+    if (this.isOperationBusy()) return;
     const dialog = promptAction.showDialog({
       title: '删除已配对设备',
       message: `确定删除「${cam.name}」？\n\n删除后需同时在系统蓝牙设置和相机端清除配对信息，否则可能无法重新连接。`,
@@ -184,17 +180,17 @@ export struct ConnectionPage {
               Text(cam.name).fontSize(16).fontWeight(500).fontColor($r('app.color.text_primary'))
                 .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
               Row({ space: 8 }) {
-                Button(this.isBusy() ? '…' : '连接')
+                Button(this.isOperationBusy() ? '…' : '连接')
                   .fontSize(12).fontWeight(FontWeight.Medium).height(32).borderRadius(16)
-                  .backgroundColor(this.isBusy() ? $r('app.color.text_secondary') : $r('app.color.brand')).fontColor(Color.White)
+                  .backgroundColor(this.isOperationBusy() ? $r('app.color.text_secondary') : $r('app.color.brand')).fontColor(Color.White)
                   .padding({ left: 16, right: 16 })
-                  .enabled(!this.isBusy())
+                  .enabled(!this.isOperationBusy())
                   .onClick(() => { this.onReconnect(cam); })
                 Button('删除')
                   .fontSize(12).fontWeight(FontWeight.Medium).height(32).borderRadius(16)
-                  .backgroundColor(this.isBusy() ? $r('app.color.text_secondary') : $r('app.color.danger')).fontColor(Color.White)
+                  .backgroundColor(this.isOperationBusy() ? $r('app.color.text_secondary') : $r('app.color.danger')).fontColor(Color.White)
                   .padding({ left: 16, right: 16 })
-                  .enabled(!this.isBusy())
+                  .enabled(!this.isOperationBusy())
                   .onClick(() => { this.onForget(cam); })
               }
             }.width('100%').height(48).padding({ left: 8, right: 8 })
@@ -247,7 +243,7 @@ export struct ConnectionPage {
 
           this.statusCard()
           if (this.state === ConnectionState.Ready) { this.gpsCard() }
-          if (this.isBusy()) {
+          if (this.isOperationBusy()) {
             Button('取消').fontSize(14).fontWeight(FontWeight.Medium).height(40).borderRadius(20)
               .backgroundColor($r('app.color.warning')).fontColor(Color.White).padding({ left: 36, right: 36 })
               .onClick(() => { cameraService.disconnect(); })

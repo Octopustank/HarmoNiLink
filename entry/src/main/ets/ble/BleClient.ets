@@ -81,8 +81,22 @@ export class BleClient {
   }
 
   disconnect(): void {
-    try { this.gattClient?.disconnect(); this.gattClient?.close(); } catch (e) {}
+    try {
+      if (this.gattClient) {
+        this.gattClient.off('BLEConnectionStateChange');
+        this.gattClient.off('BLEMtuChange');
+        this.gattClient.off('BLECharacteristicChange');
+        this.gattClient.disconnect();
+        this.gattClient.close();
+      }
+    } catch (e) { hilog.debug(0x0001, TAG, `[C] cleanup: ${JSON.stringify(e)}`); }
     this.gattClient = null;
+    this.writeBusy = false;
+    if (this.writeTimeoutId !== null) { clearTimeout(this.writeTimeoutId); this.writeTimeoutId = null; }
+    this.servicesDiscovered = false;
+    this.pairChar = null;
+    this.not1Char = null;
+    this.deviceId = '';
   }
 
   private discoverServices(): void {
