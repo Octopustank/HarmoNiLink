@@ -22,7 +22,7 @@ OUT     := build/outputs/default
 HAP     := $(OUT)/HarmoNiLink-default-signed.hap
 APP     := $(OUT)/HarmoNiLink-default-signed.app
 U_HAP   := entry/build/default/outputs/default/entry-default-unsigned.hap
-U_APP   := $(OUT)/HarmoNikon-default-unsigned.app
+U_APP   := $(OUT)/HarmoNiLink-default-unsigned.app
 
 .PHONY: all build hap app sign clean
 
