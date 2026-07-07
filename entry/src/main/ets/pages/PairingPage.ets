@@ -21,44 +21,52 @@ export struct PairingPage {
   @State pairingTarget: string = '';
   @State titleSub: string = '';
   @State statusLabel: string = '准备就绪';
+  @State owner: string = 'none'; // synced from cameraService — drives @State re-render
   private scroller: Scroller = new Scroller();
   private scanTimer: number = -1;
 
   // Derived helpers
-  private isPairingTabOwner(): boolean { return cameraService.getOwner() === 'pairing'; }
-  private isConnectionTabBusy(): boolean { return cameraService.getOwner() === 'connection'; }
+  private isPairingTabOwner(): boolean { return this.owner === 'pairing'; }
+  private isConnectionTabBusy(): boolean { return this.owner === 'connection'; }
 
   aboutToAppear(): void {
     hilog.info(0x0001, TAG, '[CHECKPOINT] PairingPage aboutToAppear');
     cameraService.setStateListener((s: ConnectionState) => {
-      const owner = cameraService.getOwner();
-      if (owner === 'pairing') {
-        // Our operation
+      this.owner = cameraService.getOwner();
+      if (this.isPairingTabOwner()) {
+        // Our operation — show detailed progress
         if (s === ConnectionState.Scanning) {
           this.titleSub = '正在扫描设备…'; this.statusLabel = '正在搜索附近的相机…';
-        } else if (s === ConnectionState.Connecting || s === ConnectionState.Discovering
-          || s === ConnectionState.Pairing || s === ConnectionState.Bonding) {
-          this.titleSub = ''; this.statusLabel = `正在与 ${this.pairingTarget} 配对…`;
+        } else if (s === ConnectionState.Connecting) {
+          this.titleSub = ''; this.statusLabel = `正在连接 ${this.pairingTarget}…`;
+        } else if (s === ConnectionState.Discovering) {
+          this.titleSub = ''; this.statusLabel = '正在发现服务…';
+        } else if (s === ConnectionState.Pairing) {
+          this.titleSub = ''; this.statusLabel = '正在进行安全握手…';
+        } else if (s === ConnectionState.Bonding) {
+          this.titleSub = ''; this.statusLabel = '正在经典蓝牙绑定…';
         } else if (s === ConnectionState.Idle) {
-          this.titleSub = ''; this.statusLabel = ''; this.stopPolling();
+          this.titleSub = ''; this.stopPolling();
           if (this.pairingTarget) {
-            // Pairing completed — now Idle means pairing page finished (not error)
+            // Pairing completed — show success
             const target = this.pairingTarget;
             this.pairingTarget = '';
+            this.statusLabel = '配对完成';
             promptAction.showDialog({
               title: '配对成功',
               message: `「${target}」已添加到已配对设备列表。\n请前往「连接」页面手动连接相机。`,
               buttons: [{ text: '好的', color: $r('app.color.brand') }]
             });
+          } else {
+            this.statusLabel = '准备就绪';
           }
         } else if (s === ConnectionState.Error) {
           this.titleSub = ''; this.statusLabel = '配对出错，请重试'; this.pairingTarget = '';
           this.stopPolling();
         }
-      } else if (owner === 'connection') {
+      } else if (this.isConnectionTabBusy()) {
         this.titleSub = ''; this.statusLabel = '连接页操作中'; this.stopPolling();
       } else {
-        // owner === 'none'
         this.titleSub = ''; this.statusLabel = '准备就绪'; this.stopPolling();
       }
     });
@@ -79,7 +87,7 @@ export struct PairingPage {
     if (this.isPairingTabOwner() && cameraService.getState() === ConnectionState.Scanning) {
       cameraService.stopPairingScan();
       this.statusLabel = '扫描已停止';
-    } else if (cameraService.getOwner() === 'none') {
+    } else if (this.owner === 'none') {
       if (cameraService.startPairingScan()) {
         this.startPolling();
       } else {
@@ -124,7 +132,7 @@ export struct PairingPage {
               ? $r('app.color.danger') : $r('app.color.brand')).fontColor(Color.White)
             .padding({ left: 48, right: 48 })
             .margin({ top: 12, bottom: 16 })
-            .enabled(cameraService.getOwner() === 'none' || this.isPairingTabOwner())
+            .enabled(this.owner === 'none' || this.isPairingTabOwner())
             .onClick(() => { this.onScan(); })
 
           if (this.discoveredCameras.length > 0) {

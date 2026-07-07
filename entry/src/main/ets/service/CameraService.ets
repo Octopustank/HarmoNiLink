@@ -126,6 +126,10 @@ export class CameraService {
   private releaseOwnership(): void {
     hilog.info(0x0001, TAG, `[OWNER] released: ${this.owner}`);
     this.owner = 'none';
+    // Re-broadcast current state so listeners refresh ownership-based UI
+    for (let i = 0; i < this.stateListeners.length; i++) {
+      this.stateListeners[i](this._state, this._statusMessage);
+    }
   }
 
   // ==================== Scan (Pairing Page) ====================
@@ -400,11 +404,12 @@ export class CameraService {
       hilog.info(0x0001, TAG, '[CHECKPOINT] BLE Disconnected');
       if (this._state === ConnectionState.Ready) {
         this.stopGpsLoop();
-        this.releaseOwnership();
+        // Keep ownership during auto-reconnect — release only when retries exhausted
+        // or user explicitly disconnects via cancel button.
         if (this.savedCamera) {
-          // Auto-reconnect with backoff (camera may be sleeping)
           this.scheduleReconnect();
         } else {
+          this.releaseOwnership();
           this.setState(ConnectionState.Idle, 'Camera disconnected. Tap Reconnect.');
         }
         return;
@@ -731,7 +736,7 @@ export class CameraService {
     this.setState(ConnectionState.Idle, `Reconnecting (attempt ${this.reconnectRetries})...`);
     const cam = this.savedCamera;
     setTimeout(() => {
-      if (this.owner === 'none' && cam) {
+      if (this.owner === 'connection' && cam) {
         this.startReconnect(cam);
       }
     }, delay);
@@ -745,9 +750,8 @@ export class CameraService {
     // reconnect manually from ConnectionPage.
     // Connection mode: BLE remains connected. Ready + GPS loop.
     if (this.owner === 'pairing') {
-      this.releaseOwnership();
-      this.setState(ConnectionState.Idle,
-        `Paired! Serial: ${this.cameraSerial || 'unknown'}. Switch to Connect tab.`);
+      this.setState(ConnectionState.Idle, '');
+      this.releaseOwnership(); // after setState so listener sees owner='pairing' for dialog
     } else {
       this.setState(ConnectionState.Ready,
         `Ready. Serial: ${this.cameraSerial || 'unknown'}`);
