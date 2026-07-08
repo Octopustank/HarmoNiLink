@@ -48,7 +48,7 @@ sign:
 		-keyAlias "$${SIGN_KEY_ALIAS:-HarmoNiLink-Release}" \
 		-keyPwd "$$SIGN_KEYSTORE_PASS" \
 		-appCertFile "$${SIGN_CERT_FILE:-./signing/Release_Cert.cer}" \
-		-profileFile "$${SIGN_PROFILE_FILE:-./signing/HarmoNiLinkRelease.p7b}" \
+		-profileFile "${SIGN_PROFILE_FILE:-./signing/NiLink_ProfileRelease.p7b}" \
 		-inFile $(U_HAP) \
 		-signAlg "$${SIGN_ALG:-SHA256withECDSA}" \
 		-keystoreFile "$${SIGN_KEYSTORE_FILE:-./signing/HarmoNiLink.p12}" \
@@ -66,7 +66,7 @@ sign:
 		-keyAlias "$${SIGN_KEY_ALIAS:-HarmoNiLink-Release}" \
 		-keyPwd "$$SIGN_KEYSTORE_PASS" \
 		-appCertFile "$${SIGN_CERT_FILE:-./signing/Release_Cert.cer}" \
-		-profileFile "$${SIGN_PROFILE_FILE:-./signing/HarmoNiLinkRelease.p7b}" \
+		-profileFile "${SIGN_PROFILE_FILE:-./signing/NiLink_ProfileRelease.p7b}" \
 		-inFile $$TMP/unsigned-repacked.app \
 		-signAlg "$${SIGN_ALG:-SHA256withECDSA}" \
 		-keystoreFile "$${SIGN_KEYSTORE_FILE:-./signing/HarmoNiLink.p12}" \
