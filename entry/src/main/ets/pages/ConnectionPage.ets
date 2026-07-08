@@ -290,7 +290,7 @@ export struct ConnectionPage {
               .onClick(() => { this.onDisconnect(); })
           }
 
-          Text('Tips：相机休眠时保持 BLE 连接，GPS 可持续传输。\n若连接意外中断，App 将自动重试恢复，无需干预。')
+          Text('相机开启「关闭时发送」选项后，连接始终自动保持。\n需要后台下发数据，请在系统设置中允许始终定位。')
             .fontSize(11).fontColor($r('app.color.text_secondary'))
             .width('100%').textAlign(TextAlign.Center).padding({ left: 4, right: 4 })
             .margin({ top: 12 })
