@@ -28,7 +28,7 @@ struct Index {
   @State stateColor: string = '#999999';
   @State stepText: string = '';
   @State serialText: string = '';
-  @State logMessages: string[] = ['[BOOT] HarmoNiLink v1.0.0 started.'];
+  @State logMessages: string[] = ['[BOOT] NiLink started.'];
   @State discoveredCameras: DiscoveredCamera[] = [];
   @State savedCameras: PairedCamera[] = [];
   @State isScanning: boolean = false;
@@ -81,7 +81,7 @@ struct Index {
   build() {
     Column() {
       // Header
-      Text('HarmoNiLink')
+      Text('NiLink')
         .fontSize(22)
         .fontWeight(FontWeight.Bold)
         .margin({ top: 16, bottom: 4 })

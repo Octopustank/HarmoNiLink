@@ -102,7 +102,7 @@ export struct ConnectionPage {
   private loadAppVersion(): void {
     try {
       const info = bundleManager.getBundleInfoForSelfSync(bundleManager.BundleFlag.GET_BUNDLE_INFO_WITH_APPLICATION);
-      this.appVersion = `HarmoNiLink v${info.versionName}`;
+      this.appVersion = `NiLink v${info.versionName}`;
     } catch (e) {
       this.appVersion = '';
     }

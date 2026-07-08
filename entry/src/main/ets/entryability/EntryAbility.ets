@@ -76,7 +76,7 @@ export default class EntryAbility extends UIAbility {
     try {
       const info = bundleManager.getBundleInfoForSelfSync(bundleManager.BundleFlag.GET_BUNDLE_INFO_WITH_APPLICATION);
       hilog.info(0x0001, TAG,
-        `══════════════ HarmoNiLink v${info.versionName} (${info.versionCode}) ══════════════`);
+        `══════════════ NiLink v${info.versionName} (${info.versionCode}) ══════════════`);
     } catch (e) {
       hilog.warn(0x0001, TAG, `[CHECKPOINT] BundleInfo read failed: ${JSON.stringify(e)}`);
     }
