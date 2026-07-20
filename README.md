@@ -15,7 +15,7 @@ HarmoNiLink 让 HarmonyOS 手机/平板替代 SnapBridge，向尼康 Z 系列相
 
 | 配对 & 扫描 | 连接 & GPS |
 |:---:|:---:|
-| ![配对页](pics/pair.png) | ![连接页](pics/connected.png) |
+| <img src="pics/pair.png" width="340"/> | <img src="pics/connected.png" width="340"/> |
 
 ---
 
