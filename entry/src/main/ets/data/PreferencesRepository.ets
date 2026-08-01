@@ -15,6 +15,9 @@ import { PairedCamera } from '../ble/protocol/NikonPairingEngine';
 const TAG = 'HarmoNiLink-Prefs';
 const STORE_NAME = 'harmonilink_prefs';
 const KEY_CAMERAS = 'paired_cameras';
+const KEY_CONTROLLER_NAME = 'controller_name';
+// Suffix alphabet — no 0/O/1/I to avoid confusion when reading the name on the camera
+const SUFFIX_CHARS: string = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
 
 interface SerializedCamera {
   name: string;
@@ -28,11 +31,14 @@ interface SerializedCamera {
 export class PreferencesRepository {
   private store: preferences.Preferences | null = null;
   private cache: PairedCamera[] = []; // in-memory cache for sync access
+  private controllerNameCache: string = '';
 
   async init(context: common.UIAbilityContext): Promise<void> {
     try {
       this.store = await preferences.getPreferences(context, STORE_NAME);
       this.cache = await this.loadSavedCameras();
+      const saved = await this.store.get(KEY_CONTROLLER_NAME, '') as string;
+      if (saved) this.controllerNameCache = saved; // don't overwrite a freshly generated name
       hilog.info(0x0001, TAG, `[CHECKPOINT] PreferencesRepository initialized (${this.cache.length} cameras)`);
     } catch (err) {
       hilog.error(0x0001, TAG, `[CHECKPOINT] PreferencesRepository init ERROR: ${JSON.stringify(err)}`);
@@ -41,6 +47,39 @@ export class PreferencesRepository {
 
   loadSavedCamerasSync(): PairedCamera[] {
     return this.cache;
+  }
+
+  /**
+   * Controller name written to the camera (0x2002 ID characteristic) — the name
+   * shown in the camera's paired-device list. Generated once per install as
+   * "HarmoNiLink-XXXX" so multiple phones paired to the same camera are
+   * distinguishable; persisted and reused forever after.
+   */
+  getOrCreateControllerName(): string {
+    if (this.controllerNameCache) return this.controllerNameCache;
+    let suffix = '';
+    for (let i = 0; i < 4; i++) {
+      suffix += SUFFIX_CHARS.charAt(Math.floor(Math.random() * SUFFIX_CHARS.length));
+    }
+    const name = `HarmoNiLink-${suffix}`;
+    this.controllerNameCache = name;
+    hilog.info(0x0001, TAG, `[CHECKPOINT] Generated controller name: ${name}`);
+    this.saveControllerName(name); // persist async
+    return name;
+  }
+
+  private async saveControllerName(name: string): Promise<void> {
+    if (!this.store) {
+      setTimeout(() => { this.saveControllerName(name); }, 1000);
+      return;
+    }
+    try {
+      await this.store.put(KEY_CONTROLLER_NAME, name);
+      await this.store.flush();
+      hilog.info(0x0001, TAG, `[CHECKPOINT] Controller name persisted: ${name}`);
+    } catch (err) {
+      hilog.error(0x0001, TAG, `saveControllerName ERROR: ${JSON.stringify(err)}`);
+    }
   }
 
   /**

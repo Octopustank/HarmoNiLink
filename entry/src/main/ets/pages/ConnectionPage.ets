@@ -32,6 +32,7 @@ export struct ConnectionPage {
   @State appVersion: string = '';
   @State titleSub: string = '';
   @State owner: string = 'none'; // synced from cameraService — drives @State re-render
+  @State controllerName: string = ''; // per-install name shown on the camera
   private scroller: Scroller = new Scroller();
   private gpsTimer: number = -1;
 
@@ -54,6 +55,7 @@ export struct ConnectionPage {
     hilog.info(0x0001, TAG, '[CHECKPOINT] ConnectionPage aboutToAppear');
     this.loadAppVersion();
     this.loadSavedCameras();
+    this.controllerName = cameraService.getControllerName();
     cameraService.setStateListener((s: ConnectionState, msg: string) => {
       // Sync owner first — all derived helpers depend on @State reactivity
       this.owner = cameraService.getOwner();
@@ -302,6 +304,11 @@ export struct ConnectionPage {
             .width('100%').textAlign(TextAlign.Center).padding({ left: 4, right: 4 })
             .margin({ top: 12 })
             .lineHeight(16)
+
+          Text(`本设备配对名称：${this.controllerName}`)
+            .fontSize(11).fontColor($r('app.color.text_secondary'))
+            .width('100%').textAlign(TextAlign.Center).padding({ left: 4, right: 4 })
+            .margin({ top: 10 })
 
           this.savedDevicesSection()
           Text('找不到相机？请前往「配对」页面搜索设备')

@@ -115,6 +115,13 @@ export class CameraService {
     return this.cameraSerial;
   }
 
+  /**
+   * Per-install controller name shown in the camera's paired-device list.
+   */
+  getControllerName(): string {
+    return this.prefs.getOrCreateControllerName();
+  }
+
   getPairingStep(): number {
     return this.pairingStep;
   }
@@ -274,7 +281,10 @@ export class CameraService {
     this.cameraName = camera.deviceName;
     this.isPairMode = true;
     this.savedCamera = null;
-    this.controllerName = DEFAULT_CONTROLLER_NAME;
+    // Use the per-install controller name ("HarmoNiLink-XXXX") so the camera's
+    // paired-device list distinguishes multiple phones running this app.
+    // Already-paired cameras keep their saved controllerName on reconnect.
+    this.controllerName = this.prefs.getOrCreateControllerName();
 
     hilog.info(0x0001, TAG,
       `[CHECKPOINT] Trying BLE connect to ${camera.deviceId}`);
