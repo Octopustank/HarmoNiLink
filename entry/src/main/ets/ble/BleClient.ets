@@ -93,6 +93,10 @@ export class BleClient {
     this.gattClient = null;
     this.writeBusy = false;
     if (this.writeTimeoutId !== null) { clearTimeout(this.writeTimeoutId); this.writeTimeoutId = null; }
+    // Cancel the MTU watchdog — without this it fires 3s after disconnect and
+    // calls discoverServices() on a closed client, spurious BleError mid-reconnect.
+    clearTimeout(this.mtuTimeoutId);
+    this.mtuTimeoutId = -1;
     this.servicesDiscovered = false;
     this.pairChar = null;
     this.not1Char = null;
@@ -100,6 +104,11 @@ export class BleClient {
   }
 
   private discoverServices(): void {
+    if (!this.gattClient) {
+      // Stale call (e.g. late watchdog after disconnect) — never touch a closed client
+      hilog.warn(0x0001, TAG, `[D] SKIP — no gattClient`);
+      return;
+    }
     if (this.servicesDiscovered) {
       hilog.warn(0x0001, TAG, `[D] SKIP — already discovered`);
       return;
