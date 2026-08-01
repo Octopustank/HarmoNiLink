@@ -110,7 +110,14 @@ export struct ConnectionPage {
 
   private onReconnect(cam: PairedCamera): void {
     if (this.isBlocked()) return;
-    cameraService.startReconnect(cam);
+    // Reconnect also needs BLE + location permissions — request on demand
+    cameraService.requestPermissionsIfNeeded().then((granted: boolean) => {
+      if (!granted) {
+        promptAction.showToast({ message: '需要蓝牙和位置权限才能连接', duration: 2500 });
+        return;
+      }
+      cameraService.startReconnect(cam);
+    });
   }
 
   private onForget(cam: PairedCamera): void {

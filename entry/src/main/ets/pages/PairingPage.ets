@@ -22,17 +22,33 @@ export struct PairingPage {
   @State titleSub: string = '';
   @State statusLabel: string = '准备就绪';
   @State owner: string = 'none'; // synced from cameraService — drives @State re-render
+  @State state: ConnectionState = ConnectionState.Idle; // reactive mirror for button states
   private scroller: Scroller = new Scroller();
   private scanTimer: number = -1;
 
   // Derived helpers
   private isPairingTabOwner(): boolean { return this.owner === 'pairing'; }
   private isConnectionTabBusy(): boolean { return this.owner === 'connection'; }
+  private isPairingBusy(): boolean {
+    return this.state === ConnectionState.Connecting || this.state === ConnectionState.Discovering
+      || this.state === ConnectionState.Pairing || this.state === ConnectionState.Bonding;
+  }
+  private scanButtonLabel(): string {
+    if (this.isPairingTabOwner() && this.state === ConnectionState.Scanning) return '停止扫描';
+    if (this.isPairingTabOwner() && this.isPairingBusy()) return '取消配对';
+    return '开始扫描';
+  }
+  private scanButtonColor(): ResourceColor {
+    if (this.isPairingTabOwner() && this.state === ConnectionState.Scanning) return $r('app.color.danger');
+    if (this.isPairingTabOwner() && this.isPairingBusy()) return $r('app.color.danger');
+    return $r('app.color.brand');
+  }
 
   aboutToAppear(): void {
     hilog.info(0x0001, TAG, '[CHECKPOINT] PairingPage aboutToAppear');
     cameraService.setStateListener((s: ConnectionState) => {
       this.owner = cameraService.getOwner();
+      this.state = s;
       if (this.isPairingTabOwner()) {
         // Our operation — show detailed progress
         if (s === ConnectionState.Scanning) {
@@ -47,8 +63,8 @@ export struct PairingPage {
           this.titleSub = ''; this.statusLabel = '正在经典蓝牙绑定…';
         } else if (s === ConnectionState.Idle) {
           this.titleSub = ''; this.stopPolling();
-          if (this.pairingTarget) {
-            // Pairing completed — show success
+          if (this.pairingTarget && cameraService.getPairingStep() === 6) {
+            // Genuine pairing completion (handshake finished) — show success
             const target = this.pairingTarget;
             this.pairingTarget = '';
             this.statusLabel = '配对完成';
@@ -58,6 +74,8 @@ export struct PairingPage {
               buttons: [{ text: '好的', color: $r('app.color.brand') }]
             });
           } else {
+            // Cancel / failure / connection drop — clear the stuck target state
+            this.pairingTarget = '';
             this.statusLabel = '准备就绪';
           }
         } else if (s === ConnectionState.Error) {
@@ -66,8 +84,12 @@ export struct PairingPage {
         }
       } else if (this.isConnectionTabBusy()) {
         this.titleSub = ''; this.statusLabel = '连接页操作中'; this.stopPolling();
+        this.pairingTarget = '';
       } else {
-        this.titleSub = ''; this.statusLabel = '准备就绪'; this.stopPolling();
+        this.titleSub = '';
+        this.statusLabel = s === ConnectionState.Error ? '配对出错，请重试' : '准备就绪';
+        this.pairingTarget = ''; // safety net — never leave a stale target locked
+        this.stopPolling();
       }
     });
   }
@@ -97,23 +119,51 @@ export struct PairingPage {
     return true;
   }
 
+  private cancelCurrentPairing(): void {
+    this.pairingTarget = '';
+    cameraService.cancelPairing();
+    this.statusLabel = '已取消';
+  }
+
   onScan(): void {
-    if (this.isPairingTabOwner() && cameraService.getState() === ConnectionState.Scanning) {
+    if (this.isPairingTabOwner() && this.state === ConnectionState.Scanning) {
+      // Stop scanning — clear any stale pairing target first so the device list
+      // never stays locked on "配对中…"
+      this.pairingTarget = '';
       cameraService.stopPairingScan();
       this.statusLabel = '扫描已停止';
+    } else if (this.isPairingTabOwner() && this.isPairingBusy()) {
+      // Active pairing/connecting — user-initiated cancel
+      this.cancelCurrentPairing();
     } else if (this.owner === 'none') {
-      if (cameraService.startPairingScan()) {
-        this.startPolling();
-      } else {
-        promptAction.showToast({ message: '连接页操作中，请稍后', duration: 2000 });
-      }
+      // Request permissions on first user action (system queues dialogs;
+      // avoids the startup privacy-dialog conflict). Scan only when granted.
+      cameraService.requestPermissionsIfNeeded().then((granted: boolean) => {
+        if (!granted) {
+          promptAction.showToast({ message: '需要蓝牙和位置权限才能扫描', duration: 2500 });
+          return;
+        }
+        if (cameraService.startPairingScan()) {
+          this.startPolling();
+        } else {
+          promptAction.showToast({ message: '连接页操作中，请稍后', duration: 2000 });
+        }
+      });
     } else {
       promptAction.showToast({ message: '正在操作中，请稍后', duration: 2000 });
     }
   }
 
   onPair(cam: DiscoveredCamera): void {
-    if (!this.isPairingTabOwner()) return;
+    // Allow pairing when idle (owner none) — acquire ownership on demand.
+    // Still blocked while the connection tab owns the resource.
+    if (this.owner !== 'none' && !this.isPairingTabOwner()) return;
+    if (this.owner === 'none') {
+      if (!cameraService.requestOwnership('pairing')) {
+        promptAction.showToast({ message: '连接页操作中，请稍后', duration: 2000 });
+        return;
+      }
+    }
     hilog.info(0x0001, TAG, `[CHECKPOINT] Pairing with ${cam.deviceName}`);
     this.pairingTarget = cam.deviceName;
     this.stopPolling();
@@ -139,11 +189,9 @@ export struct PairingPage {
           .borderRadius(16).backgroundColor($r('app.color.card_background'))
           .shadow({ radius: 12, color: '#0D000000', offsetY: 2 })
 
-          Button(this.isPairingTabOwner() && cameraService.getState() === ConnectionState.Scanning
-            ? '停止扫描' : '开始扫描')
+          Button(this.scanButtonLabel())
             .fontSize(15).fontWeight(FontWeight.Medium).height(44).borderRadius(22)
-            .backgroundColor(this.isPairingTabOwner() && cameraService.getState() === ConnectionState.Scanning
-              ? $r('app.color.danger') : $r('app.color.brand')).fontColor(Color.White)
+            .backgroundColor(this.scanButtonColor()).fontColor(Color.White)
             .padding({ left: 48, right: 48 })
             .margin({ top: 12, bottom: 16 })
             .enabled(this.owner === 'none' || this.isPairingTabOwner())
@@ -166,6 +214,7 @@ export struct PairingPage {
                       .fontSize(13).fontWeight(FontWeight.Medium)
                       .height(32).borderRadius(16).backgroundColor('#FF9500').fontColor(Color.White)
                       .padding({ left: 16, right: 16 })
+                      .onClick(() => { this.cancelCurrentPairing(); })
                   } else if (this.pairingTarget !== '') {
                     Button('配对')
                       .fontSize(13).fontWeight(FontWeight.Medium)
@@ -175,7 +224,7 @@ export struct PairingPage {
                     Button('配对').fontSize(13).fontWeight(FontWeight.Medium)
                       .height(32).borderRadius(16).backgroundColor($r('app.color.brand')).fontColor(Color.White)
                       .padding({ left: 16, right: 16 })
-                      .enabled(this.isPairingTabOwner() && this.pairingTarget === '')
+                      .enabled((this.owner === 'none' || this.isPairingTabOwner()) && this.pairingTarget === '')
                       .onClick(() => { this.onPair(cam); })
                   }
                 }.width('100%').height(48).padding({ left: 8, right: 8 })

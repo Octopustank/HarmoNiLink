@@ -18,7 +18,7 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { ble, connection } from '@kit.ConnectivityKit';
 import { geoLocationManager } from '@kit.LocationKit';
 import { backgroundTaskManager } from '@kit.BackgroundTasksKit';
-import { common, wantAgent, WantAgent } from '@kit.AbilityKit';
+import { common, wantAgent, WantAgent, abilityAccessCtrl } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { PairedCamera, NikonPairingEngine } from '../ble/protocol/NikonPairingEngine';
 import { PairingMessage } from '../ble/protocol/PairingMessage';
@@ -35,6 +35,17 @@ import { PreferencesRepository } from '../data/PreferencesRepository';
 
 const TAG = 'HarmoNiLink-CameraService';
 const DEFAULT_CONTROLLER_NAME: string = 'HarmoNiLink';
+
+// User-grant permissions needed for scan/pair/connect. Requested in ONE batch
+// (system queues the dialogs) on first user action, not at app startup.
+const USER_GRANT_PERMISSIONS: string[] = [
+  'ohos.permission.ACCESS_BLUETOOTH',
+  'ohos.permission.DISCOVER_BLUETOOTH',
+  'ohos.permission.APPROXIMATELY_LOCATION',
+  'ohos.permission.LOCATION',
+];
+// Must be requested AFTER LOCATION is granted; failure is non-fatal.
+const BACKGROUND_LOCATION_PERMISSION: string = 'ohos.permission.LOCATION_IN_BACKGROUND';
 
 export enum ConnectionState {
   Idle = 'Idle',
@@ -77,6 +88,9 @@ export class CameraService {
   private gpsTimer: number | null = null;
   private backgroundTaskStarted: boolean = false;
 
+  // Connect watchdog — aborts stalled pairing against unresponsive devices
+  private connectTimeoutId: number | null = null;
+
   // Context (set from EntryAbility)
   private abilityContext: common.UIAbilityContext | null = null;
 
@@ -111,6 +125,70 @@ export class CameraService {
   }
 
   getOwner(): OperationOwner { return this.owner; }
+
+  // ==================== Permissions ====================
+
+  /**
+   * Ensure all user-grant permissions needed for scan/pair/connect.
+   * Requests the missing ones in a single batch (system queues the dialogs).
+   * Call before startPairingScan()/startReconnect().
+   */
+  async requestPermissionsIfNeeded(): Promise<boolean> {
+    const ctx = this.abilityContext;
+    if (!ctx) return false;
+    try {
+      const atManager = abilityAccessCtrl.createAtManager();
+      const tokenId = ctx.applicationInfo.accessTokenId;
+      const check = atManager.checkAccessTokenSync as Function;
+
+      const needed: string[] = [];
+      for (let i = 0; i < USER_GRANT_PERMISSIONS.length; i++) {
+        const permission = USER_GRANT_PERMISSIONS[i];
+        if (check(tokenId, permission) !== 0) needed.push(permission);
+      }
+      if (needed.length === 0) return true;
+
+      hilog.info(0x0001, TAG, `[PERM] requesting ${needed.length} permission(s): ${needed.join(', ')}`);
+      const req = atManager.requestPermissionsFromUser as Function;
+      const result = await req(ctx, needed) as Record<string, Object>;
+      const authResults = result['authResults'] as number[];
+
+      let allGranted: boolean = true;
+      for (let i = 0; i < authResults.length; i++) {
+        if (authResults[i] !== 0) allGranted = false;
+      }
+      hilog.info(0x0001, TAG, `[PERM] batch result: ${authResults.join(', ')} allGranted=${allGranted}`);
+
+      if (allGranted) {
+        // LOCATION_IN_BACKGROUND can only be requested after LOCATION is granted.
+        // Request it right after the batch; failure is non-fatal (settings fallback).
+        this.requestBackgroundLocation(ctx, atManager, tokenId);
+      }
+      return allGranted;
+    } catch (err) {
+      hilog.warn(0x0001, TAG, `[PERM] request failed: ${JSON.stringify(err)}`);
+      return false;
+    }
+  }
+
+  private requestBackgroundLocation(
+    ctx: common.UIAbilityContext,
+    atManager: abilityAccessCtrl.AtManager,
+    tokenId: number
+  ): void {
+    try {
+      const check = atManager.checkAccessTokenSync as Function;
+      if (check(tokenId, BACKGROUND_LOCATION_PERMISSION) === 0) return;
+      const req = atManager.requestPermissionsFromUser as Function;
+      req(ctx, [BACKGROUND_LOCATION_PERMISSION]).then((r: Record<string, Object>) => {
+        hilog.info(0x0001, TAG, `[PERM] background location result: ${r['authResults']}`);
+      }).catch((err: BusinessError) => {
+        hilog.warn(0x0001, TAG, `[PERM] background location request failed: ${err.message}`);
+      });
+    } catch (err) {
+      hilog.warn(0x0001, TAG, `[PERM] background location exception: ${JSON.stringify(err)}`);
+    }
+  }
 
   /**
    * Request operation ownership. Returns true if granted.
@@ -158,6 +236,17 @@ export class CameraService {
       this.releaseOwnership();
       this.setState(ConnectionState.Idle, 'Scan stopped.');
     }
+  }
+
+  /**
+   * User-initiated cancel during pairing (connecting/discovering/pairing/bonding).
+   * Fully resets BLE + classic discovery + ownership so the UI returns to idle.
+   */
+  cancelPairing(): void {
+    hilog.info(0x0001, TAG, '[CHECKPOINT] cancelPairing() called');
+    this.scanner.stopScan();
+    try { connection.stopBluetoothDiscovery(); } catch (e) {}
+    this.disconnect();
   }
 
   // ==================== Pair Flow (Pairing Page) ====================
@@ -240,12 +329,14 @@ export class CameraService {
     hilog.info(0x0001, TAG, '[CHECKPOINT] disconnect() called');
     this.stopGpsLoop();
     this.stopBackgroundTask();
+    this.clearConnectTimeout();
     this.bleClient.disconnect();
     this.pairingStep = 0;
     this.currentStage1 = null;
     this.cameraSerial = '';
     this.cameraName = '';
     this.scanner.stopScan();
+    try { connection.stopBluetoothDiscovery(); } catch (e) {}
     this.releaseOwnership();
     this.setState(ConnectionState.Idle, 'Disconnected.');
   }
@@ -359,9 +450,34 @@ export class CameraService {
     this.pairingStep = 0;
     this.currentStage1 = null;
 
+    // Watchdog: if the device never responds (non-Nikon device, out of range),
+    // abort after 20s instead of hanging forever. Cancelled on terminal states.
+    this.clearConnectTimeout();
+    this.connectTimeoutId = setTimeout(() => {
+      if (this._state === ConnectionState.Ready || this._state === ConnectionState.Idle
+        || this._state === ConnectionState.Error || this._state === ConnectionState.Bonding) {
+        return; // already settled — nothing to abort
+      }
+      hilog.warn(0x0001, TAG, '[CHECKPOINT] Connect watchdog fired (20s) — aborting stalled pairing');
+      this.bleClient.disconnect();
+      this.scanner.stopScan();
+      try { connection.stopBluetoothDiscovery(); } catch (e) {}
+      // setState BEFORE releaseOwnership — listeners must still see owner='pairing'
+      // for the Error branch (clears pairingTarget) to run.
+      this.setState(ConnectionState.Error, '连接超时：设备无响应');
+      this.releaseOwnership();
+    }, 20000);
+
     this.bleClient.connect(deviceId, (event: BleEvent) => {
       this.handleBleEvent(event);
     });
+  }
+
+  private clearConnectTimeout(): void {
+    if (this.connectTimeoutId !== null) {
+      clearTimeout(this.connectTimeoutId);
+      this.connectTimeoutId = null;
+    }
   }
 
   private handleBleEvent(event: BleEvent): void {
@@ -430,6 +546,9 @@ export class CameraService {
       hilog.error(0x0001, TAG, `[CHECKPOINT] BLE Error: ${event.message}`);
       if (this._state !== ConnectionState.Ready && this._state !== ConnectionState.Idle) {
         this.setState(ConnectionState.Error, event.message);
+        // Release ownership so the UI is not stuck: without this, the pairing
+        // tab keeps the lock and every button shows "operation in progress".
+        this.releaseOwnership();
       }
     }
   }
@@ -872,6 +991,11 @@ export class CameraService {
   private setState(state: ConnectionState, message: string): void {
     this._state = state;
     this._statusMessage = message;
+    // Terminal states end the connect watchdog
+    if (state === ConnectionState.Ready || state === ConnectionState.Idle
+      || state === ConnectionState.Error || state === ConnectionState.Bonding) {
+      this.clearConnectTimeout();
+    }
     hilog.info(0x0001, TAG, `[CHECKPOINT] STATE: ${state} — ${message}`);
     for (let i = 0; i < this.stateListeners.length; i++) {
       this.stateListeners[i](state, message);

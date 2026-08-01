@@ -108,7 +108,11 @@ export class BleClient {
     const c = this.gattClient as Object as Record<string, Function>;
     try {
       c['getServices']((err: BusinessError, result: Object) => {
-        if (err) { hilog.error(0x0001, TAG, `[D] ERR ${err.code}`); return; }
+        if (err) {
+          hilog.error(0x0001, TAG, `[D] ERR ${err.code}`);
+          this.emit(new BleError(`Service discovery failed: ${err.message}`));
+          return;
+        }
         this.servicesDiscovered = true;
         const arr = Array.isArray(result) ? result as Object[] : ((result as Record<string, Object>)['services'] as Object[]) ?? [];
         hilog.info(0x0001, TAG, `[D] ${arr.length} svcs`);
@@ -124,6 +128,13 @@ export class BleClient {
           }
         }
         hilog.info(0x0001, TAG, `[D] chars pair=${!!this.pairChar} not1=${!!this.not1Char}`);
+        // Fast-fail for non-Nikon devices: without the PAIR characteristic the
+        // pairing handshake can never start, so don't proceed to prepare().
+        if (!this.pairChar) {
+          hilog.error(0x0001, TAG, `[D] No PAIR characteristic — not a Nikon camera`);
+          this.emit(new BleError('Device is not a Nikon camera (PAIR characteristic not found)'));
+          return;
+        }
         this.emit(new BleServicesDiscovered());
       });
     } catch (e) { hilog.error(0x0001, TAG, `[D] EXC ${JSON.stringify(e)}`); }
