@@ -25,14 +25,18 @@ HarmoNiLink 让 HarmonyOS 手机/平板替代 SnapBridge，向尼康 Z 系列相
 扫描、配对、GPS 传输全流程自动化。首次配对需用户确认系统弹窗，之后所有操作（含休眠唤醒重连）均无需手动介入。
 
 ### 鸿蒙原生后台保活
-基于 `BackgroundMode.BLUETOOTH_INTERACTION` + `LOCATION` 双长时任务，不依赖无声音频等取巧手段。系统级后台调度保证 GPS 持续传输。
+基于 `BackgroundMode.BLUETOOTH_INTERACTION` + `LOCATION` 双长时任务，不依赖无声音频等取巧手段。系统级后台调度保证 GPS 持续传输。后台持续下发需将定位权限设为「始终允许」，见[权限](#权限)。
 
 ### 相机休眠兼容
 尼康相机进入休眠后维持 BLE 低功耗连接，GPS 数据持续写入。若连接意外中断（深度休眠 / 超出距离），自动执行指数退避重连。
 
+### 多设备可区分
+每台安装自动生成唯一配对名称（`HarmoNiLink-XXXX`），写入相机并显示在相机端已配对列表，多台手机同时配对同一台相机时互不混淆；连接页可随时查看本机名称。
+
 ### 原生鸿蒙体验
 - **HDS 设计套件** — 沉浸光感、模糊标题栏、自适应背景材质
 - **亮/暗主题跟随** — 自动跟随系统色彩模式
+- **大屏适配** — 折叠屏展开 / 平板全屏铺满，无平行视界空白
 - **纯 ArkTS 实现** — Blowfish 加密全程 ArkTS 运算，零原生依赖
 
 ---
@@ -41,10 +45,22 @@ HarmoNiLink 让 HarmonyOS 手机/平板替代 SnapBridge，向尼康 Z 系列相
 
 | 平台 | 要求 |
 |------|------|
-| 手机 / 平板 | HarmonyOS NEXT (API 24 · SDK 6.1.1) |
+| 手机 / 平板 | HarmonyOS NEXT（运行要求 API 23 / SDK 6.1.0 及以上；构建于 SDK 6.1.1 · API 24） |
 | 相机 | 尼康 Z 系列（Z 6II、Z 7II、Z 8、Z 9、Z f 等） |
 
 > ⚠️ 仅 Z 6II 真机验证通过，其他型号欢迎测试反馈。
+
+---
+
+## 权限
+
+| 权限 | 用途 | 说明 |
+|------|------|------|
+| 蓝牙（发现附近设备） | 扫描、配对、连接相机 | 首次扫描时申请 |
+| 位置（精确位置） | 向相机下发 GPS 坐标 | 首次扫描时申请，请在弹窗中选择精确位置 |
+| 后台定位（始终允许） | 相机休眠 / 应用在后台时持续下发 GPS | **可选**。系统不允许通过弹窗授予，需在系统设置中将定位权限设为「始终允许」；首次授权后会提示一次，可随时跳过（会略微增加耗电） |
+
+后台定位未开启时：连接保持，但应用切到后台后 GPS 停止下发，回到前台自动恢复。
 
 ---
 
@@ -65,11 +81,11 @@ entry/src/main/ets/
 │   ├── PairingPage.ets                — 扫描 & 配对
 │   └── ConnectionPage.ets             — 连接状态 & 设备管理
 ├── service/
-│   └── CameraService.ets              — 配对/连接/重连状态机
+│   └── CameraService.ets              — 配对/连接/重连状态机 · 按需权限申请
 ├── data/
-│   └── PreferencesRepository.ets      — 已配对设备持久化
+│   └── PreferencesRepository.ets      — 已配对设备 & 控制器名称持久化
 └── entryability/
-    └── EntryAbility.ets               — 入口 & 权限申请
+    └── EntryAbility.ets               — 入口 & 生命周期
 ```
 
 | 层 | 技术 |
@@ -89,7 +105,7 @@ Base UUID: 0000xxxx-3dd4-4255-8d62-6dc7b9bd5561
 
 Service  0xDE00
   ├── 0x2000 (PAIR)  配对握手 — Blowfish 3 阶段 17 字节消息
-  ├── 0x2002 (ID)    写入控制器名称 — 32 字节 ASCII
+  ├── 0x2002 (ID)    写入控制器名称（HarmoNiLink-XXXX）— 32 字节 ASCII
   ├── 0x2007 (GEO)   写入 41 字节 GPS 载荷
   └── 0x2008 (NOT1)  通知通道 — 相机状态
 ```
@@ -102,7 +118,7 @@ Service  0xDE00
 
 ## 构建
 
-环境：[DevEco Studio](https://developer.huawei.com/consumer/cn/deveco-studio/) 或 [Command Line Tools for HMOS](https://developer.huawei.com/consumer/en/download/command-line-tools-for-hmos)
+环境：[DevEco Studio](https://developer.huawei.com/consumer/cn/deveco-studio/) 或 [Command Line Tools for HMOS](https://developer.huawei.com/consumer/en/download/command-line-tools-for-hmos)，SDK 6.1.1（API 24）。构建产物兼容 API 23 及以上设备。
 
 ```bash
 make hap     # 开发调试 — 未签名 .hap
