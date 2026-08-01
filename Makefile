@@ -24,21 +24,26 @@ APP     := $(OUT)/HarmoNiLink-default-signed.app
 U_HAP   := entry/build/default/outputs/default/entry-default-unsigned.hap
 U_APP   := $(OUT)/HarmoNiLink-default-unsigned.app
 
-.PHONY: all build hap app sign clean
+.PHONY: all build hap app sign clean clean-old-artifacts
 
 all: build
 
 build: hap app
 
-hap:
+hap: clean-old-artifacts
 	$(HVIGORW) assembleHap --mode module -p module=entry@default -p product=default
 
-app:
+app: clean-old-artifacts
 	$(HVIGORW) assembleApp -p product=default
 
-sign:
+sign: clean-old-artifacts
 	@bash sign.sh
 
 clean:
 	rm -rf build/ entry/build/ .hvigor/ entry/.cxx
 	@echo "Cleaned."
+
+# 每次构建前清理旧产物，避免误装/误用上次生成的包（尤其是已签名的）
+clean-old-artifacts:
+	rm -rf build/outputs
+	rm -f entry/build/default/outputs/default/*.hap
