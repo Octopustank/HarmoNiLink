@@ -143,6 +143,22 @@ export struct PairingPage {
           promptAction.showToast({ message: '需要蓝牙和位置权限才能扫描', duration: 2500 });
           return;
         }
+        // One-time prompt after first grant: explain precise location, and that
+        // background GPS requires "always allow" in system settings (optional).
+        if (cameraService.wasPermissionJustGranted() && !cameraService.isBackgroundLocationGranted()) {
+          promptAction.showDialog({
+            title: '定位权限说明',
+            message: '已授予位置权限。\n\n请确保授予「精确位置」，相机才能收到准确的 GPS 坐标。\n\n如需相机休眠或应用在后台时持续下发 GPS，请在系统设置中将定位权限设为「始终允许」（会略微增加耗电）。',
+            buttons: [
+              { text: '暂不', color: $r('app.color.text_secondary') },
+              { text: '去开启', color: $r('app.color.brand') }
+            ]
+          }).then((result: promptAction.ShowDialogSuccessResponse) => {
+            if (result.index === 1) {
+              cameraService.openBackgroundLocationSetting();
+            }
+          }).catch(() => { /* dialog dismissed */ });
+        }
         if (cameraService.startPairingScan()) {
           this.startPolling();
         } else {

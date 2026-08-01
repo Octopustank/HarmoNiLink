@@ -90,6 +90,8 @@ export class CameraService {
 
   // Connect watchdog — aborts stalled pairing against unresponsive devices
   private connectTimeoutId: number | null = null;
+  // True when the last permission batch was granted (for one-time background-location prompt)
+  private permissionJustGranted: boolean = false;
 
   // Context (set from EntryAbility)
   private abilityContext: common.UIAbilityContext | null = null;
@@ -139,8 +141,13 @@ export class CameraService {
    * Ensure all user-grant permissions needed for scan/pair/connect.
    * Requests the missing ones in a single batch (system queues the dialogs).
    * Call before startPairingScan()/startReconnect().
+   *
+   * NOTE: LOCATION_IN_BACKGROUND cannot be granted via a pop-up (system rule);
+   * the UI shows a one-time prompt after first grant instead, guiding the user
+   * to enable "always allow" in system settings if they want background GPS.
    */
   async requestPermissionsIfNeeded(): Promise<boolean> {
+    this.permissionJustGranted = false;
     const ctx = this.abilityContext;
     if (!ctx) return false;
     try {
@@ -166,11 +173,7 @@ export class CameraService {
       }
       hilog.info(0x0001, TAG, `[PERM] batch result: ${authResults.join(', ')} allGranted=${allGranted}`);
 
-      if (allGranted) {
-        // LOCATION_IN_BACKGROUND can only be requested after LOCATION is granted.
-        // Request it right after the batch; failure is non-fatal (settings fallback).
-        this.requestBackgroundLocation(ctx, atManager, tokenId);
-      }
+      this.permissionJustGranted = allGranted;
       return allGranted;
     } catch (err) {
       hilog.warn(0x0001, TAG, `[PERM] request failed: ${JSON.stringify(err)}`);
@@ -178,22 +181,45 @@ export class CameraService {
     }
   }
 
-  private requestBackgroundLocation(
-    ctx: common.UIAbilityContext,
-    atManager: abilityAccessCtrl.AtManager,
-    tokenId: number
-  ): void {
+  /**
+   * True if the last requestPermissionsIfNeeded() call actually granted
+   * (or re-granted) the core permissions — used to trigger the one-time
+   * background-location prompt only on first grant.
+   */
+  wasPermissionJustGranted(): boolean {
+    return this.permissionJustGranted;
+  }
+
+  isBackgroundLocationGranted(): boolean {
+    const ctx = this.abilityContext;
+    if (!ctx) return false;
     try {
+      const atManager = abilityAccessCtrl.createAtManager();
       const check = atManager.checkAccessTokenSync as Function;
-      if (check(tokenId, BACKGROUND_LOCATION_PERMISSION) === 0) return;
-      const req = atManager.requestPermissionsFromUser as Function;
-      req(ctx, [BACKGROUND_LOCATION_PERMISSION]).then((r: Record<string, Object>) => {
-        hilog.info(0x0001, TAG, `[PERM] background location result: ${r['authResults']}`);
+      return check(ctx.applicationInfo.accessTokenId, BACKGROUND_LOCATION_PERMISSION) === 0;
+    } catch (err) {
+      hilog.warn(0x0001, TAG, `[PERM] background check error: ${JSON.stringify(err)}`);
+      return false;
+    }
+  }
+
+  /**
+   * Open the system settings page for LOCATION_IN_BACKGROUND
+   * (cannot be granted via pop-up; user must pick "always allow" manually).
+   */
+  openBackgroundLocationSetting(): void {
+    const ctx = this.abilityContext;
+    if (!ctx) return;
+    try {
+      const atManager = abilityAccessCtrl.createAtManager();
+      const req = atManager.requestPermissionOnSetting as Function;
+      req(ctx, [BACKGROUND_LOCATION_PERMISSION]).then((statuses: number[]) => {
+        hilog.info(0x0001, TAG, `[PERM] on-setting result: ${statuses.join(', ')}`);
       }).catch((err: BusinessError) => {
-        hilog.warn(0x0001, TAG, `[PERM] background location request failed: ${err.message}`);
+        hilog.warn(0x0001, TAG, `[PERM] requestPermissionOnSetting failed: ${err.message}`);
       });
     } catch (err) {
-      hilog.warn(0x0001, TAG, `[PERM] background location exception: ${JSON.stringify(err)}`);
+      hilog.warn(0x0001, TAG, `[PERM] requestPermissionOnSetting exception: ${JSON.stringify(err)}`);
     }
   }
 
