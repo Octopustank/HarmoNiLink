@@ -49,8 +49,7 @@ struct MainPage {
 
   build() {
     HdsNavigation(this.pathStack) {
-      HdsTabs({ barPosition: BarPosition.End, controller: this.tabsController, index: this.currentIndex }) {
-        TabContent() {
+      HdsTabs({ barPosition: BarPosition.End, controller: this.tabsController, index: this.currentIndex }) {        TabContent() {
           PairingPage()
         }
         .tabBar(this.tabBar(0, '配对', $r('sys.symbol.camera')))
@@ -80,6 +79,10 @@ struct MainPage {
     }
     .hideTitleBar(true)
     .hideToolBar(true)
+    // Force stack mode: on wide windows (foldable expanded / tablet) HdsNavigation
+    // defaults to split (parallel view), pinning the tabs to a narrow left column
+    // with an empty right area. Stack makes the UI fill the whole window.
+    .mode(NavigationMode.Stack)
     .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
     .systemBarStyle(
       { statusBarContentColor: '#1A1A1A' },
