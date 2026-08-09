@@ -33,6 +33,7 @@ export struct ConnectionPage {
   @State titleSub: string = '';
   @State owner: string = 'none'; // synced from cameraService — drives @State re-render
   @State controllerName: string = ''; // per-install name shown on the camera
+  @State reconnectEnabled: boolean = false; // 保持连接 — mirrored from cameraService
   private scroller: Scroller = new Scroller();
   private gpsTimer: number = -1;
 
@@ -56,6 +57,7 @@ export struct ConnectionPage {
     this.loadAppVersion();
     this.loadSavedCameras();
     this.controllerName = cameraService.getControllerName();
+    this.reconnectEnabled = cameraService.isReconnectEnabled();
     cameraService.setStateListener((s: ConnectionState, msg: string) => {
       // Sync owner first — all derived helpers depend on @State reactivity
       this.owner = cameraService.getOwner();
@@ -94,6 +96,25 @@ export struct ConnectionPage {
     this.gpsSats = `${gps.satellites}`;
     this.gpsHasFix = gps.hasFix;
     this.gpsTime = gps.lastUpdateTime;
+    // Keep the toggle in sync with the service (e.g. prefs loaded after page shows)
+    const en = cameraService.isReconnectEnabled();
+    if (en !== this.reconnectEnabled) this.reconnectEnabled = en;
+  }
+
+  private onReconnectToggle(on: boolean): void {
+    if (on) {
+      // One-time explanation the first time the user enables 保持连接
+      if (!cameraService.wasReconnectPrompted()) {
+        cameraService.markReconnectPrompted();
+        promptAction.showDialog({
+          title: '保持连接',
+          message: '开启后，连接断开时将自动持续重连（含后台），直到相机恢复或您手动断开。\n\n持续重连会保持蓝牙与定位后台任务运行，可能增加耗电。',
+          buttons: [{ text: '知道了', color: $r('app.color.brand') }]
+        });
+      }
+    }
+    this.reconnectEnabled = on;
+    cameraService.setReconnectEnabled(on);
   }
 
   private async loadSavedCameras(): Promise<void> {
@@ -118,7 +139,17 @@ export struct ConnectionPage {
         promptAction.showToast({ message: '需要蓝牙和位置权限才能连接', duration: 2500 });
         return;
       }
-      cameraService.startReconnect(cam);
+      // One-time hint on first connect: camera "关闭时发送" + 保持连接
+      if (!cameraService.wasConnectHintShown()) {
+        cameraService.markConnectHintShown();
+        promptAction.showDialog({
+          title: '连接提示',
+          message: '为获得稳定连接，推荐：\n\n1. 在相机设置中开启「关闭时发送」——相机休眠/关机后仍保持连接，本 App 可自动重连。\n\n2. 开启本页的「保持连接」开关——连接意外断开时自动持续重连，直到相机恢复。',
+          buttons: [{ text: '继续连接', color: $r('app.color.brand') }]
+        }).then(() => { cameraService.startReconnect(cam); });
+      } else {
+        cameraService.startReconnect(cam);
+      }
     });
   }
 
@@ -286,6 +317,19 @@ export struct ConnectionPage {
           Blank().height(56)
 
           this.statusCard()
+          Row() {
+            Column() {
+              Text('保持连接').fontSize(14).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
+              Text('断开后自动持续重连，直到相机恢复或手动断开').fontSize(11)
+                .fontColor($r('app.color.text_secondary')).margin({ top: 2 })
+            }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+            Toggle({ type: ToggleType.Switch, isOn: this.reconnectEnabled })
+              .onChange((on: boolean) => { this.onReconnectToggle(on); })
+          }
+          .width('100%').padding({ left: 16, right: 16, top: 12, bottom: 12 })
+          .borderRadius(16).backgroundColor($r('app.color.card_background'))
+          .shadow({ radius: 12, color: '#0D000000', offsetY: 2 })
+          .margin({ top: 12 })
           if (this.state === ConnectionState.Ready) { this.gpsCard() }
           if (this.showCancel()) {
             Button('取消').fontSize(14).fontWeight(FontWeight.Medium).height(40).borderRadius(20)

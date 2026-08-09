@@ -93,6 +93,13 @@ export class CameraService {
   // True when the last permission batch was granted (for one-time background-location prompt)
   private permissionJustGranted: boolean = false;
 
+  // "保持连接" — auto-reconnect toggle (default off). When off, link loss lands
+  // in a terminal state and waits for manual action. User-initiated disconnect()
+  // always stops reconnecting regardless of this flag.
+  private reconnectEnabled: boolean = false;
+  // Pending auto-reconnect timer — dedupes scheduleReconnect() calls
+  private reconnectTimerId: number | null = null;
+
   // Context (set from EntryAbility)
   private abilityContext: common.UIAbilityContext | null = null;
 
@@ -130,10 +137,47 @@ export class CameraService {
 
   setContext(ctx: common.UIAbilityContext): void {
     this.abilityContext = ctx;
-    this.prefs.init(ctx); // start async init — loadSavedCamerasSync will return cache once ready
+    this.prefs.init(ctx).then(() => {
+      // Persisted values are ready — sync the in-memory "保持连接" state
+      this.reconnectEnabled = this.prefs.loadReconnectEnabledSync();
+      hilog.info(0x0001, TAG, `[RECONNECT] loaded from prefs: ${this.reconnectEnabled}`);
+    }); // start async init — loadSavedCamerasSync will return cache once ready
   }
 
   getOwner(): OperationOwner { return this.owner; }
+
+  // ==================== 保持连接 (auto-reconnect) ====================
+
+  isReconnectEnabled(): boolean { return this.reconnectEnabled; }
+
+  setReconnectEnabled(enabled: boolean): void {
+    this.reconnectEnabled = enabled;
+    this.prefs.saveReconnectEnabled(enabled);
+    hilog.info(0x0001, TAG, `[RECONNECT] keep-connected ${enabled ? 'enabled' : 'disabled'}`);
+    if (!enabled && this.reconnectTimerId !== null) {
+      // Cancel any pending auto-reconnect attempt immediately
+      clearTimeout(this.reconnectTimerId);
+      this.reconnectTimerId = null;
+    }
+  }
+
+  /** True if the "保持连接" explanation dialog has never been shown. */
+  wasReconnectPrompted(): boolean {
+    return this.prefs.wasReconnectPromptedSync();
+  }
+
+  markReconnectPrompted(): void {
+    this.prefs.saveReconnectPrompted();
+  }
+
+  /** True if the first-connect hint (camera "关闭时发送" + 保持连接) has never been shown. */
+  wasConnectHintShown(): boolean {
+    return this.prefs.wasConnectHintShownSync();
+  }
+
+  markConnectHintShown(): void {
+    this.prefs.saveConnectHintShown();
+  }
 
   // ==================== Permissions ====================
 
@@ -498,10 +542,9 @@ export class CameraService {
       this.bleClient.disconnect();
       this.scanner.stopScan();
       try { connection.stopBluetoothDiscovery(); } catch (e) {}
-      // setState BEFORE releaseOwnership — listeners must still see owner='pairing'
-      // for the Error branch (clears pairingTarget) to run.
-      this.setState(ConnectionState.Error, '连接超时：设备无响应');
-      this.releaseOwnership();
+      // Route through the unified recovery path instead of dying on Error —
+      // auto-reconnect keeps trying while the camera is unavailable.
+      this.handleLinkLost();
     }, 20000);
 
     this.bleClient.connect(deviceId, (event: BleEvent) => {
@@ -554,38 +597,15 @@ export class CameraService {
       this.handleWriteDone(event.uuid);
     } else if (event instanceof BleDisconnected) {
       hilog.info(0x0001, TAG, '[CHECKPOINT] BLE Disconnected');
-      if (this._state === ConnectionState.Ready) {
-        this.stopGpsLoop();
-        // Keep ownership during auto-reconnect — release only when retries exhausted
-        // or user explicitly disconnects via cancel button.
-        if (this.savedCamera) {
-          this.scheduleReconnect();
-        } else {
-          this.releaseOwnership();
-          this.setState(ConnectionState.Idle, 'Camera disconnected. Tap Reconnect.');
-        }
-        return;
-      }
-      if (this._state === ConnectionState.Idle || this._state === ConnectionState.Bonding) {
-        return;
-      }
-      // During reconnect/pairing, BLE drop is transient — graceful reset
-      this.pairingStep = 0;
-      this.currentStage1 = null;
-      if (this.savedCamera && this.reconnectRetries < 10) {
-        this.scheduleReconnect();
-      } else {
-        this.releaseOwnership();
-        this.setState(ConnectionState.Idle, 'Connection lost. Tap Reconnect to retry.');
-      }
+      this.handleLinkLost();
     } else if (event instanceof BleError) {
       hilog.error(0x0001, TAG, `[CHECKPOINT] BLE Error: ${event.message}`);
-      if (this._state !== ConnectionState.Ready && this._state !== ConnectionState.Idle) {
-        this.setState(ConnectionState.Error, event.message);
-        // Release ownership so the UI is not stuck: without this, the pairing
-        // tab keeps the lock and every button shows "operation in progress".
-        this.releaseOwnership();
-      }
+      // Link-loss signal, not a terminal state: tear down and let
+      // handleLinkLost decide between auto-reconnect and settling.
+      this.bleClient.disconnect();
+      this.scanner.stopScan();
+      try { connection.stopBluetoothDiscovery(); } catch (e) {}
+      this.handleLinkLost();
     }
   }
 
@@ -881,8 +901,46 @@ export class CameraService {
     }, 20000);
   }
 
+  /**
+   * Unified link-loss recovery — single entry for BleDisconnected, BleError
+   * and the connect watchdog. With auto-reconnect enabled the state machine
+   * always returns to reconnecting instead of dying on an error; when disabled
+   * (or no saved camera / retries exhausted) it settles and waits for the user.
+   * User-initiated disconnect() never reaches here (ownership already released).
+   */
+  private handleLinkLost(): void {
+    if (this._state === ConnectionState.Ready) {
+      this.stopGpsLoop();
+      if (this.savedCamera && this.reconnectEnabled) {
+        this.scheduleReconnect();
+      } else {
+        this.releaseOwnership();
+        this.setState(ConnectionState.Idle, 'Camera disconnected. Tap Reconnect.');
+      }
+      return;
+    }
+    if (this._state === ConnectionState.Idle || this._state === ConnectionState.Bonding) {
+      return;
+    }
+    // During reconnect/pairing, BLE drop is transient — graceful reset
+    this.pairingStep = 0;
+    this.currentStage1 = null;
+    if (this.savedCamera && this.reconnectEnabled && this.reconnectRetries < 10) {
+      this.scheduleReconnect();
+    } else {
+      this.releaseOwnership();
+      this.setState(ConnectionState.Idle, 'Connection lost. Tap Reconnect to retry.');
+    }
+  }
+
   private scheduleReconnect(): void {
     if (!this.savedCamera) return;
+    // Dedupe: a later schedule replaces any pending one (BleError can arrive
+    // multiple times for the same link loss — timeout + late error callback).
+    if (this.reconnectTimerId !== null) {
+      clearTimeout(this.reconnectTimerId);
+      this.reconnectTimerId = null;
+    }
     // Exponential backoff: 1s, 2s, 4s, 8s, 16s, 30s...
     const delays = [1000, 2000, 4000, 8000, 16000, 30000, 30000, 30000, 60000, 60000];
     const delay = delays[Math.min(this.reconnectRetries, delays.length - 1)];
@@ -890,8 +948,9 @@ export class CameraService {
     hilog.info(0x0001, TAG, `[RECONNECT] attempt ${this.reconnectRetries} in ${delay}ms`);
     this.setState(ConnectionState.Idle, `Reconnecting (attempt ${this.reconnectRetries})...`);
     const cam = this.savedCamera;
-    setTimeout(() => {
-      if (this.owner === 'connection' && cam) {
+    this.reconnectTimerId = setTimeout(() => {
+      this.reconnectTimerId = null;
+      if (this.owner === 'connection' && cam && this.reconnectEnabled) {
         this.startReconnect(cam);
       }
     }, delay);

@@ -212,10 +212,14 @@ export class BleClient {
     const obj: ble.BLECharacteristic = { serviceUuid: SVC, characteristicUuid: uuid, characteristicValue: buf, descriptors: [] };
     const c = this.gattClient as Object as Record<string, Function>;
 
-    // Safety timeout: reset writeBusy if callback never fires (e.g. background suspension)
+    // Safety timeout: if callback never fires (e.g. camera stopped responding
+    // while the link appears alive), surface it as a link-loss signal so the
+    // service can tear down and reconnect — instead of silently staying Ready.
     this.writeTimeoutId = setTimeout(() => {
+      this.writeTimeoutId = null;
       this.writeBusy = false;
       hilog.warn(0x0001, TAG, `[W] TIMEOUT reset writeBusy for ${uuid}`);
+      this.emit(new BleError(`Write timeout: ${uuid}`));
     }, 10000);
 
     c['writeCharacteristicValue'](obj, 1, (err: BusinessError) => {
