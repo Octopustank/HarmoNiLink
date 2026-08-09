@@ -108,8 +108,14 @@ export class CameraService {
 
   // ==================== Public API ====================
 
-  setStateListener(listener: StateListener): void {
+  setStateListener(listener: StateListener): () => void {
     this.stateListeners.push(listener);
+    // Return an unregister closure — pages MUST call it on aboutToDisappear,
+    // otherwise listeners accumulate on every tab switch (leak + stale @State writes).
+    return () => {
+      const idx = this.stateListeners.indexOf(listener);
+      if (idx !== -1) this.stateListeners.splice(idx, 1);
+    };
   }
 
   getState(): ConnectionState {

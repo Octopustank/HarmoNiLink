@@ -36,6 +36,7 @@ export struct ConnectionPage {
   @State reconnectEnabled: boolean = false; // 保持连接 — mirrored from cameraService
   private scroller: Scroller = new Scroller();
   private gpsTimer: number = -1;
+  private offStateListener: (() => void) | null = null;
 
   // True when cancel button should show: any active ownership, not Ready
   private showCancel(): boolean { return this.owner !== 'none' && this.state !== ConnectionState.Ready; }
@@ -58,7 +59,7 @@ export struct ConnectionPage {
     this.loadSavedCameras();
     this.controllerName = cameraService.getControllerName();
     this.reconnectEnabled = cameraService.isReconnectEnabled();
-    cameraService.setStateListener((s: ConnectionState, msg: string) => {
+    this.offStateListener = cameraService.setStateListener((s: ConnectionState, msg: string) => {
       // Sync owner first — all derived helpers depend on @State reactivity
       this.owner = cameraService.getOwner();
       this.state = s;
@@ -86,6 +87,7 @@ export struct ConnectionPage {
 
   aboutToDisappear(): void {
     if (this.gpsTimer !== -1) { clearInterval(this.gpsTimer); this.gpsTimer = -1; }
+    if (this.offStateListener) { this.offStateListener(); this.offStateListener = null; }
   }
 
   private syncGps(): void {

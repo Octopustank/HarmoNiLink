@@ -25,6 +25,7 @@ export struct PairingPage {
   @State state: ConnectionState = ConnectionState.Idle; // reactive mirror for button states
   private scroller: Scroller = new Scroller();
   private scanTimer: number = -1;
+  private offStateListener: (() => void) | null = null;
 
   // Derived helpers
   private isPairingTabOwner(): boolean { return this.owner === 'pairing'; }
@@ -46,7 +47,7 @@ export struct PairingPage {
 
   aboutToAppear(): void {
     hilog.info(0x0001, TAG, '[CHECKPOINT] PairingPage aboutToAppear');
-    cameraService.setStateListener((s: ConnectionState) => {
+    this.offStateListener = cameraService.setStateListener((s: ConnectionState) => {
       this.owner = cameraService.getOwner();
       this.state = s;
       if (this.isPairingTabOwner()) {
@@ -94,7 +95,10 @@ export struct PairingPage {
     });
   }
 
-  aboutToDisappear(): void { this.stopPolling(); }
+  aboutToDisappear(): void {
+    this.stopPolling();
+    if (this.offStateListener) { this.offStateListener(); this.offStateListener = null; }
+  }
 
   private startPolling(): void {
     this.stopPolling();
