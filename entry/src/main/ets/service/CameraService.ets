@@ -302,7 +302,7 @@ export class CameraService {
     if (!this.requestOwnership('pairing')) return false;
     hilog.info(0x0001, TAG, '[CHECKPOINT] startPairingScan() called');
     this.discoveredList = [];
-    this.setState(ConnectionState.Scanning, 'Scanning for cameras...');
+    this.setState(ConnectionState.Scanning, '正在扫描设备…');
     this.scanner.startScan((cameras: DiscoveredCamera[]) => {
       this.discoveredList = cameras;
     });
@@ -317,7 +317,7 @@ export class CameraService {
     this.scanner.stopScan();
     if (this._state === ConnectionState.Scanning && this.owner === 'pairing') {
       this.releaseOwnership();
-      this.setState(ConnectionState.Idle, 'Scan stopped.');
+      this.setState(ConnectionState.Idle, '扫描已停止');
     }
   }
 
@@ -380,7 +380,7 @@ export class CameraService {
 
     // For reconnect, the camera's BLE address may have changed.
     // Scan for current advertisement by name, fall back to saved address.
-    this.setState(ConnectionState.Scanning, `Searching for ${camera.name}...`);
+    this.setState(ConnectionState.Scanning, `正在搜索 ${camera.name}…`);
     this.scanner.startScan((cameras: DiscoveredCamera[]) => {
       const found = cameras.find((c) => c.deviceName === camera.name);
       if (found) {
@@ -424,7 +424,7 @@ export class CameraService {
     this.scanner.stopScan();
     try { connection.stopBluetoothDiscovery(); } catch (e) {}
     this.releaseOwnership();
-    this.setState(ConnectionState.Idle, 'Disconnected.');
+    this.setState(ConnectionState.Idle, '已断开');
   }
 
   // ==================== GPS ====================
@@ -532,7 +532,7 @@ export class CameraService {
   // ==================== Private ====================
 
   private connectToDevice(deviceId: string): void {
-    this.setState(ConnectionState.Connecting, `Connecting to ${deviceId}...`);
+    this.setState(ConnectionState.Connecting, `正在连接 ${deviceId}…`);
     this.pairingStep = 0;
     this.currentStage1 = null;
 
@@ -579,14 +579,14 @@ export class CameraService {
     if (event instanceof BleConnected) {
       hilog.info(0x0001, TAG, '[CHECKPOINT] BLE Connected');
       this.reconnectRetries = 0; // reset backoff on success
-      this.setState(ConnectionState.Discovering, 'Discovering services...');
+      this.setState(ConnectionState.Discovering, '正在发现服务…');
     } else if (event instanceof BleServicesDiscovered) {
       hilog.info(0x0001, TAG, '[CHECKPOINT] Services Discovered');
       if (this.pairingStep === 0) {
         this.pairingStep = 1;
         this.bleClient.prepare(() => {
           hilog.info(0x0001, TAG, '[CHECKPOINT] prepare done, beginning handshake');
-          this.setState(ConnectionState.Pairing, 'Handshaking...');
+          this.setState(ConnectionState.Pairing, '正在进行配对…');
           // Delay to let BLE stack settle after prepare
           setTimeout(() => { this.beginHandshake(); }, 500);
         });
@@ -656,7 +656,7 @@ export class CameraService {
       const stage3 = this.pairingEngine.verifyStage2AndBuildStage3(stage1, msg);
       if (!stage3) {
         hilog.error(0x0001, TAG, '[CHECKPOINT] Salt verification FAILED — handshake aborted');
-        this.setState(ConnectionState.Error, 'Blowfish salt mismatch. Handshake failed.');
+        this.setState(ConnectionState.Error, '配对失败：安全验证不匹配');
         return;
       }
 
@@ -768,7 +768,7 @@ export class CameraService {
     }
 
     // Disconnect BLE GATT first — camera requires this before classic bonding
-    this.setState(ConnectionState.Bonding, 'Searching for camera via classic Bluetooth...');
+    this.setState(ConnectionState.Bonding, '正在通过经典蓝牙搜索相机…');
     hilog.info(0x0001, TAG, '[CHECKPOINT] Disconnecting BLE GATT for classic bonding');
     this.bleClient.disconnect();
 
@@ -921,7 +921,7 @@ export class CameraService {
         this.scheduleReconnect();
       } else {
         this.releaseOwnership();
-        this.setState(ConnectionState.Idle, 'Camera disconnected. Tap Reconnect.');
+        this.setState(ConnectionState.Idle, '相机已断开，请重新连接');
       }
       return;
     }
@@ -935,7 +935,7 @@ export class CameraService {
       this.scheduleReconnect();
     } else {
       this.releaseOwnership();
-      this.setState(ConnectionState.Idle, 'Connection lost. Tap Reconnect to retry.');
+      this.setState(ConnectionState.Idle, '连接已断开，请重新连接');
     }
   }
 
@@ -952,7 +952,7 @@ export class CameraService {
     const delay = delays[Math.min(this.reconnectRetries, delays.length - 1)];
     this.reconnectRetries++;
     hilog.info(0x0001, TAG, `[RECONNECT] attempt ${this.reconnectRetries} in ${delay}ms`);
-    this.setState(ConnectionState.Idle, `Reconnecting (attempt ${this.reconnectRetries})...`);
+    this.setState(ConnectionState.Idle, `正在自动重连（第 ${this.reconnectRetries} 次）…`);
     const cam = this.savedCamera;
     this.reconnectTimerId = setTimeout(() => {
       this.reconnectTimerId = null;
@@ -974,7 +974,7 @@ export class CameraService {
       this.releaseOwnership(); // after setState so listener sees owner='pairing' for dialog
     } else {
       this.setState(ConnectionState.Ready,
-        `Ready. Serial: ${this.cameraSerial || 'unknown'}`);
+        '已连接');
       this.startGpsLoop();
     }
   }
@@ -999,7 +999,7 @@ export class CameraService {
     // RECONNECT mode: BLE is still connected, go Ready + GPS
     // PAIR mode: handled by checkBondedAndFinish → classic bonding → finishBonding
     if (!this.isPairMode) {
-      this.setState(ConnectionState.Ready, `Ready. Serial: ${this.cameraSerial || 'unknown'}`);
+      this.setState(ConnectionState.Ready, '已连接');
       this.startGpsLoop();
     }
   }
