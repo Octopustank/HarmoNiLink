@@ -928,10 +928,12 @@ export class CameraService {
     if (this._state === ConnectionState.Idle || this._state === ConnectionState.Bonding) {
       return;
     }
-    // During reconnect/pairing, BLE drop is transient — graceful reset
+    // During reconnect/pairing, BLE drop is transient — graceful reset.
+    // Keep-connected means keep trying: no attempt cap (backoff itself caps
+    // the rate at 60s). Only the user's disconnect()/toggle-off stops it.
     this.pairingStep = 0;
     this.currentStage1 = null;
-    if (this.savedCamera && this.reconnectEnabled && this.reconnectRetries < 10) {
+    if (this.savedCamera && this.reconnectEnabled) {
       this.scheduleReconnect();
     } else {
       this.releaseOwnership();
