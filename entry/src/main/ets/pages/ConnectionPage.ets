@@ -18,6 +18,7 @@ export struct ConnectionPage {
   @State state: ConnectionState = ConnectionState.Idle;
   @State statusMsg: string = '';
   @State serial: string = '';
+  @State deviceName: string = ''; // readable BLE broadcast name (shown in status card)
   @State step: number = 0;
   @State savedCameras: PairedCamera[] = [];
   @State logMessages: string[] = [];
@@ -66,6 +67,7 @@ export struct ConnectionPage {
       // When pairing tab owns the operation, show neutral status
       this.statusMsg = this.isPairingOwner() ? '配对进行中…' : msg;
       this.serial = cameraService.getCameraSerial();
+      this.deviceName = cameraService.getCameraName();
       this.step = cameraService.getPairingStep();
       if (s === ConnectionState.Ready || s === ConnectionState.Idle) { this.loadSavedCameras(); }
       this.logMessages = [...this.logMessages.slice(-49),
@@ -207,8 +209,8 @@ export struct ConnectionPage {
         Circle({ width: 8, height: 8 }).fill(this.getStateColor())
         Text(this.getStateLabel()).fontSize(13).fontColor(this.getStateColor())
       }
-      if (this.serial) {
-        Text(this.serial).fontSize(15).fontColor($r('app.color.text_primary'))
+      if (this.deviceName || this.serial) {
+        Text(this.deviceName || this.serial).fontSize(15).fontColor($r('app.color.text_primary'))
           .fontWeight(FontWeight.Medium).margin({ top: 6 })
       }
       if (this.isPairingOwner()) {

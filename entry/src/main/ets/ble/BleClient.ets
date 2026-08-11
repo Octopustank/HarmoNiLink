@@ -83,13 +83,18 @@ export class BleClient {
   disconnect(): void {
     try {
       if (this.gattClient) {
-        this.gattClient.off('BLEConnectionStateChange');
-        this.gattClient.off('BLEMtuChange');
-        this.gattClient.off('BLECharacteristicChange');
+        // NOTE: listeners are intentionally NOT unregistered here. The service
+        // needs the BleDisconnected event to act immediately (e.g. start
+        // classic discovery once the BLE link is down). close() stops further
+        // system callbacks, and CameraService's stale guard ignores events
+        // after ownership is released.
         this.gattClient.disconnect();
         this.gattClient.close();
       }
     } catch (e) { hilog.debug(0x0001, TAG, `[C] cleanup: ${JSON.stringify(e)}`); }
+    // Synchronous notification — don't rely on async system callbacks that may
+    // be swallowed by close().
+    this.emit(new BleDisconnected());
     this.gattClient = null;
     this.writeBusy = false;
     if (this.writeTimeoutId !== null) { clearTimeout(this.writeTimeoutId); this.writeTimeoutId = null; }
@@ -172,17 +177,28 @@ export class BleClient {
         c['writeDescriptorValue'](descObj, (err2: BusinessError) => {
           hilog.info(0x0001, TAG, err2 ? `[P] PAIR desc ERR ${err2.code}` : `[P] PAIR desc OK`);
           setTimeout(() => {
+            if (!this.gattClient) return; // cancelled mid-chain — abort silently
             // Step 3: NOT1 notification
             c['setCharacteristicChangeNotification'](not1Obj, true, (err3: BusinessError) => {
               hilog.info(0x0001, TAG, err3 ? `[P] NOT1 ERR ${err3.code}` : `[P] NOT1 OK`);
               setTimeout(() => {
+                if (!this.gattClient) return; // cancelled mid-chain — abort silently
                 // Step 4: NOT2 notification (Linux POC enables this too)
+                // Older bodies (D5600) may lack NOT2 entirely — a synchronous
+                // throw here would stall prepare() forever, so guard it and
+                // always proceed to onDone().
                 const not2Obj: ble.BLECharacteristic = { serviceUuid: SVC, characteristicUuid: NOT2, characteristicValue: new ArrayBuffer(1), descriptors: [] };
-                c['setCharacteristicChangeNotification'](not2Obj, true, (err4: BusinessError) => {
-                  hilog.info(0x0001, TAG, err4 ? `[P] NOT2 ERR ${err4.code}` : `[P] NOT2 OK`);
+                try {
+                  c['setCharacteristicChangeNotification'](not2Obj, true, (err4: BusinessError) => {
+                    hilog.info(0x0001, TAG, err4 ? `[P] NOT2 ERR ${err4.code}` : `[P] NOT2 OK`);
+                    hilog.info(0x0001, TAG, `[P] done`);
+                    onDone();
+                  });
+                } catch (e) {
+                  hilog.warn(0x0001, TAG, `[P] NOT2 EXC — proceeding anyway: ${JSON.stringify(e)}`);
                   hilog.info(0x0001, TAG, `[P] done`);
                   onDone();
-                });
+                }
               }, 200);
             });
           }, 200);
