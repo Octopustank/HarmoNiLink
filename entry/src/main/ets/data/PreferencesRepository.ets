@@ -38,6 +38,9 @@ export class PreferencesRepository {
   private reconnectEnabledCache: boolean = false; // "保持连接" — default off
   private reconnectPromptedCache: boolean = false; // one-time explanation shown
   private connectHintShownCache: boolean = false; // one-time first-connect hint shown
+  // True once the user touched the toggle this session — init() must not
+  // overwrite a fresh user choice with the stale on-disk value.
+  private reconnectTouched: boolean = false;
 
   async init(context: common.UIAbilityContext): Promise<void> {
     try {
@@ -45,7 +48,9 @@ export class PreferencesRepository {
       this.cache = await this.loadSavedCameras();
       const saved = await this.store.get(KEY_CONTROLLER_NAME, '') as string;
       if (saved) this.controllerNameCache = saved; // don't overwrite a freshly generated name
-      this.reconnectEnabledCache = await this.store.get(KEY_RECONNECT_ENABLED, false) as boolean;
+      if (!this.reconnectTouched) {
+        this.reconnectEnabledCache = await this.store.get(KEY_RECONNECT_ENABLED, false) as boolean;
+      }
       this.reconnectPromptedCache = await this.store.get(KEY_RECONNECT_PROMPTED, false) as boolean;
       this.connectHintShownCache = await this.store.get(KEY_CONNECT_HINT_SHOWN, false) as boolean;
       hilog.info(0x0001, TAG, `[CHECKPOINT] PreferencesRepository initialized (${this.cache.length} cameras, reconnect=${this.reconnectEnabledCache})`);
@@ -65,6 +70,7 @@ export class PreferencesRepository {
   }
 
   saveReconnectEnabled(enabled: boolean): void {
+    this.reconnectTouched = true; // init() must not overwrite this choice
     this.reconnectEnabledCache = enabled;
     this.putBool(KEY_RECONNECT_ENABLED, enabled);
   }

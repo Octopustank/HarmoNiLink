@@ -164,6 +164,7 @@ export class BleClient {
       hilog.info(0x0001, TAG, err ? `[P] PAIR CCN ERR ${err.code}` : `[P] PAIR CCN OK`);
       // Delay to let BLE stack settle before next operation
       setTimeout(() => {
+        if (!this.gattClient) return; // cancelled mid-chain — abort silently
         // Step 2: PAIR CCCD descriptor (0x02 = indication)
         const cccdBuf = new ArrayBuffer(2);
         const cccdV = new Uint8Array(cccdBuf);
@@ -220,18 +221,21 @@ export class BleClient {
       hilog.warn(0x0001, TAG, `[W] SKIP ${uuid} — write in progress`);
       return;
     }
+    if (!this.gattClient) return; // torn down (cancel) — never touch a closed client
+    const client = this.gattClient; // identity check against stale callbacks
     this.writeBusy = true;
     hilog.info(0x0001, TAG, `[W] ${uuid} ${data.byteLength}B`);
     const buf = new ArrayBuffer(data.byteLength);
     const v = new Uint8Array(buf);
     for (let i = 0; i < data.byteLength; i++) v[i] = data[i];
     const obj: ble.BLECharacteristic = { serviceUuid: SVC, characteristicUuid: uuid, characteristicValue: buf, descriptors: [] };
-    const c = this.gattClient as Object as Record<string, Function>;
+    const c = client as Object as Record<string, Function>;
 
     // Safety timeout: if callback never fires (e.g. camera stopped responding
     // while the link appears alive), surface it as a link-loss signal so the
     // service can tear down and reconnect — instead of silently staying Ready.
     this.writeTimeoutId = setTimeout(() => {
+      if (this.gattClient !== client) return; // connection replaced — ignore
       this.writeTimeoutId = null;
       this.writeBusy = false;
       hilog.warn(0x0001, TAG, `[W] TIMEOUT reset writeBusy for ${uuid}`);
@@ -239,6 +243,7 @@ export class BleClient {
     }, 10000);
 
     c['writeCharacteristicValue'](obj, 1, (err: BusinessError) => {
+      if (this.gattClient !== client) return; // stale callback from previous connection
       if (this.writeTimeoutId !== null) {
         clearTimeout(this.writeTimeoutId);
         this.writeTimeoutId = null;

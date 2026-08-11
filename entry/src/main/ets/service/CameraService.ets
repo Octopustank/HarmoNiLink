@@ -438,6 +438,16 @@ export class CameraService {
     this.stopGpsLoop();
     this.stopBackgroundTask();
     this.clearConnectTimeout();
+    // Release ownership BEFORE tearing down BLE: bleClient.disconnect() emits
+    // BleDisconnected synchronously, which must hit the stale guard instead of
+    // triggering auto-reconnect for a user-initiated disconnect.
+    this.releaseOwnership();
+    // Cancel any bonding in flight — otherwise a late BONDED event (or the user
+    // confirming a pending system dialog) could finish a pairing that was
+    // cancelled, producing a ghost "已连接" with no connection.
+    this.bondingDiscoveryActive = false;
+    this.pendingBondingDiscovery = false;
+    this.unregisterBondListeners();
     this.bleClient.disconnect();
     this.pairingStep = 0;
     this.currentStage1 = null;
@@ -445,7 +455,6 @@ export class CameraService {
     this.cameraName = '';
     this.scanner.stopScan();
     try { connection.stopBluetoothDiscovery(); } catch (e) {}
-    this.releaseOwnership();
     this.setState(ConnectionState.Idle, '已断开');
   }
 
@@ -559,21 +568,23 @@ export class CameraService {
     this.currentStage1 = null;
 
     // Watchdog: if the device never responds (non-Nikon device, out of range),
-    // abort after 20s instead of hanging forever. Cancelled on terminal states.
+    // abort instead of hanging forever. Cancelled on terminal states.
+    // 35s: older bodies (e.g. D5600) take 10-17s just to connect, then MTU
+    // negotiation (3s timeout) + service discovery — 20s was too tight.
     this.clearConnectTimeout();
     this.connectTimeoutId = setTimeout(() => {
       if (this._state === ConnectionState.Ready || this._state === ConnectionState.Idle
         || this._state === ConnectionState.Error || this._state === ConnectionState.Bonding) {
         return; // already settled — nothing to abort
       }
-      hilog.warn(0x0001, TAG, '[CHECKPOINT] Connect watchdog fired (20s) — aborting stalled pairing');
+      hilog.warn(0x0001, TAG, '[CHECKPOINT] Connect watchdog fired (35s) — aborting stalled pairing');
       this.bleClient.disconnect();
       this.scanner.stopScan();
       try { connection.stopBluetoothDiscovery(); } catch (e) {}
       // Route through the unified recovery path instead of dying on Error —
       // auto-reconnect keeps trying while the camera is unavailable.
       this.handleLinkLost();
-    }, 20000);
+    }, 35000);
 
     this.bleClient.connect(deviceId, (event: BleEvent) => {
       this.handleBleEvent(event);
@@ -702,7 +713,9 @@ export class CameraService {
     } else if (this.pairingStep === 2 && msg.stage === 0x04) {
       // Received stage 4 — extract serial
       const serial = this.pairingEngine.extractSerial(msg);
-      this.cameraSerial = serial;
+      // D-series bodies put binary data in the serial field (D5600 → garbled
+      // bytes like 'éKºóû§q'); fall back to the readable BLE broadcast name.
+      this.cameraSerial = serial.length > 0 && /^[\x20-\x7E]*$/.test(serial) ? serial : this.cameraName;
       this.pairingStep = 3;
 
       hilog.info(0x0001, TAG,
@@ -935,6 +948,9 @@ export class CameraService {
         this.scheduleReconnect();
       } else {
         this.releaseOwnership();
+        this.cameraSerial = '';
+        this.cameraName = '';
+        this.stopBackgroundTask();
         this.setState(ConnectionState.Idle, '相机已断开，请重新连接');
       }
       return;
@@ -951,6 +967,9 @@ export class CameraService {
       this.scheduleReconnect();
     } else {
       this.releaseOwnership();
+      this.cameraSerial = '';
+      this.cameraName = '';
+      this.stopBackgroundTask();
       this.setState(ConnectionState.Idle, '连接已断开，请重新连接');
     }
   }

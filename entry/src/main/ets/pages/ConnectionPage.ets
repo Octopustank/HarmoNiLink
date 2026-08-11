@@ -169,8 +169,10 @@ export struct ConnectionPage {
     });
     dialog.then((result) => {
       if (result.index === 1) {
-        // Disconnect first if this camera is connected
-        if (cameraService.getCameraSerial() === cam.name) {
+        // Disconnect first if this camera is connected — compare the readable
+        // broadcast name (serial is only meaningful for Z-series and differs
+        // from the saved name, which would skip the disconnect).
+        if (cameraService.getCameraName() === cam.name) {
           cameraService.disconnect();
         }
         cameraService.removeCamera(cam.name).then(() => this.loadSavedCameras())
