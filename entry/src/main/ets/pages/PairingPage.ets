@@ -18,6 +18,7 @@ const TAG = 'HarmoNiLink-PairingPage';
 @Component
 export struct PairingPage {
   @State discoveredCameras: DiscoveredCamera[] = [];
+  @State showOthers: boolean = false; // "其他设备" collapsed section
   @State pairingTarget: string = '';
   @State titleSub: string = '';
   @State statusLabel: string = '准备就绪';
@@ -98,6 +99,41 @@ export struct PairingPage {
   aboutToDisappear(): void {
     this.stopPolling();
     if (this.offStateListener) { this.offStateListener(); this.offStateListener = null; }
+  }
+
+  private nikonCameras(): DiscoveredCamera[] {
+    return this.discoveredCameras.filter((c: DiscoveredCamera) => c.isNikon);
+  }
+  private otherCameras(): DiscoveredCamera[] {
+    return this.discoveredCameras.filter((c: DiscoveredCamera) => !c.isNikon);
+  }
+
+  @Builder cameraRow(cam: DiscoveredCamera) {
+    Row() {
+      Column() {
+        Text(cam.deviceName).fontSize(16).fontWeight(500).fontColor($r('app.color.text_primary'))
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        Text(`RSSI: ${cam.rssi}`).fontSize(14).fontColor($r('app.color.text_secondary')).margin({ top: 2 })
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+      if (this.pairingTarget === cam.deviceName) {
+        Button('配对中…')
+          .fontSize(13).fontWeight(FontWeight.Medium)
+          .height(32).borderRadius(16).backgroundColor('#FF9500').fontColor(Color.White)
+          .padding({ left: 16, right: 16 })
+          .onClick(() => { this.cancelCurrentPairing(); })
+      } else if (this.pairingTarget !== '') {
+        Button('配对')
+          .fontSize(13).fontWeight(FontWeight.Medium)
+          .height(32).borderRadius(16).backgroundColor($r('app.color.disabled_bg')).fontColor($r('app.color.card_background'))
+          .padding({ left: 16, right: 16 }).enabled(false)
+      } else {
+        Button('配对').fontSize(13).fontWeight(FontWeight.Medium)
+          .height(32).borderRadius(16).backgroundColor($r('app.color.brand')).fontColor(Color.White)
+          .padding({ left: 16, right: 16 })
+          .enabled((this.owner === 'none' || this.isPairingTabOwner()) && this.pairingTarget === '')
+          .onClick(() => { this.onPair(cam); })
+      }
+    }.width('100%').height(48).padding({ left: 8, right: 8 })
   }
 
   private startPolling(): void {
@@ -221,40 +257,34 @@ export struct PairingPage {
             Text('已发现的设备').fontSize(14).fontColor($r('app.color.text_secondary'))
               .margin({ left: 12, bottom: 8, top: 28 }).alignSelf(ItemAlign.Start).fontWeight(500)
 
-            Column() {
-              ForEach(this.discoveredCameras, (cam: DiscoveredCamera, i: number) => {
-                Row() {
-                  Column() {
-                    Text(cam.deviceName).fontSize(16).fontWeight(500).fontColor($r('app.color.text_primary'))
-                      .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-                    Text(`RSSI: ${cam.rssi}`).fontSize(14).fontColor($r('app.color.text_secondary')).margin({ top: 2 })
-                  }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-                  if (this.pairingTarget === cam.deviceName) {
-                    Button('配对中…')
-                      .fontSize(13).fontWeight(FontWeight.Medium)
-                      .height(32).borderRadius(16).backgroundColor('#FF9500').fontColor(Color.White)
-                      .padding({ left: 16, right: 16 })
-                      .onClick(() => { this.cancelCurrentPairing(); })
-                  } else if (this.pairingTarget !== '') {
-                    Button('配对')
-                      .fontSize(13).fontWeight(FontWeight.Medium)
-                      .height(32).borderRadius(16).backgroundColor($r('app.color.disabled_bg')).fontColor($r('app.color.card_background'))
-                      .padding({ left: 16, right: 16 }).enabled(false)
-                  } else {
-                    Button('配对').fontSize(13).fontWeight(FontWeight.Medium)
-                      .height(32).borderRadius(16).backgroundColor($r('app.color.brand')).fontColor(Color.White)
-                      .padding({ left: 16, right: 16 })
-                      .enabled((this.owner === 'none' || this.isPairingTabOwner()) && this.pairingTarget === '')
-                      .onClick(() => { this.onPair(cam); })
-                  }
-                }.width('100%').height(48).padding({ left: 8, right: 8 })
-                if (i < this.discoveredCameras.length - 1) {
-                  Divider().strokeWidth(0.5).color($r('app.color.divider')).margin({ left: 8, right: 8 })
-                }
-              }, (cam: DiscoveredCamera) => cam.deviceId)
+            // 尼康相机置顶（UUID 0xDE00 或命名匹配）
+            if (this.nikonCameras().length > 0) {
+              Text(`尼康相机（${this.nikonCameras().length}）`).fontSize(12).fontColor($r('app.color.brand'))
+                .margin({ left: 12, bottom: 6, top: 8 }).alignSelf(ItemAlign.Start)
+              Column() {
+                ForEach(this.nikonCameras(), (cam: DiscoveredCamera) => { this.cameraRow(cam) },
+                  (cam: DiscoveredCamera) => cam.deviceId)
+              }
+              .width('100%').backgroundColor($r('app.color.card_background')).borderRadius(16).padding(4)
+              .shadow({ radius: 12, color: '#0D000000', offsetY: 2 })
             }
-            .width('100%').backgroundColor($r('app.color.card_background')).borderRadius(16).padding(4)
-            .shadow({ radius: 12, color: '#0D000000', offsetY: 2 })
+
+            // 其他设备（默认折叠）
+            Row() {
+              Text(`其他设备（${this.otherCameras().length}）`).fontSize(13).fontColor($r('app.color.text_secondary'))
+              Blank()
+              Text(this.showOthers ? '收起' : '展开').fontSize(13).fontColor($r('app.color.brand'))
+            }
+            .width('100%').padding({ left: 12, right: 12, top: 12, bottom: 4 })
+            .onClick(() => { this.showOthers = !this.showOthers; })
+            if (this.showOthers) {
+              Column() {
+                ForEach(this.otherCameras(), (cam: DiscoveredCamera) => { this.cameraRow(cam) },
+                  (cam: DiscoveredCamera) => cam.deviceId)
+              }
+              .width('100%').backgroundColor($r('app.color.card_background')).borderRadius(16).padding(4)
+              .shadow({ radius: 12, color: '#0D000000', offsetY: 2 })
+            }
           } else {
             Column() {
               Text(this.pairingTarget !== ''

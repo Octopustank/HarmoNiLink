@@ -7,6 +7,18 @@ const TAG = 'HarmoNiLink-BleScanner';
 export interface DiscoveredCamera {
   deviceId: string; deviceName: string; rssi: number;
   hasManufacturerData: boolean; isConnectable: boolean;
+  /** Nikon camera — recognized by the 0xDE00 service UUID in the BLE
+   *  advertisement (reliable, protocol-level). Name heuristics are only used
+   *  to dedupe the classic-BT echo of an already-listed camera. */
+  isNikon: boolean;
+}
+
+// Nikon naming heuristics for broadcast names: Z-series (Z_6_2_...) and
+// D-series with 3-4 digit model numbers (D5600_..., D7500_..., D850_...).
+// Deliberately narrower than the UUID check — e.g. D61W_... must NOT match
+// (observed as a non-Nikon classic device).
+function isNikonName(name: string): boolean {
+  return /^(Z_|D\d{3,4}_)/.test(name) || name.toUpperCase().includes('NIKON');
 }
 export type ScanListener = (cameras: DiscoveredCamera[]) => void;
 
@@ -49,7 +61,8 @@ export class BleScanner {
         const arr = data as string[];
         hilog.info(0x0001, TAG, `[CLASSIC v17] FIRED! ${arr.length} devices: [${arr.join(', ')}]`);
         for (let i = 0; i < arr.length; i++) {
-          this.add(arr[i], `BT-device-${i}`, 0);
+          const cId = arr[i];
+          this.add(cId, `BT-device-${i}`, 0, false);
         }
       });
 
@@ -58,10 +71,12 @@ export class BleScanner {
         hilog.info(0x0001, TAG, `[CLASSIC v18] FIRED! ${arr.length} results`);
         for (let i = 0; i < arr.length; i++) {
           const d = arr[i] as Record<string, Object>;
+          const cName = (d['deviceName'] as string) ?? `BT-${i}`;
           this.add(
             (d['deviceId'] as string) ?? '',
-            (d['deviceName'] as string) ?? `BT-${i}`,
-            (d['rssi'] as number) ?? 0
+            cName,
+            (d['rssi'] as number) ?? 0,
+            false
           );
         }
       });
@@ -102,7 +117,7 @@ export class BleScanner {
           const name = (sr['deviceName'] as string) ?? '';
           const rssi = (sr['rssi'] as number) ?? 0;
           hilog.info(0x0001, TAG, `[NEW BLE] nested: id=${id} name='${name}' rssi=${rssi} keys=[${Object.keys(sr).join(',')}]`);
-          this.add(id, name, rssi);
+          this.add(id, name, rssi, false);
         } else {
           hilog.info(0x0001, TAG, `[NEW BLE] no scanResult in report, keys=[${Object.keys(r).join(',')}]`);
         }
@@ -130,16 +145,19 @@ export class BleScanner {
           const id = (r['deviceId'] as string) ?? '';
           const name = (r['deviceName'] as string) ?? '';
           const rssi = (r['rssi'] as number) ?? 0;
-          // If no deviceId at top level, check for nested data
+          // Service UUIDs from the advertisement — Nikon cameras advertise
+          // 0xDE00; logged for verification of the filter approach.
+          const svcs = (r['serviceUuids'] as string[] ?? []) as string[];
+          const svcHit = svcs.some((u: string) => u.toUpperCase().includes('DE00'));
           if (!id || !name) {
             const data = r['data'];
             hilog.info(0x0001, TAG,
-              `[OLD BLE] result[${i}] keys=[${Object.keys(r).join(',')}] dataLen=${data ? (data as ArrayBuffer).byteLength : 0}`);
+              `[OLD BLE] result[${i}] keys=[${Object.keys(r).join(',')}] dataLen=${data ? (data as ArrayBuffer).byteLength : 0} svcUuids=[${svcs.join(',')}]`);
           } else {
             hilog.info(0x0001, TAG,
-              `[OLD BLE] result[${i}]: id=${id} name='${name}' rssi=${rssi}`);
+              `[OLD BLE] result[${i}]: id=${id} name='${name}' rssi=${rssi} svcUuids=[${svcs.join(',')}] nikon=${svcHit || isNikonName(name)}`);
           }
-          this.add(id, name, rssi);
+          this.add(id, name, rssi, svcHit);
         }
       });
       const opts: ble.ScanOptions = {
@@ -164,13 +182,20 @@ export class BleScanner {
     try { ble.stopBLEScan(); ble.off('BLEDeviceFind'); } catch (e) {}
   }
 
-  private add(deviceId: string, deviceName: string, rssi: number): void {
+  private add(deviceId: string, deviceName: string, rssi: number, isNikonByUuid: boolean): void {
     if (!deviceId || !this.isScanning) return;
     if (this.discoveredCameras.has(deviceId)) return;
-    hilog.info(0x0001, TAG, `[ADD] id=${deviceId} name='${deviceName}' rssi=${rssi}`);
+    // Classic-BT echo of an already-listed camera (same broadcast name, no
+    // UUID info) — drop it so each camera appears exactly once.
+    if (!isNikonByUuid && isNikonName(deviceName)) {
+      for (const c of this.discoveredCameras.values()) {
+        if (c.isNikon && c.deviceName === deviceName) return;
+      }
+    }
+    hilog.info(0x0001, TAG, `[ADD] id=${deviceId} name='${deviceName}' rssi=${rssi} nikon=${isNikonByUuid}`);
     this.discoveredCameras.set(deviceId, {
       deviceId, deviceName: deviceName || deviceId, rssi,
-      hasManufacturerData: false, isConnectable: false,
+      hasManufacturerData: false, isConnectable: false, isNikon: isNikonByUuid,
     });
     if (this.scanListener) {
       this.scanListener(Array.from(this.discoveredCameras.values()));
