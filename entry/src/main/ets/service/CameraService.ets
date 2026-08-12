@@ -20,6 +20,7 @@ import { geoLocationManager } from '@kit.LocationKit';
 import { backgroundTaskManager } from '@kit.BackgroundTasksKit';
 import { common, wantAgent, WantAgent, abilityAccessCtrl } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
+import { promptAction } from '@kit.ArkUI';
 import { PairedCamera, NikonPairingEngine } from '../ble/protocol/NikonPairingEngine';
 import { PairingMessage } from '../ble/protocol/PairingMessage';
 import { GeoPayloadGenerator, GpsPosition } from '../ble/protocol/GeoPayloadGenerator';
@@ -647,6 +648,13 @@ export class CameraService {
       this.handleLinkLost();
     } else if (event instanceof BleError) {
       hilog.error(0x0001, TAG, `[CHECKPOINT] BLE Error: ${event.message}`);
+      // Pair-target hint: reaching Pairing means connect + service discovery
+      // both succeeded — a PAIR write failure at that point almost always
+      // means the camera is not treating this link as a pairing target (it is
+      // waiting for another paired device), not a link problem.
+      if (this._state === ConnectionState.Pairing && event.message.startsWith('Write')) {
+        this.maybeShowPairTargetHint();
+      }
       // Link-loss signal, not a terminal state: tear down and let
       // handleLinkLost decide between auto-reconnect and settling.
       this.bleClient.disconnect();
@@ -654,6 +662,26 @@ export class CameraService {
       try { connection.stopBluetoothDiscovery(); } catch (e) {}
       this.handleLinkLost();
     }
+  }
+
+  /**
+   * "Camera is waiting for another paired device" hint. Shown at most once
+   * per 60s — the reconnect loop fails every ~10s, so without throttling the
+   * dialog would spam.
+   */
+  private lastPairTargetHintAt: number = 0;
+
+  private maybeShowPairTargetHint(): void {
+    if (Date.now() - this.lastPairTargetHintAt < 60000) return;
+    this.lastPairTargetHintAt = Date.now();
+    hilog.warn(0x0001, TAG, '[CHECKPOINT] Camera may be waiting for another device — showing hint');
+    promptAction.showDialog({
+      title: '连接提示',
+      message: `相机端可能未选择本设备。请在相机【已配对设备】里，将当前设备切换为「${this.controllerName || 'HarmoNiLink'}」后重试。`,
+      buttons: [{ text: '知道了', color: '#0A59F7' }]
+    }).catch((e: BusinessError) => {
+      hilog.warn(0x0001, TAG, `[CHECKPOINT] Hint dialog failed: ${e.message}`);
+    });
   }
 
   // ==================== Handshake Logic ====================
