@@ -29,6 +29,8 @@ export class BleClient {
   private writeTimeoutId: number | null = null; // safety reset for stalled callbacks
   private servicesDiscovered: boolean = false; // prevent duplicate discovery
   private mtuTimeoutId: number = -1; // cancel MTU timeout when response arrives
+  private discoveryRetries: number = 0; // D-series slow service-discovery retries
+  private discoveryInFlight: boolean = false; // only one getServices at a time
 
   connect(deviceId: string, listener: BleListener): void {
     hilog.info(0x0001, TAG, `[C] ${deviceId}`);
@@ -36,6 +38,8 @@ export class BleClient {
     this.listener = listener;
     this.pairChar = this.not1Char = null;
     this.servicesDiscovered = false;
+    this.discoveryRetries = 0;
+    this.discoveryInFlight = false;
     clearTimeout(this.mtuTimeoutId);
     try {
       this.gattClient = ble.createGattClientDevice(deviceId);
@@ -54,12 +58,14 @@ export class BleClient {
             }
           } catch (e) {}
           try { this.gattClient?.setBLEMtuSize(517); hilog.info(0x0001, TAG, `[M] setMTU`); } catch (e) {}
-          // MTU timeout: if no response in 3s, proceed anyway
+          // MTU timeout: if no response in 5s, proceed anyway. 3s was too
+          // tight — D5600 on some stacks takes ~4.5s to negotiate MTU, and
+          // querying services before the link settles returns an empty list.
           clearTimeout(this.mtuTimeoutId);
           this.mtuTimeoutId = setTimeout(() => {
             hilog.warn(0x0001, TAG, `[M] MTU timeout — discovering anyway`);
             this.discoverServices();
-          }, 3000);
+          }, 5000);
         } else if (d.state === 0) this.emit(new BleDisconnected());
       });
       this.gattClient.on('BLEMtuChange', (mtu: number) => {
@@ -103,6 +109,8 @@ export class BleClient {
     clearTimeout(this.mtuTimeoutId);
     this.mtuTimeoutId = -1;
     this.servicesDiscovered = false;
+    this.discoveryRetries = 0;
+    this.discoveryInFlight = false;
     this.pairChar = null;
     this.not1Char = null;
     this.deviceId = '';
@@ -118,16 +126,38 @@ export class BleClient {
       hilog.warn(0x0001, TAG, `[D] SKIP — already discovered`);
       return;
     }
-    hilog.info(0x0001, TAG, `[D] getServices`);
+    if (this.discoveryInFlight) {
+      // MTU timeout + late BLEMtuChange both call discoverServices(); only one
+      // getServices may be in flight, otherwise callbacks interleave and a
+      // premature empty/error result kills the whole attempt.
+      hilog.warn(0x0001, TAG, `[D] SKIP — request in flight`);
+      return;
+    }
+    if (this.discoveryRetries > 2) {
+      hilog.error(0x0001, TAG, `[D] give up after 3 attempts`);
+      this.emit(new BleError('Device is not a Nikon camera (PAIR characteristic not found)'));
+      return;
+    }
+    hilog.info(0x0001, TAG, `[D] getServices (attempt ${this.discoveryRetries + 1}/3)`);
     const c = this.gattClient as Object as Record<string, Function>;
+    this.discoveryInFlight = true;
     try {
       c['getServices']((err: BusinessError, result: Object) => {
+        this.discoveryInFlight = false;
         if (err) {
+          // Service discovery can fail transiently on slow links (D5600) —
+          // retry before giving up, unless it's the close()-induced stale
+          // callback (gattClient already gone by then).
+          if (this.discoveryRetries < 2 && this.gattClient) {
+            this.discoveryRetries++;
+            hilog.warn(0x0001, TAG, `[D] ERR ${err.code} — retrying (${this.discoveryRetries}/2)`);
+            setTimeout(() => { this.discoverServices(); }, 2000);
+            return;
+          }
           hilog.error(0x0001, TAG, `[D] ERR ${err.code}`);
           this.emit(new BleError(`Service discovery failed: ${err.message}`));
           return;
         }
-        this.servicesDiscovered = true;
         const arr = Array.isArray(result) ? result as Object[] : ((result as Record<string, Object>)['services'] as Object[]) ?? [];
         hilog.info(0x0001, TAG, `[D] ${arr.length} svcs`);
         for (let i = 0; i < arr.length; i++) {
@@ -142,13 +172,21 @@ export class BleClient {
           }
         }
         hilog.info(0x0001, TAG, `[D] chars pair=${!!this.pairChar} not1=${!!this.not1Char}`);
-        // Fast-fail for non-Nikon devices: without the PAIR characteristic the
-        // pairing handshake can never start, so don't proceed to prepare().
         if (!this.pairChar) {
+          // D-series bodies can return an empty/incomplete service list while
+          // the link is still settling (observed: D5600 → 0 svcs on first call).
+          // Retry a couple of times before declaring the device unsupported.
+          if (this.discoveryRetries < 2) {
+            this.discoveryRetries++;
+            hilog.warn(0x0001, TAG, `[D] No PAIR characteristic — retrying (${this.discoveryRetries}/2)`);
+            setTimeout(() => { this.discoverServices(); }, 2000);
+            return;
+          }
           hilog.error(0x0001, TAG, `[D] No PAIR characteristic — not a Nikon camera`);
           this.emit(new BleError('Device is not a Nikon camera (PAIR characteristic not found)'));
           return;
         }
+        this.servicesDiscovered = true;
         this.emit(new BleServicesDiscovered());
       });
     } catch (e) { hilog.error(0x0001, TAG, `[D] EXC ${JSON.stringify(e)}`); }
