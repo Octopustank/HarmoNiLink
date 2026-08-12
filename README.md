@@ -5,7 +5,7 @@
 > Inspired by [hurui200320/nsg](https://github.com/hurui200320/nsg)，
 > 基于 [gkoh/furble](https://github.com/gkoh/furble) 逆向的 Nikon BLE 智能设备协议。
 
-HarmoNiLink 让 HarmonyOS 手机/平板替代 SnapBridge，向尼康 Z 系列相机**持续分发 GPS 坐标**。连接后全自动运行 — 相机休眠时保持低功耗连接，App 在后台静默传输位置数据。
+HarmoNiLink 让 HarmonyOS 手机/平板替代 SnapBridge，向尼康 Z / D 系列相机**持续分发 GPS 坐标**。连接后全自动运行 — 相机休眠时保持低功耗连接，App 在后台静默传输位置数据。
 
 由于鸿蒙系统在卓易通使用 SnapBridge 存在功能异常（截止作者测试），遂开发此应用代替之
 
@@ -28,7 +28,7 @@ HarmoNiLink 让 HarmonyOS 手机/平板替代 SnapBridge，向尼康 Z 系列相
 基于 `BackgroundMode.BLUETOOTH_INTERACTION` + `LOCATION` 双长时任务，不依赖无声音频等取巧手段。系统级后台调度保证 GPS 持续传输。后台持续下发需将定位权限设为「始终允许」，见[权限](#权限)。
 
 ### 相机休眠兼容
-尼康相机进入休眠后维持 BLE 低功耗连接，GPS 数据持续写入。若连接意外中断（深度休眠 / 超出距离），自动执行指数退避重连。
+尼康相机进入休眠后维持 BLE 低功耗连接，GPS 数据持续写入。若连接意外中断（深度休眠 / 超出距离），自动执行指数退避重连。Z 系列与 D 系列（D5600 等）均已适配——D 系列较慢的连接建立与经典蓝牙配对时序（需 BLE 连接完全释放后才可被发现）自动处理，无需手动干预。
 
 ### 多设备可区分
 每台安装自动生成唯一配对名称（`HarmoNiLink-XXXX`），写入相机并显示在相机端已配对列表，多台手机同时配对同一台相机时互不混淆；连接页可随时查看本机名称。
@@ -46,9 +46,9 @@ HarmoNiLink 让 HarmonyOS 手机/平板替代 SnapBridge，向尼康 Z 系列相
 | 平台 | 要求 |
 |------|------|
 | 手机 / 平板 | HarmonyOS NEXT（运行要求 API 23 / SDK 6.1.0 及以上；构建于 SDK 6.1.1 · API 24） |
-| 相机 | 尼康 Z 系列（Z 6II、Z 7II、Z 8、Z 9、Z f 等） |
+| 相机 | 尼康 Z 系列（Z 6II、Z 7II、Z 8、Z 9、Z f 等）与 D 系列（D5600 等） |
 
-> ⚠️ 仅 Z 6II 真机验证通过，其他型号欢迎测试反馈。
+> ✅ Z 6II、D5600 真机验证通过；其他型号欢迎测试反馈。
 
 ---
 
