@@ -7,6 +7,14 @@ import {
   BleWriteDone, BleError, BleEvent
 } from './BleEvent';
 
+// One-slot write buffer (newest-wins): when a write arrives while another is
+// in flight, it replaces any earlier pending one. A stale TIME payload is
+// worthless, a fresh GEO is more valuable — overwrite, never queue more.
+class PendingWrite {
+  uuid: string = '';
+  data: Uint8Array = new Uint8Array(0);
+}
+
 const TAG = 'HarmoNiLink-BleClient';
 
 const SVC = '0000DE00-3DD4-4255-8D62-6DC7B9BD5561';
@@ -26,6 +34,8 @@ export class BleClient {
   private pairChar: Object | null = null;
   private not1Char: Object | null = null;
   private writeBusy: boolean = false; // prevent concurrent writes
+  private pendingWrite: PendingWrite | null = null; // newest-wins buffered write
+  private writeTimeoutStreak: number = 0; // consecutive write timeouts before BleError
   private writeTimeoutId: number | null = null; // safety reset for stalled callbacks
   private servicesDiscovered: boolean = false; // prevent duplicate discovery
   private mtuTimeoutId: number = -1; // cancel MTU timeout when response arrives
@@ -111,6 +121,8 @@ export class BleClient {
     this.emit(new BleDisconnected());
     this.gattClient = null;
     this.writeBusy = false;
+    this.writeTimeoutStreak = 0; // stale streak must not leak into the next connection
+    this.pendingWrite = null; // stale buffered data must not leak into the next connection
     if (this.writeTimeoutId !== null) { clearTimeout(this.writeTimeoutId); this.writeTimeoutId = null; }
     // Cancel the MTU watchdog — without this it fires 3s after disconnect and
     // calls discoverServices() on a closed client, spurious BleError mid-reconnect.
@@ -264,11 +276,25 @@ export class BleClient {
 
   private w(uuid: string, data: Uint8Array): void {
     if (this.writeBusy) {
-      hilog.warn(0x0001, TAG, `[W] SKIP ${uuid} — write in progress`);
+      // Newest-wins one-slot buffer: a stale TIME payload is worthless, a
+      // fresh GEO is more valuable — overwrite the slot instead of dropping
+      // the frame or queueing more than one write.
+      const pending = new PendingWrite();
+      pending.uuid = uuid;
+      pending.data = data;
+      this.pendingWrite = pending;
+      hilog.warn(0x0001, TAG, `[W] QUEUED ${uuid} — write in progress`);
       return;
     }
     if (!this.gattClient) return; // torn down (cancel) — never touch a closed client
+    this.send(uuid, data);
+  }
+
+  // Sends a single write. The caller guarantees the write slot is free
+  // (writeBusy === false) — send() itself must NOT re-check the busy gate.
+  private send(uuid: string, data: Uint8Array): void {
     const client = this.gattClient; // identity check against stale callbacks
+    if (client === null) return; // torn down (cancel) — never touch a closed client
     this.writeBusy = true;
     hilog.info(0x0001, TAG, `[W] ${uuid} ${data.byteLength}B`);
     const buf = new ArrayBuffer(data.byteLength);
@@ -278,14 +304,29 @@ export class BleClient {
     const c = client as Object as Record<string, Function>;
 
     // Safety timeout: if callback never fires (e.g. camera stopped responding
-    // while the link appears alive), surface it as a link-loss signal so the
-    // service can tear down and reconnect — instead of silently staying Ready.
+    // while the link appears alive), count it. Only after consecutive timeouts
+    // surface it as a link-loss signal so the service can tear down and
+    // reconnect — a single slow write must not look like a dead camera.
     this.writeTimeoutId = setTimeout(() => {
       if (this.gattClient !== client) return; // connection replaced — ignore
       this.writeTimeoutId = null;
       this.writeBusy = false;
-      hilog.warn(0x0001, TAG, `[W] TIMEOUT reset writeBusy for ${uuid}`);
-      this.emit(new BleError(`Write timeout: ${uuid}`));
+      this.writeTimeoutStreak++;
+      hilog.warn(0x0001, TAG, `[W] TIMEOUT #${this.writeTimeoutStreak} reset writeBusy for ${uuid}`);
+      if (this.writeTimeoutStreak >= 3) {
+        this.writeTimeoutStreak = 0;
+        this.emit(new BleError(`Write timeout: ${uuid}`));
+        return;
+      }
+      if (this.pendingWrite !== null) {
+        if (this.gattClient !== null) {
+          const pending = this.pendingWrite;
+          this.pendingWrite = null;
+          this.send(pending.uuid, pending.data);
+        } else {
+          this.pendingWrite = null; // connection torn down — drop silently
+        }
+      }
     }, 10000);
 
     c['writeCharacteristicValue'](obj, 1, (err: BusinessError) => {
@@ -295,8 +336,19 @@ export class BleClient {
         this.writeTimeoutId = null;
       }
       this.writeBusy = false;
+      this.writeTimeoutStreak = 0; // the stack responded — not a timeout
       if (err) { hilog.error(0x0001, TAG, `[W] ERR ${err.code}: ${err.message}`); this.emit(new BleError(`Write: ${err.message}`)); }
       else { hilog.info(0x0001, TAG, `[W] OK`); this.emit(new BleWriteDone(uuid, 0)); }
+      // Flush the buffered (newest-wins) write now that the slot is free.
+      if (this.pendingWrite !== null) {
+        if (this.gattClient !== null) {
+          const pending = this.pendingWrite;
+          this.pendingWrite = null;
+          this.send(pending.uuid, pending.data);
+        } else {
+          this.pendingWrite = null; // connection torn down — drop silently
+        }
+      }
     });
   }
 

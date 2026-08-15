@@ -4,12 +4,12 @@
  * Wraps HdsTabs in HdsNavigation (critical: HdsNavDestination requires
  * HdsNavigation context for correct title bar positioning).
  *
- * Structure mirrors MultiDeviceCommunication Index.ets:
+ * Structure mirrors the MultiDeviceCommunication sample:
  *   HdsNavigation → HdsTabs → TabContent(expandSafeArea) → HdsNavDestination → Scroll
  */
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { common } from '@kit.AbilityKit';
-import { cameraService, ConnectionState } from '../service/CameraService';
+import { cameraService } from '../service/CameraService';
 import { PairingPage } from './PairingPage';
 import { ConnectionPage } from './ConnectionPage';
 import { HdsNavigation, HdsTabs, HdsTabsController, hdsMaterial } from '@kit.UIDesignKit';
@@ -27,7 +27,6 @@ struct MainPage {
     hilog.info(0x0001, TAG, '[CHECKPOINT] MainPage aboutToAppear');
     const ctx = getContext(this) as common.UIAbilityContext;
     cameraService.setContext(ctx);
-    cameraService.setStateListener((state: ConnectionState) => { /* handled in tabs */ });
   }
 
   @Builder tabBar(index: number, label: string, icon: Resource) {

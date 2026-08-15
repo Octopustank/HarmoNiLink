@@ -22,10 +22,17 @@ function isNikonName(name: string): boolean {
 }
 export type ScanListener = (cameras: DiscoveredCamera[]) => void;
 
+/**
+ * Runs three scan channels in parallel: classic BT discovery, the new
+ * BleScanner API ('BLEDeviceFind' with ScanReport), and the old ble.on API.
+ * Nikon cameras are identified by the 0xDE00 service UUID in the advertisement;
+ * the new-API channel reports it via ScanResult.serviceUuids.
+ */
 export class BleScanner {
   private scanListener: ScanListener | null = null;
   private discoveredCameras: Map<string, DiscoveredCamera> = new Map();
   private isScanning: boolean = false;
+  /** New BleScanner API instance (ScanReport-based 'BLEDeviceFind'). */
   private bleScanner: ble.BleScanner | null = null;
 
   startScan(listener: ScanListener): void {
@@ -108,16 +115,30 @@ export class BleScanner {
     try {
       this.bleScanner = ble.createBleScanner();
       this.bleScanner.on('BLEDeviceFind', (report: Object) => {
+        // NEW API ScanReport structure: {reportType, scanResult: Array<ScanResult>}.
+        // reportType: 1 = ON_FOUND, 0 = ON_LOST. Skip ON_LOST reports; if the
+        // field is absent, still process (defensive).
         const r = report as Record<string, Object>;
-        // NEW API ScanReport structure: {reportType, scanResult: {deviceId, deviceName, rssi, ...}}
+        const reportType = (r['reportType'] as number) ?? -1;
+        if (reportType !== -1 && reportType !== 1) {
+          return;
+        }
         const inner = r['scanResult'];
         if (inner) {
-          const sr = inner as Record<string, Object>;
-          const id = (sr['deviceId'] as string) ?? '';
-          const name = (sr['deviceName'] as string) ?? '';
-          const rssi = (sr['rssi'] as number) ?? 0;
-          hilog.info(0x0001, TAG, `[NEW BLE] nested: id=${id} name='${name}' rssi=${rssi} keys=[${Object.keys(sr).join(',')}]`);
-          this.add(id, name, rssi, false);
+          const arr = inner as Object[];
+          for (let i = 0; i < arr.length; i++) {
+            const sr = arr[i] as Record<string, Object>;
+            const id = (sr['deviceId'] as string) ?? '';
+            const name = (sr['deviceName'] as string) ?? '';
+            const rssi = (sr['rssi'] as number) ?? 0;
+            // Service UUIDs from the advertisement — Nikon cameras advertise
+            // 0xDE00; mirror the old-API filter.
+            const svcs = (sr['serviceUuids'] as string[] ?? []) as string[];
+            const svcHit = svcs.some((u: string) => u.toUpperCase().includes('DE00'));
+            hilog.info(0x0001, TAG,
+              `[NEW BLE] result[${i}]: id=${id} name='${name}' rssi=${rssi} svcUuids=[${svcs.join(',')}] nikon=${svcHit}`);
+            this.add(id, name, rssi, svcHit);
+          }
         } else {
           hilog.info(0x0001, TAG, `[NEW BLE] no scanResult in report, keys=[${Object.keys(r).join(',')}]`);
         }
@@ -184,7 +205,21 @@ export class BleScanner {
 
   private add(deviceId: string, deviceName: string, rssi: number, isNikonByUuid: boolean): void {
     if (!deviceId || !this.isScanning) return;
-    if (this.discoveredCameras.has(deviceId)) return;
+    const existing = this.discoveredCameras.get(deviceId);
+    if (existing) {
+      // UUID evidence can arrive after a same-device entry was added by another
+      // API channel without it (e.g. classic BT, or an earlier new-API report
+      // that predates the service-UUID parse). Upgrade in place so the UI can
+      // regroup the camera into "尼康相机" immediately.
+      if (isNikonByUuid && !existing.isNikon) {
+        existing.isNikon = true;
+        existing.rssi = rssi;
+        if (this.scanListener) {
+          this.scanListener(Array.from(this.discoveredCameras.values()));
+        }
+      }
+      return;
+    }
     // Classic-BT echo of an already-listed camera (same broadcast name, no
     // UUID info) — drop it so each camera appears exactly once.
     if (!isNikonByUuid && isNikonName(deviceName)) {

@@ -467,21 +467,19 @@ export class CameraService {
   private isForeground: boolean = true;
   private reconnectRetries: number = 0; // backoff counter
 
-  sendFakeGeo(): void {
-    if (!this.bleClient.isConnected()) {
-      this._statusMessage = 'BLE not connected — reconnect or scan first';
-      hilog.warn(0x0001, TAG, `[CHECKPOINT] sendFakeGeo: BLE not connected`);
-      return;
-    }
-    const geoPayload = GeoPayloadGenerator.buildFake();
-    hilog.info(0x0001, TAG, `[GPS] sendFakeGeo: ${geoPayload.length}B`);
-    this.bleClient.writeGeo(geoPayload);
-  }
+  // Real GNSS satellite count fed by Location Kit's satelliteStatusChange
+  // event. -1 = "unknown" (no status event yet / GNSS unsupported / missing
+  // permission). UI shows "--" for unknown; the wire payload falls back to 6
+  // (a valid protocol value) only when unknown, else uses the real clamped value.
+  private lastSatelliteCount: number = -1;
+  private satelliteSubscribed: boolean = false;
+  private satelliteStatusCb: ((status: geoLocationManager.SatelliteStatusInfo) => void) | null = null;
 
   startGpsLoop(intervalMs: number = 1500): void {
     const interval = this.isForeground ? intervalMs : 5000;
     hilog.info(0x0001, TAG, `[GPS] startGpsLoop: interval=${interval}ms fg=${this.isForeground}`);
     this.stopGpsLoop();
+    this.subscribeSatelliteStatus();
     this.gpsStep = 0;
     // Send TIME immediately, then alternate TIME/GEO
     this.sendGpsTick();
@@ -520,7 +518,7 @@ export class CameraService {
           const lat = pos.latitude;
           const lon = pos.longitude;
           const alt = Math.round(pos.altitude);
-          const sats = 6;
+          const sats = this.lastSatelliteCount;
           this.gpsData.hasFix = true;
           this.gpsData.latitude = lat;
           this.gpsData.longitude = lon;
@@ -530,7 +528,10 @@ export class CameraService {
 
           const gps: GpsPosition = {
             latitude: lat, longitude: lon, altitude: alt,
-            satellites: sats, timestamp: new Date()
+            // Wire payload needs a valid 3-12 count; use 6 only when the real
+            // count is still unknown (-1). Never fabricate a "normal-looking"
+            // value for the UI — that stays raw (unknown → "--").
+            satellites: sats >= 0 ? sats : 6, timestamp: new Date()
           };
           hilog.info(0x0001, TAG, `[GPS] GEO real lat=${lat.toFixed(6)} lon=${lon.toFixed(6)}`);
           this.bleClient.writeGeo(GeoPayloadGenerator.buildReal(gps));
@@ -549,6 +550,45 @@ export class CameraService {
       this.gpsTimer = null;
       hilog.info(0x0001, TAG, '[CHECKPOINT] GPS loop stopped');
     }
+    this.unsubscribeSatelliteStatus();
+  }
+
+  /**
+   * Subscribe to Location Kit's satelliteStatusChange event so the UI shows
+   * the REAL GNSS satellite count instead of a hardcoded value. Non-fatal:
+   * any failure (GNSS unsupported, permission missing) leaves
+   * lastSatelliteCount at its 6 fallback.
+   */
+  private subscribeSatelliteStatus(): void {
+    if (this.satelliteSubscribed) return;
+    try {
+      // On devices without GNSS capability the on() call throws — the catch
+      // leaves lastSatelliteCount at its 6 fallback, so no pre-check is needed.
+      this.satelliteStatusCb = (status: geoLocationManager.SatelliteStatusInfo) => {
+        if (status.satellitesNumber >= 0) {
+          this.lastSatelliteCount = status.satellitesNumber;
+        }
+      };
+      geoLocationManager.on('satelliteStatusChange', this.satelliteStatusCb);
+      this.satelliteSubscribed = true;
+      hilog.info(0x0001, TAG, '[GPS] subscribed to satelliteStatusChange');
+    } catch (err) {
+      this.satelliteSubscribed = false;
+      this.satelliteStatusCb = null;
+      hilog.warn(0x0001, TAG, `[GPS] satelliteStatusChange subscribe failed: ${JSON.stringify(err)}`);
+    }
+  }
+
+  private unsubscribeSatelliteStatus(): void {
+    const cb = this.satelliteStatusCb;
+    if (!this.satelliteSubscribed || cb === null) return;
+    try {
+      geoLocationManager.off('satelliteStatusChange', cb);
+    } catch (err) {
+      hilog.warn(0x0001, TAG, `[GPS] satelliteStatusChange unsubscribe failed: ${JSON.stringify(err)}`);
+    }
+    this.satelliteStatusCb = null;
+    this.satelliteSubscribed = false;
   }
 
   // ==================== Persistence ====================
@@ -693,7 +733,7 @@ export class CameraService {
     this.currentStage1 = this.pairingEngine.createStage1(
       this.isPairMode ? null : this.savedCamera
     );
-    this.pairingStep = 1;
+    this.advancePairingStep(1);
 
     const data = this.currentStage1.encode();
     hilog.info(0x0001, TAG,
@@ -737,14 +777,14 @@ export class CameraService {
 
       hilog.info(0x0001, TAG, `[CHECKPOINT] Sending stage 3: ${stage3.toString()}`);
       this.bleClient.writePairMessage(stage3.encode());
-      this.pairingStep = 2;
+      this.advancePairingStep(2);
     } else if (this.pairingStep === 2 && msg.stage === 0x04) {
       // Received stage 4 — extract serial
       const serial = this.pairingEngine.extractSerial(msg);
       // D-series bodies put binary data in the serial field (D5600 → garbled
       // bytes like 'éKºóû§q'); fall back to the readable BLE broadcast name.
       this.cameraSerial = serial.length > 0 && /^[\x20-\x7E]*$/.test(serial) ? serial : this.cameraName;
-      this.pairingStep = 3;
+      this.advancePairingStep(3);
 
       hilog.info(0x0001, TAG,
         `[CHECKPOINT] Stage 4 received. Camera serial: '${serial}'. Waiting for NOT1 01 00...`);
@@ -783,7 +823,7 @@ export class CameraService {
       hilog.info(0x0001, TAG, 'writeControllerId: already done, skipping');
       return;
     }
-    this.pairingStep = 4;
+    this.advancePairingStep(4);
 
     // Write 32-byte ASCII name (zero-padded)
     const nameBytes = new Uint8Array(32);
@@ -799,7 +839,7 @@ export class CameraService {
     setTimeout(() => {
       if (this.pairingStep === 4) {
         hilog.info(0x0001, TAG, '[CHECKPOINT] ID write timeout — proceeding to bonding');
-        this.pairingStep = 5;
+        this.advancePairingStep(5);
         this.checkBondedAndFinish();
       }
     }, 3000);
@@ -814,7 +854,7 @@ export class CameraService {
 
     if (uuid.toLowerCase() === idUuid.toLowerCase() && this.pairingStep === 4) {
       hilog.info(0x0001, TAG, '[CHECKPOINT] ID write confirmed — proceeding to bonding');
-      this.pairingStep = 5;
+      this.advancePairingStep(5);
       this.checkBondedAndFinish();
     } else if (uuid.toLowerCase() === geoUuid.toLowerCase()) {
       hilog.info(0x0001, TAG, '[CHECKPOINT] GEO write confirmed');
@@ -1172,6 +1212,18 @@ export class CameraService {
     hilog.info(0x0001, TAG, `[CHECKPOINT] STATE: ${state} — ${message}`);
     for (let i = 0; i < this.stateListeners.length; i++) {
       this.stateListeners[i](state, message);
+    }
+  }
+
+  private advancePairingStep(step: number): void {
+    this.pairingStep = step;
+    if (this._state === ConnectionState.Pairing) {
+      // Handshake progressed inside the Pairing state — re-broadcast so the
+      // pairing tab refreshes its (x/4) display immediately.
+      hilog.info(0x0001, TAG, `[CHECKPOINT] pairingStep=${step} (re-broadcast)`);
+      for (let i = 0; i < this.stateListeners.length; i++) {
+        this.stateListeners[i](this._state, this._statusMessage);
+      }
     }
   }
 }

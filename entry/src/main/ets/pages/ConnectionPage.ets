@@ -97,7 +97,7 @@ export struct ConnectionPage {
     this.gpsLat = gps.latitude.toFixed(6);
     this.gpsLon = gps.longitude.toFixed(6);
     this.gpsAlt = `${gps.altitude.toFixed(1)} m`;
-    this.gpsSats = `${gps.satellites}`;
+    this.gpsSats = gps.satellites >= 0 ? `${gps.satellites}` : '--';
     this.gpsHasFix = gps.hasFix;
     this.gpsTime = gps.lastUpdateTime;
     // Keep the toggle in sync with the service (e.g. prefs loaded after page shows)

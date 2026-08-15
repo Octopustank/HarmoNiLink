@@ -60,7 +60,7 @@ export struct PairingPage {
         } else if (s === ConnectionState.Discovering) {
           this.titleSub = ''; this.statusLabel = '正在发现服务…';
         } else if (s === ConnectionState.Pairing) {
-          this.titleSub = ''; this.statusLabel = `正在进行配对 (${cameraService.getPairingStep()}/4)…`;
+          this.titleSub = ''; this.statusLabel = `正在进行配对 (${Math.min(cameraService.getPairingStep(), 4)}/4)…`;
         } else if (s === ConnectionState.Bonding) {
           this.titleSub = ''; this.statusLabel = '正在经典蓝牙绑定…';
         } else if (s === ConnectionState.Idle) {

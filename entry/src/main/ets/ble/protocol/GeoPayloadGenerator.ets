@@ -15,7 +15,7 @@
  *   9:     lon minutes
  *   10:    lon submin1
  *   11:    lon submin2
- *   12:    satellites (3-12)
+ *   12:    satellites (0-100)
  *   13:    altitude ref ('P'/'M')
  *   14-15: altitude (uint16 LE, meters)
  *   16-22: UTC time (year LE, month, day, hour, minute, second)
@@ -34,7 +34,7 @@ export interface GpsPosition {
   latitude: number;   // decimal degrees
   longitude: number;  // decimal degrees
   altitude: number;   // meters
-  satellites: number; // 3-12
+  satellites: number; // 0-100 (matches nsg reference; multi-constellation GNSS commonly sees 20-40)
   timestamp: Date;    // UTC time
 }
 
@@ -76,8 +76,10 @@ export class GeoPayloadGenerator {
     dv.setUint8(off++, lonCoord.submin1);
     dv.setUint8(off++, lonCoord.submin2);
 
-    // Satellites
-    dv.setUint8(off++, Math.max(3, Math.min(12, pos.satellites)));
+    // Satellites — 0-100 per the nsg reference (single unsigned byte). Do NOT
+    // clamp to a narrow 3-12: multi-constellation receivers report 20-40+ sats
+    // indoors, and the camera treats a higher count as a stronger fix.
+    dv.setUint8(off++, Math.max(0, Math.min(100, pos.satellites)));
 
     // Altitude
     dv.setUint8(off++, pos.altitude >= 0 ? 0x50 : 0x4D); // 'P' or 'M'
@@ -117,20 +119,6 @@ export class GeoPayloadGenerator {
       `[CHECKPOINT] buildReal: lat=${pos.latitude.toFixed(6)} lon=${pos.longitude.toFixed(6)} alt=${pos.altitude}m sats=${pos.satellites} payloadLen=${payload.length}`);
 
     return payload;
-  }
-
-  /**
-   * Build a fake GEO payload for testing without real GPS.
-   */
-  static buildFake(): Uint8Array {
-    const pos: GpsPosition = {
-      latitude: Math.random() * 180 - 90,
-      longitude: Math.random() * 360 - 180,
-      altitude: Math.floor(Math.random() * 5000),
-      satellites: Math.floor(Math.random() * 10) + 3,
-      timestamp: new Date()
-    };
-    return GeoPayloadGenerator.buildReal(pos);
   }
 
   /**
