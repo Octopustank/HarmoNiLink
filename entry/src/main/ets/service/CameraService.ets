@@ -946,9 +946,12 @@ export class CameraService {
         // Match the TARGET camera only — other paired cameras (e.g. a Z-series
         // body that is also broadcasting) must NOT match. Any camera-specific
         // rule like name.includes('Z_') would mis-pair when 2 cameras coexist.
+        // The model-only fallback is the LAST resort and only when the serial is
+        // still unknown: with a known serial, two same-model bodies (e.g. two
+        // D5600) must be told apart by serial, never by model alone.
         const matches = (bleNorm.length > 0 && (nameNorm.includes(bleNorm) || bleNorm.includes(nameNorm)))
           || (serialNorm.length > 0 && nameNorm.includes(serialNorm))
-          || (model.length >= 3 && nameNorm.includes(model));
+          || (model.length >= 3 && nameNorm.includes(model) && serialNorm.length === 0);
         if (!matches) continue;
 
         hilog.info(0x0001, TAG, `[CHECKPOINT] Matched camera! Trying pairDevice('${addr}')`);
