@@ -116,8 +116,10 @@ export class BleScanner {
       this.bleScanner = ble.createBleScanner();
       this.bleScanner.on('BLEDeviceFind', (report: Object) => {
         // NEW API ScanReport structure: {reportType, scanResult: Array<ScanResult>}.
-        // reportType: 1 = ON_FOUND, 0 = ON_LOST. Skip ON_LOST reports; if the
-        // field is absent, still process (defensive).
+        // reportType: 1 = ON_FOUND, 2 = ON_LOST, 3 = ON_BATCH. We only consume
+        // ON_FOUND (and the defensive absent case). ON_BATCH(3) is also dropped,
+        // but startScan() below runs in non-batch mode (no reportMode set), so
+        // it never occurs in practice — if batch mode is ever enabled, handle it.
         const r = report as Record<string, Object>;
         const reportType = (r['reportType'] as number) ?? -1;
         if (reportType !== -1 && reportType !== 1) {
@@ -219,6 +221,16 @@ export class BleScanner {
         }
       }
       return;
+    }
+    // Virtual-MAC mismatch detection: the same broadcast name arriving under a
+    // DIFFERENT deviceId usually means one API channel reports a virtual MAC and
+    // another the real one (or a rotated virtual address). Log it so a
+    // "same camera twice" symptom is debuggable instead of silent.
+    for (const c of this.discoveredCameras.values()) {
+      if (c.deviceId !== deviceId && c.deviceName === deviceName) {
+        hilog.warn(0x0001, TAG,
+          `[VIRTUAL-MAC?] name='${deviceName}' seen as ${c.deviceId} AND ${deviceId}`);
+      }
     }
     // Classic-BT echo of an already-listed camera (same broadcast name, no
     // UUID info) — drop it so each camera appears exactly once.

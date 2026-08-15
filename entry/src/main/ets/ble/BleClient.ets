@@ -36,6 +36,7 @@ export class BleClient {
   private writeBusy: boolean = false; // prevent concurrent writes
   private pendingWrite: PendingWrite | null = null; // newest-wins buffered write
   private writeTimeoutStreak: number = 0; // consecutive write timeouts before BleError
+  private writeSeq: number = 0; // monotonic token — a stale callback must not touch a newer write's timer/busy
   private writeTimeoutId: number | null = null; // safety reset for stalled callbacks
   private servicesDiscovered: boolean = false; // prevent duplicate discovery
   private mtuTimeoutId: number = -1; // cancel MTU timeout when response arrives
@@ -295,6 +296,7 @@ export class BleClient {
   private send(uuid: string, data: Uint8Array): void {
     const client = this.gattClient; // identity check against stale callbacks
     if (client === null) return; // torn down (cancel) — never touch a closed client
+    const seq = ++this.writeSeq; // token for THIS write — stale callbacks get ignored
     this.writeBusy = true;
     hilog.info(0x0001, TAG, `[W] ${uuid} ${data.byteLength}B`);
     const buf = new ArrayBuffer(data.byteLength);
@@ -308,6 +310,7 @@ export class BleClient {
     // surface it as a link-loss signal so the service can tear down and
     // reconnect — a single slow write must not look like a dead camera.
     this.writeTimeoutId = setTimeout(() => {
+      if (seq !== this.writeSeq) return; // superseded by a newer write — ignore
       if (this.gattClient !== client) return; // connection replaced — ignore
       this.writeTimeoutId = null;
       this.writeBusy = false;
@@ -330,6 +333,7 @@ export class BleClient {
     }, 10000);
 
     c['writeCharacteristicValue'](obj, 1, (err: BusinessError) => {
+      if (seq !== this.writeSeq) return; // stale callback for a superseded write — must NOT clear a newer write's timer or release its busy
       if (this.gattClient !== client) return; // stale callback from previous connection
       if (this.writeTimeoutId !== null) {
         clearTimeout(this.writeTimeoutId);

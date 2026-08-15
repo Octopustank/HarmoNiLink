@@ -528,9 +528,10 @@ export class CameraService {
 
           const gps: GpsPosition = {
             latitude: lat, longitude: lon, altitude: alt,
-            // Wire payload needs a valid 3-12 count; use 6 only when the real
-            // count is still unknown (-1). Never fabricate a "normal-looking"
-            // value for the UI — that stays raw (unknown → "--").
+            // Wire payload needs a value in the protocol range 0-100; use 6 as a
+            // placeholder only when the real count is still unknown (-1). Never
+            // fabricate a "normal-looking" value for the UI — that stays raw
+            // (unknown → "--") so the display never lies.
             satellites: sats >= 0 ? sats : 6, timestamp: new Date()
           };
           hilog.info(0x0001, TAG, `[GPS] GEO real lat=${lat.toFixed(6)} lon=${lon.toFixed(6)}`);
@@ -551,13 +552,18 @@ export class CameraService {
       hilog.info(0x0001, TAG, '[CHECKPOINT] GPS loop stopped');
     }
     this.unsubscribeSatelliteStatus();
+    // Reset to "unknown" so the next connection does NOT briefly show the
+    // previous session's stale satellite count before the first fix.
+    this.lastSatelliteCount = -1;
+    this.gpsData.satellites = -1;
   }
 
   /**
    * Subscribe to Location Kit's satelliteStatusChange event so the UI shows
    * the REAL GNSS satellite count instead of a hardcoded value. Non-fatal:
    * any failure (GNSS unsupported, permission missing) leaves
-   * lastSatelliteCount at its 6 fallback.
+   * lastSatelliteCount at -1 (unknown). The 6 fallback only kicks in at
+   * SEND time (see getCurrentLocation's payload build), never in the UI.
    */
   private subscribeSatelliteStatus(): void {
     if (this.satelliteSubscribed) return;

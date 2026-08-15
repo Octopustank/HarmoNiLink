@@ -79,7 +79,7 @@ export struct ConnectionPage {
       else if (s === ConnectionState.Scanning) { this.titleSub = '正在扫描设备…'; }
       else if (s === ConnectionState.Connecting) { this.titleSub = '正在连接…'; }
       else if (s === ConnectionState.Discovering) { this.titleSub = '正在发现服务…'; }
-      else if (s === ConnectionState.Pairing) { this.titleSub = `正在进行配对 (${this.step}/4)…`; }
+      else if (s === ConnectionState.Pairing) { this.titleSub = `正在进行配对 (${Math.min(this.step, 4)}/4)…`; }
       else if (s === ConnectionState.Bonding) { this.titleSub = '正在完成绑定…'; }
       else if (s === ConnectionState.Ready) { this.titleSub = ''; }
       else if (s === ConnectionState.Error) { this.titleSub = ''; }
@@ -200,7 +200,7 @@ export struct ConnectionPage {
     if (this.state === ConnectionState.Scanning) return '扫描中';
     if (this.state === ConnectionState.Connecting) return '连接中';
     if (this.state === ConnectionState.Discovering) return '发现服务';
-    if (this.state === ConnectionState.Pairing) return `配对中 (${this.step}/4)`;
+    if (this.state === ConnectionState.Pairing) return `配对中 (${Math.min(this.step, 4)}/4)`;
     if (this.state === ConnectionState.Bonding) return '绑定中';
     return this.state;
   }
