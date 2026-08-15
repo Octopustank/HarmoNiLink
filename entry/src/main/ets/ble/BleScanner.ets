@@ -222,21 +222,21 @@ export class BleScanner {
       }
       return;
     }
-    // Virtual-MAC mismatch detection: the same broadcast name arriving under a
-    // DIFFERENT deviceId usually means one API channel reports a virtual MAC and
-    // another the real one (or a rotated virtual address). Log it so a
-    // "same camera twice" symptom is debuggable instead of silent.
-    for (const c of this.discoveredCameras.values()) {
-      if (c.deviceId !== deviceId && c.deviceName === deviceName) {
-        hilog.warn(0x0001, TAG,
-          `[VIRTUAL-MAC?] name='${deviceName}' seen as ${c.deviceId} AND ${deviceId}`);
-      }
-    }
     // Classic-BT echo of an already-listed camera (same broadcast name, no
     // UUID info) — drop it so each camera appears exactly once.
     if (!isNikonByUuid && isNikonName(deviceName)) {
       for (const c of this.discoveredCameras.values()) {
         if (c.isNikon && c.deviceName === deviceName) return;
+      }
+    }
+    // Virtual-MAC mismatch detection: AFTER the classic echo dedupe, a remaining
+    // same-name-different-id pair means one channel reports a virtual MAC and
+    // another the real one (or a rotated virtual address) — log it so a
+    // "same camera twice" symptom is debuggable instead of silent.
+    for (const c of this.discoveredCameras.values()) {
+      if (c.deviceId !== deviceId && c.deviceName === deviceName) {
+        hilog.warn(0x0001, TAG,
+          `[VIRTUAL-MAC?] name='${deviceName}' seen as ${c.deviceId} AND ${deviceId}`);
       }
     }
     hilog.info(0x0001, TAG, `[ADD] id=${deviceId} name='${deviceName}' rssi=${rssi} nikon=${isNikonByUuid}`);

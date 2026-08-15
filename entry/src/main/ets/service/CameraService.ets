@@ -569,7 +569,7 @@ export class CameraService {
     if (this.satelliteSubscribed) return;
     try {
       // On devices without GNSS capability the on() call throws — the catch
-      // leaves lastSatelliteCount at its 6 fallback, so no pre-check is needed.
+      // leaves lastSatelliteCount at -1 (unknown), so no pre-check is needed.
       this.satelliteStatusCb = (status: geoLocationManager.SatelliteStatusInfo) => {
         if (status.satellitesNumber >= 0) {
           this.lastSatelliteCount = status.satellitesNumber;
@@ -913,8 +913,6 @@ export class CameraService {
     hilog.info(0x0001, TAG, '[CHECKPOINT] Starting classic BT discovery for bonding');
     this.bondingDiscoveryActive = true;
 
-    // Store the camera name for matching (e.g. Z_6_2_<serial>)
-    const targetName: string = this.cameraSerial || '';
     let bondAttempted: boolean = false;
 
     try {
