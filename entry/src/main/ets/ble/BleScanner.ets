@@ -11,6 +11,11 @@ export interface DiscoveredCamera {
    *  advertisement (reliable, protocol-level). Name heuristics are only used
    *  to dedupe the classic-BT echo of an already-listed camera. */
   isNikon: boolean;
+  /** Nikon device ID parsed from manufacturer data (companyID 0x0399, 4-byte
+   *  LE uint32). Present only on PAIRED cameras (a camera in pairing mode does
+   *  not advertise 0x0399) — used for reliable reconnect matching when the BLE
+   *  address has rotated. */
+  manufacturerDevice?: number;
 }
 
 // Nikon naming heuristics for broadcast names: Z-series (Z_6_2_...) and
@@ -19,6 +24,23 @@ export interface DiscoveredCamera {
 // (observed as a non-Nikon classic device).
 function isNikonName(name: string): boolean {
   return /^(Z_|D\d{3,4}_)/.test(name) || name.toUpperCase().includes('NIKON');
+}
+
+// Nikon company ID in BLE manufacturer data = 0x0399 (921). A paired Nikon
+// camera advertises [0x0399 LE][4-byte LE device id]; a camera in pairing
+// mode does NOT include 0x0399.
+const NIKON_COMPANY_ID: number = 0x0399;
+
+// Extract the Nikon device ID from a ScanResult's manufacturerDataMap
+// (API 22+). Returns undefined when absent (e.g. pairing-mode camera).
+function parseManufacturerDevice(sr: Record<string, Object>): number | undefined {
+  const mmap = sr['manufacturerDataMap'] as Map<number, Uint8Array> | undefined;
+  if (!mmap) return undefined;
+  const mdata = mmap.get(NIKON_COMPANY_ID);
+  if (!mdata || mdata.length < 4) return undefined;
+  // 4-byte little-endian uint32. Use multiply-add (not bit-shift) to avoid
+  // signed 32-bit overflow for device IDs >= 2^31.
+  return mdata[0] + mdata[1] * 0x100 + mdata[2] * 0x10000 + mdata[3] * 0x1000000;
 }
 export type ScanListener = (cameras: DiscoveredCamera[]) => void;
 
@@ -137,9 +159,10 @@ export class BleScanner {
             // 0xDE00; mirror the old-API filter.
             const svcs = (sr['serviceUuids'] as string[] ?? []) as string[];
             const svcHit = svcs.some((u: string) => u.toUpperCase().includes('DE00'));
+            const mdev = parseManufacturerDevice(sr);
             hilog.info(0x0001, TAG,
-              `[NEW BLE] result[${i}]: id=${id} name='${name}' rssi=${rssi} svcUuids=[${svcs.join(',')}] nikon=${svcHit}`);
-            this.add(id, name, rssi, svcHit);
+              `[NEW BLE] result[${i}]: id=${id} name='${name}' rssi=${rssi} svcUuids=[${svcs.join(',')}] nikon=${svcHit} dev=${mdev !== undefined ? mdev : '-'}`);
+            this.add(id, name, rssi, svcHit, mdev);
           }
         } else {
           hilog.info(0x0001, TAG, `[NEW BLE] no scanResult in report, keys=[${Object.keys(r).join(',')}]`);
@@ -172,15 +195,16 @@ export class BleScanner {
           // 0xDE00; logged for verification of the filter approach.
           const svcs = (r['serviceUuids'] as string[] ?? []) as string[];
           const svcHit = svcs.some((u: string) => u.toUpperCase().includes('DE00'));
+          const mdev = parseManufacturerDevice(r);
           if (!id || !name) {
             const data = r['data'];
             hilog.info(0x0001, TAG,
               `[OLD BLE] result[${i}] keys=[${Object.keys(r).join(',')}] dataLen=${data ? (data as ArrayBuffer).byteLength : 0} svcUuids=[${svcs.join(',')}]`);
           } else {
             hilog.info(0x0001, TAG,
-              `[OLD BLE] result[${i}]: id=${id} name='${name}' rssi=${rssi} svcUuids=[${svcs.join(',')}] nikon=${svcHit || isNikonName(name)}`);
+              `[OLD BLE] result[${i}]: id=${id} name='${name}' rssi=${rssi} svcUuids=[${svcs.join(',')}] nikon=${svcHit || isNikonName(name)} dev=${mdev !== undefined ? mdev : '-'}`);
           }
-          this.add(id, name, rssi, svcHit);
+          this.add(id, name, rssi, svcHit, mdev);
         }
       });
       const opts: ble.ScanOptions = {
@@ -205,17 +229,20 @@ export class BleScanner {
     try { ble.stopBLEScan(); ble.off('BLEDeviceFind'); } catch (e) {}
   }
 
-  private add(deviceId: string, deviceName: string, rssi: number, isNikonByUuid: boolean): void {
+  private add(deviceId: string, deviceName: string, rssi: number, isNikonByUuid: boolean, manufacturerDevice?: number): void {
     if (!deviceId || !this.isScanning) return;
     const existing = this.discoveredCameras.get(deviceId);
     if (existing) {
-      // UUID evidence can arrive after a same-device entry was added by another
-      // API channel without it (e.g. classic BT, or an earlier new-API report
-      // that predates the service-UUID parse). Upgrade in place so the UI can
+      // UUID / manufacturer evidence can arrive after a same-device entry was
+      // added by another API channel without it. Upgrade in place so the UI can
       // regroup the camera into "尼康相机" immediately.
       if (isNikonByUuid && !existing.isNikon) {
         existing.isNikon = true;
         existing.rssi = rssi;
+        if (manufacturerDevice !== undefined) {
+          existing.manufacturerDevice = manufacturerDevice;
+          existing.hasManufacturerData = true;
+        }
         if (this.scanListener) {
           this.scanListener(Array.from(this.discoveredCameras.values()));
         }
@@ -242,7 +269,8 @@ export class BleScanner {
     hilog.info(0x0001, TAG, `[ADD] id=${deviceId} name='${deviceName}' rssi=${rssi} nikon=${isNikonByUuid}`);
     this.discoveredCameras.set(deviceId, {
       deviceId, deviceName: deviceName || deviceId, rssi,
-      hasManufacturerData: false, isConnectable: false, isNikon: isNikonByUuid,
+      hasManufacturerData: manufacturerDevice !== undefined, isConnectable: false,
+      isNikon: isNikonByUuid, manufacturerDevice: manufacturerDevice,
     });
     if (this.scanListener) {
       this.scanListener(Array.from(this.discoveredCameras.values()));

@@ -341,7 +341,18 @@ export class BleClient {
       }
       this.writeBusy = false;
       this.writeTimeoutStreak = 0; // the stack responded — not a timeout
-      if (err) { hilog.error(0x0001, TAG, `[W] ERR ${err.code}: ${err.message}`); this.emit(new BleError(`Write: ${err.message}`)); }
+      if (err) {
+        // A GEO write failure is the strongest signal of "camera rejected the
+        // GPS payload" (reference doc: ATT 0x80 = camera rejecting GPS).
+        // HarmonyOS does NOT surface the raw ATT 0x80 (it maps to generic
+        // 2900099 etc.), so flag the GEO uuid to make it visible in logs.
+        if (uuid === GEO) {
+          hilog.warn(0x0001, TAG, `[W] ERR GEO ${err.code}: ${err.message} — camera may reject GPS`);
+        } else {
+          hilog.error(0x0001, TAG, `[W] ERR ${uuid} ${err.code}: ${err.message}`);
+        }
+        this.emit(new BleError(`Write ${uuid}: ${err.message}`));
+      }
       else { hilog.info(0x0001, TAG, `[W] OK`); this.emit(new BleWriteDone(uuid, 0)); }
       // Flush the buffered (newest-wins) write now that the slot is free.
       if (this.pendingWrite !== null) {

@@ -405,11 +405,18 @@ export class CameraService {
     // Scan for current advertisement by name, fall back to saved address.
     this.setState(ConnectionState.Scanning, `正在搜索 ${camera.name}…`);
     this.scanner.startScan((cameras: DiscoveredCamera[]) => {
-      const found = cameras.find((c) => c.deviceName === camera.name);
+      // Reliable reconnect: match the STABLE device ID from manufacturer data
+      // (companyID 0x0399). Nikon rotates its BLE address on restart, so the
+      // saved address is stale after sleep; the device ID picks the camera's
+      // CURRENT address. Name match is only a fallback (e.g. pairing-mode
+      // camera that no longer advertises 0x0399).
+      const found = cameras.find((c) =>
+        (c.manufacturerDevice !== undefined && c.manufacturerDevice === camera.device)
+        || c.deviceName === camera.name);
       if (found) {
         this.scanner.stopScan();
         hilog.info(0x0001, TAG,
-          `[CHECKPOINT] reconnect scan found: newAddr=${found.deviceId} savedAddr=${camera.address}`);
+          `[CHECKPOINT] reconnect scan found: newAddr=${found.deviceId} savedAddr=${camera.address} devMatch=${found.manufacturerDevice === camera.device}`);
         // Update address
         const updated = new PairedCamera(
           camera.name, found.deviceId, camera.addressType,
@@ -616,22 +623,23 @@ export class CameraService {
 
     // Watchdog: if the device never responds (non-Nikon device, out of range),
     // abort instead of hanging forever. Cancelled on terminal states.
-    // 35s: older bodies (e.g. D5600) take 10-17s just to connect, then MTU
-    // negotiation (3s timeout) + service discovery — 20s was too tight.
+    // 60s: a sleeping camera can take ~30s just to establish the connection
+    // (per the M5Stack reference), then MTU (up to 5s) + service-discovery
+    // retries — 35s could kill a legitimate slow wake-up reconnect.
     this.clearConnectTimeout();
     this.connectTimeoutId = setTimeout(() => {
       if (this._state === ConnectionState.Ready || this._state === ConnectionState.Idle
         || this._state === ConnectionState.Error || this._state === ConnectionState.Bonding) {
         return; // already settled — nothing to abort
       }
-      hilog.warn(0x0001, TAG, '[CHECKPOINT] Connect watchdog fired (35s) — aborting stalled pairing');
+      hilog.warn(0x0001, TAG, '[CHECKPOINT] Connect watchdog fired (60s) — aborting stalled pairing');
       this.bleClient.disconnect();
       this.scanner.stopScan();
       try { connection.stopBluetoothDiscovery(); } catch (e) {}
       // Route through the unified recovery path instead of dying on Error —
       // auto-reconnect keeps trying while the camera is unavailable.
       this.handleLinkLost();
-    }, 35000);
+    }, 60000);
 
     this.bleClient.connect(deviceId, (event: BleEvent) => {
       this.handleBleEvent(event);
