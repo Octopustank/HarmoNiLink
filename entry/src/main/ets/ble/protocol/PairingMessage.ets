@@ -18,8 +18,10 @@ export class PairingMessage {
   constructor(stage: number, timestamp: bigint, device: number, nonce: number) {
     this.stage = stage & 0xFF;
     this.timestamp = timestamp;
-    this.device = device & 0xFFFFFFFF;
-    this.nonce = nonce & 0xFFFFFFFF;
+    // >>> 0 keeps device/nonce as unsigned 32-bit (uint32); & 0xFFFFFFFF
+    // would produce a signed negative for values >= 2^31.
+    this.device = device >>> 0;
+    this.nonce = nonce >>> 0;
   }
 
   encode(): Uint8Array {

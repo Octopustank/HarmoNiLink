@@ -236,16 +236,25 @@ export class BleScanner {
       // UUID / manufacturer evidence can arrive after a same-device entry was
       // added by another API channel without it. Upgrade in place so the UI can
       // regroup the camera into "尼康相机" immediately.
+      let upgraded = false;
       if (isNikonByUuid && !existing.isNikon) {
         existing.isNikon = true;
         existing.rssi = rssi;
-        if (manufacturerDevice !== undefined) {
-          existing.manufacturerDevice = manufacturerDevice;
-          existing.hasManufacturerData = true;
-        }
-        if (this.scanListener) {
-          this.scanListener(Array.from(this.discoveredCameras.values()));
-        }
+        upgraded = true;
+      }
+      // Manufacturer evidence is upgraded UNCONDITIONALLY (not gated on the
+      // isNikon flip): the stable device ID (0x0399) is the reliable reconnect
+      // key, so a late-arriving manufacturer packet must fill it even when the
+      // entry already came in as Nikon — otherwise a camera whose first
+      // advertisement carried the UUID but not 0x0399 would never get its
+      // device ID captured for reconnect matching.
+      if (manufacturerDevice !== undefined && existing.manufacturerDevice === undefined) {
+        existing.manufacturerDevice = manufacturerDevice;
+        existing.hasManufacturerData = true;
+        upgraded = true;
+      }
+      if (upgraded && this.scanListener) {
+        this.scanListener(Array.from(this.discoveredCameras.values()));
       }
       return;
     }

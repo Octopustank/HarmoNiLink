@@ -410,13 +410,25 @@ export class CameraService {
       // saved address is stale after sleep; the device ID picks the camera's
       // CURRENT address. Name match is only a fallback (e.g. pairing-mode
       // camera that no longer advertises 0x0399).
-      const found = cameras.find((c) =>
-        (c.manufacturerDevice !== undefined && c.manufacturerDevice === camera.device)
-        || c.deviceName === camera.name);
+      //
+      // Both sides are normalized to unsigned 32-bit before comparing: the
+      // manufacturer parse returns unsigned, but a legacy-persisted
+      // camera.device may still be signed-negative for IDs >= 2^31. `>>> 0`
+      // reconciles them regardless of how the saved value was stored.
+      let foundDevMatch = false;
+      const found = cameras.find((c) => {
+        const devMatch = c.manufacturerDevice !== undefined
+          && (c.manufacturerDevice >>> 0) === (camera.device >>> 0);
+        if (devMatch || c.deviceName === camera.name) {
+          foundDevMatch = devMatch;
+          return true;
+        }
+        return false;
+      });
       if (found) {
         this.scanner.stopScan();
         hilog.info(0x0001, TAG,
-          `[CHECKPOINT] reconnect scan found: newAddr=${found.deviceId} savedAddr=${camera.address} devMatch=${found.manufacturerDevice === camera.device}`);
+          `[CHECKPOINT] reconnect scan found: newAddr=${found.deviceId} savedAddr=${camera.address} devMatch=${foundDevMatch}`);
         // Update address
         const updated = new PairedCamera(
           camera.name, found.deviceId, camera.addressType,
@@ -477,6 +489,10 @@ export class CameraService {
   private gpsStep: number = 0; // 0=TIME, 1=GEO — alternating
   private isForeground: boolean = true;
   private reconnectRetries: number = 0; // backoff counter
+  // True once a [ROOT] link-death cause (watchdog / write-*) has been logged
+  // for the current link. Suppresses the nested "cause=disconnected" marker
+  // that the teardown disconnect() emits right after the root cause.
+  private linkLostRootMarked: boolean = false;
 
   // Real GNSS satellite count fed by Location Kit's satelliteStatusChange
   // event. -1 = "unknown" (no status event yet / GNSS unsupported / missing
@@ -637,7 +653,8 @@ export class CameraService {
         return; // already settled — nothing to abort
       }
       hilog.warn(0x0001, TAG, '[CHECKPOINT] Connect watchdog fired (60s) — aborting stalled pairing');
-      hilog.warn(0x0001, TAG, '[CHECKPOINT] LINK LOST cause=watchdog');
+      this.linkLostRootMarked = true;
+      hilog.warn(0x0001, TAG, '[CHECKPOINT] LINK LOST [ROOT] cause=watchdog');
       this.bleClient.disconnect();
       this.scanner.stopScan();
       try { connection.stopBluetoothDiscovery(); } catch (e) {}
@@ -672,6 +689,7 @@ export class CameraService {
     if (event instanceof BleConnected) {
       hilog.info(0x0001, TAG, '[CHECKPOINT] BLE Connected');
       this.reconnectRetries = 0; // reset backoff on success
+      this.linkLostRootMarked = false; // fresh link — clear root-cause marker
       this.setState(ConnectionState.Discovering, '正在发现服务…');
     } else if (event instanceof BleServicesDiscovered) {
       hilog.info(0x0001, TAG, '[CHECKPOINT] Services Discovered');
@@ -704,16 +722,30 @@ export class CameraService {
         this.startClassicDiscoveryForBonding();
         return;
       }
-      hilog.warn(0x0001, TAG, '[CHECKPOINT] LINK LOST cause=disconnected');
+      // Only log the root cause once: when the disconnect comes from the BLE
+      // stack itself (camera-side drop / link loss). A disconnect that follows
+      // a watchdog kill or write error is a NESTED teardown whose root cause
+      // was already logged with a [ROOT] marker — don't re-attribute it.
+      if (!this.linkLostRootMarked) {
+        hilog.warn(0x0001, TAG, '[CHECKPOINT] LINK LOST cause=disconnected');
+      }
       this.handleLinkLost();
     } else if (event instanceof BleError) {
       hilog.error(0x0001, TAG, `[CHECKPOINT] BLE Error: ${event.message}`);
-      // Link-death attribution: distinguish "watchdog killed" from
-      // "write-timeout killed". The P1 watchdog relaxation (35s -> 60s) may
-      // simply shift a slow-waking camera's death from watchdog to write
-      // timeout (3 x 10s) — this marker makes that shift visible in logs.
-      const cause = event.message.startsWith('Write timeout') ? 'write-timeout' : 'write-error';
-      hilog.warn(0x0001, TAG, `[CHECKPOINT] LINK LOST cause=${cause}`);
+      // Link-death attribution: three-way split so a slow-waking camera's
+      // death can be traced to exactly one cause. The P1 watchdog relaxation
+      // (35s -> 60s) may shift it from watchdog to write timeout (3 x 10s) —
+      // this split makes that shift visible in logs.
+      let cause: string;
+      if (event.message.startsWith('Write timeout')) {
+        cause = 'write-timeout';
+      } else if (event.message.startsWith('Write ')) {
+        cause = 'write-error';
+      } else {
+        cause = 'ble-error';
+      }
+      this.linkLostRootMarked = true;
+      hilog.warn(0x0001, TAG, `[CHECKPOINT] LINK LOST [ROOT] cause=${cause}`);
       // Pair-target hint: reaching Pairing means connect + service discovery
       // both succeeded — a PAIR write failure at that point almost always
       // means the camera is not treating this link as a pairing target (it is

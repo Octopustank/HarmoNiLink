@@ -33,8 +33,12 @@ export class PairedCamera {
     this.name = name;
     this.address = address;
     this.addressType = addressType;
-    this.device = device & 0xFFFFFFFF;
-    this.nonce = nonce & 0xFFFFFFFF;
+    // >>> 0 (not & 0xFFFFFFFF): JS bitwise & returns a SIGNED 32-bit result,
+    // so a device/nonce >= 2^31 would be persisted as a negative number and
+    // mismatch the unsigned value parsed from manufacturer data. >>> 0 is the
+    // unsigned-32 normalization used everywhere else (BlowfishHasher etc.).
+    this.device = device >>> 0;
+    this.nonce = nonce >>> 0;
     this.controllerName = controllerName;
   }
 }
