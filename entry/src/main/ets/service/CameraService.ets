@@ -428,7 +428,11 @@ export class CameraService {
       }
     });
 
-    // Timeout: fall back to saved address after 10 seconds
+    // Timeout: fall back to the saved address after 10 seconds. This is NOT
+    // just a last-ditch fallback — connecting to the (possibly stale) address
+    // is a deliberate "poke" that wakes a sleeping camera. Once woken, the
+    // camera re-advertises a fresh address that the next scan picks up
+    // (observed in logs: poke -> disconnect -> fresh scan -> reconnect).
     setTimeout(() => {
       if (this._state === ConnectionState.Scanning && this.owner === 'connection') {
         hilog.info(0x0001, TAG, '[CHECKPOINT] reconnect scan timeout, using saved address');
@@ -633,6 +637,7 @@ export class CameraService {
         return; // already settled — nothing to abort
       }
       hilog.warn(0x0001, TAG, '[CHECKPOINT] Connect watchdog fired (60s) — aborting stalled pairing');
+      hilog.warn(0x0001, TAG, '[CHECKPOINT] LINK LOST cause=watchdog');
       this.bleClient.disconnect();
       this.scanner.stopScan();
       try { connection.stopBluetoothDiscovery(); } catch (e) {}
@@ -699,9 +704,16 @@ export class CameraService {
         this.startClassicDiscoveryForBonding();
         return;
       }
+      hilog.warn(0x0001, TAG, '[CHECKPOINT] LINK LOST cause=disconnected');
       this.handleLinkLost();
     } else if (event instanceof BleError) {
       hilog.error(0x0001, TAG, `[CHECKPOINT] BLE Error: ${event.message}`);
+      // Link-death attribution: distinguish "watchdog killed" from
+      // "write-timeout killed". The P1 watchdog relaxation (35s -> 60s) may
+      // simply shift a slow-waking camera's death from watchdog to write
+      // timeout (3 x 10s) — this marker makes that shift visible in logs.
+      const cause = event.message.startsWith('Write timeout') ? 'write-timeout' : 'write-error';
+      hilog.warn(0x0001, TAG, `[CHECKPOINT] LINK LOST cause=${cause}`);
       // Pair-target hint: reaching Pairing means connect + service discovery
       // both succeeded — a PAIR write failure at that point almost always
       // means the camera is not treating this link as a pairing target (it is
