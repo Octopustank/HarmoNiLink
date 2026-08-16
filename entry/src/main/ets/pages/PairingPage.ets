@@ -115,7 +115,12 @@ export struct PairingPage {
           .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
         Text(`RSSI: ${cam.rssi}`).fontSize(14).fontColor($r('app.color.text_secondary')).margin({ top: 2 })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-      if (this.pairingTarget === cam.deviceName) {
+      if (cameraService.isPairedCamera(cam.deviceName)) {
+        Button('已配对')
+          .fontSize(13).fontWeight(FontWeight.Medium)
+          .height(32).borderRadius(16).backgroundColor($r('app.color.disabled_bg')).fontColor($r('app.color.card_background'))
+          .padding({ left: 16, right: 16 }).enabled(false)
+      } else if (this.pairingTarget === cam.deviceName) {
         Button('配对中…')
           .fontSize(13).fontWeight(FontWeight.Medium)
           .height(32).borderRadius(16).backgroundColor('#FF9500').fontColor(Color.White)

@@ -633,6 +633,12 @@ export class CameraService {
     return this.prefs.loadSavedCamerasSync();
   }
 
+  /** Synchronous already-paired check — the pairing page disables the 配对
+   *  button for these (re-pairing must go through remove + fresh scan). */
+  isPairedCamera(name: string): boolean {
+    return this.prefs.loadSavedCamerasSync().some((c: PairedCamera) => c.name === name);
+  }
+
   async removeCamera(name: string): Promise<void> {
     await this.prefs.removeCamera(name);
   }
