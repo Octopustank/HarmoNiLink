@@ -1,19 +1,13 @@
 /**
  * CameraService.ets — Multi-camera connection Hub
  *
- * Phase 0: refactored from a single-connection monolith into a Hub + Session
- * split with ZERO behaviour change. This class (the Hub) owns the shared
- * resources — scanner, prefs, pairing engine, satellite subscription, GPS
- * ticker, background task, ownership, and the state broadcast — and delegates
- * all per-camera work to CameraSession.
+ * Phase 1: the Hub now holds MULTIPLE sessions (keyed by camera name) and
+ * broadcasts per-session state as events. The single global `_state` mirror
+ * from Phase 0 is gone — each CameraSession owns its own state and pushes
+ * `CameraStateEvent { cameraName, state, message }` through the Hub.
  *
- * Phase 0 keeps the single-session constraint: `sessions` holds at most one
- * entry, so v1.7 behaviour is identical. Phase 1 raises the cap and keys by
- * camera name.
- *
- * The Hub still owns the singular `_state` (mirror of the active session's
- * state) so the existing UI (`getState()` + `(state, message)` listener) keeps
- * working unchanged. Phase 1 replaces this with per-session state + events.
+ * Shared resources stay here: scanner, prefs, pairing engine, satellite
+ * subscription, GPS ticker, background task, ownership (tab-level mutex).
  *
  * [CHECKPOINT] Every state transition, handshake step, and error is logged via HiLog.
  * For debugging, use: hdc shell hilog -T HarmoNiLink
@@ -57,7 +51,15 @@ export enum ConnectionState {
   Error = 'Error',
 }
 
-export type StateListener = (state: ConnectionState, message: string) => void;
+/** A per-camera state change, broadcast to all listeners. */
+export interface CameraStateEvent {
+  /** '' for global (pairing-scan / ownership) events; otherwise the camera name. */
+  cameraName: string;
+  state: ConnectionState;
+  message: string;
+}
+
+export type StateListener = (event: CameraStateEvent) => void;
 export type OperationOwner = 'pairing' | 'connection' | 'none';
 
 export class CameraService {
@@ -68,11 +70,10 @@ export class CameraService {
   prefs: PreferencesRepository = new PreferencesRepository();
   pairingEngine: NikonPairingEngine = new NikonPairingEngine();
 
-  // GPS shared state — UI reads this directly (was @Observed); the single GPS
-  // ticker below fans out to all Ready sessions.
+  // GPS shared state — UI reads this directly; the single GPS ticker below
+  // fans out to all Ready sessions.
   gpsData: GpsData = new GpsData();
-  // Real GNSS satellite count fed by Location Kit's satelliteStatusChange
-  // event. -1 = "unknown". Read by the GPS ticker; reset on stop.
+  // Real GNSS satellite count fed by Location Kit's satelliteStatusChange.
   lastSatelliteCount: number = -1;
   // Foreground/background flag — the GPS ticker picks the interval from it.
   isForeground: boolean = true;
@@ -80,18 +81,16 @@ export class CameraService {
   // ==== Private shared state ====
 
   private stateListeners: StateListener[] = [];
-  private _state: ConnectionState = ConnectionState.Idle;
-  private _statusMessage: string = 'Ready.';
-
-  // Sessions — Phase 0 caps at one; Phase 1 keys by camera name.
+  // Sessions keyed by camera name — multiple in Phase 1.
   private sessions: Map<string, CameraSession> = new Map();
-  private activeSession: CameraSession | null = null;
 
   // Ownership — prevents cross-tab operation conflicts (Hub-level mutex).
   private owner: OperationOwner = 'none';
 
   // Discovered cameras (populated by scanner callback) — shared scan result.
   private discoveredList: DiscoveredCamera[] = [];
+  // True while the pairing page's shared scan is active (stop/cancel guard).
+  private pairScanActive: boolean = false;
 
   // Context (set from EntryAbility)
   private abilityContext: common.UIAbilityContext | null = null;
@@ -111,8 +110,7 @@ export class CameraService {
   private gpsStep: number = 0; // 0=TIME, 1=GEO — alternating
 
   // "保持连接" — auto-reconnect toggle (default off, GLOBAL — Phase 3 may split
-  // per camera). When off, link loss lands in a terminal state. User-initiated
-  // disconnect() always stops reconnecting regardless of this flag.
+  // per camera).
   private reconnectEnabled: boolean = false;
 
   // ==================== Public API ====================
@@ -125,14 +123,6 @@ export class CameraService {
       const idx = this.stateListeners.indexOf(listener);
       if (idx !== -1) this.stateListeners.splice(idx, 1);
     };
-  }
-
-  getState(): ConnectionState {
-    return this._state;
-  }
-
-  getStatusMessage(): string {
-    return this._statusMessage;
   }
 
   getOwner(): OperationOwner { return this.owner; }
@@ -161,9 +151,9 @@ export class CameraService {
     this.reconnectEnabled = enabled;
     this.prefs.saveReconnectEnabled(enabled);
     hilog.info(0x0001, TAG, `[RECONNECT] keep-connected ${enabled ? 'enabled' : 'disabled'}`);
-    if (!enabled && this.activeSession) {
-      // Cancel any pending auto-reconnect attempt immediately
-      this.activeSession.cancelReconnectTimer();
+    if (!enabled) {
+      // Cancel any pending auto-reconnect attempt on every session
+      this.sessions.forEach((s: CameraSession) => { s.cancelReconnectTimer(); });
     }
   }
 
@@ -187,11 +177,6 @@ export class CameraService {
 
   // ==================== Permissions ====================
 
-  /**
-   * Ensure all user-grant permissions needed for scan/pair/connect.
-   * Requests the missing ones in a single batch (system queues the dialogs).
-   * Call before startPairingScan()/startReconnect().
-   */
   async requestPermissionsIfNeeded(): Promise<boolean> {
     this.permissionJustGranted = false;
     const ctx = this.abilityContext;
@@ -262,10 +247,6 @@ export class CameraService {
 
   // ==================== Ownership (Hub-level mutex) ====================
 
-  /**
-   * Request operation ownership. Returns true if granted.
-   * If another operation is active, returns false (caller must handle).
-   */
   requestOwnership(source: OperationOwner): boolean {
     if (this.owner === 'none') { this.owner = source; return true; }
     if (this.owner === source) { return true; } // already owned by same caller
@@ -276,17 +257,18 @@ export class CameraService {
   releaseOwnership(): void {
     hilog.info(0x0001, TAG, `[OWNER] released: ${this.owner}`);
     this.owner = 'none';
-    // Re-broadcast current state so listeners refresh ownership-based UI
-    this.broadcast();
+    // Callers broadcast the resulting state right after (setState / scan stop),
+    // so ownership change reaches listeners there.
   }
 
-  // ==================== Scan (Pairing Page) ====================
+  // ==================== Scan (Pairing Page, shared) ====================
 
   startPairingScan(): boolean {
     if (!this.requestOwnership('pairing')) return false;
     hilog.info(0x0001, TAG, '[CHECKPOINT] startPairingScan() called');
     this.discoveredList = [];
-    this.setState(ConnectionState.Scanning, '正在扫描设备…');
+    this.pairScanActive = true;
+    this.broadcastSessionState('', ConnectionState.Scanning, '正在扫描设备…');
     this.scanner.startScan((cameras: DiscoveredCamera[]) => {
       this.discoveredList = cameras;
     });
@@ -299,22 +281,60 @@ export class CameraService {
 
   stopPairingScan(): void {
     this.scanner.stopScan();
-    if (this._state === ConnectionState.Scanning && this.owner === 'pairing') {
+    if (this.pairScanActive && this.owner === 'pairing') {
+      this.pairScanActive = false;
       this.releaseOwnership();
-      this.setState(ConnectionState.Idle, '扫描已停止');
+      this.broadcastSessionState('', ConnectionState.Idle, '扫描已停止');
     }
   }
 
   // ==================== Delegated per-camera operations ====================
 
-  getPairingStep(): number { return this.getSession().getPairingStep(); }
-  getCameraSerial(): string { return this.getSession().getCameraSerial(); }
-  getCameraName(): string { return this.getSession().getCameraName(); }
+  /** Pairing progress of the in-flight pairing session (pairing is serial). */
+  getPairingStep(): number {
+    let step = 0;
+    this.sessions.forEach((s: CameraSession) => {
+      const ps = s.getPairingStep();
+      if (ps > step) step = ps;
+    });
+    return step;
+  }
 
-  startReconnect(camera: PairedCamera): boolean { return this.getSession().startReconnect(camera); }
-  disconnect(): void { this.getSession().disconnect(); }
-  cancelPairing(): void { this.getSession().cancelPairing(); }
-  selectDiscoveredCamera(camera: DiscoveredCamera): void { this.getSession().selectDiscoveredCamera(camera); }
+  /** True if a session for this camera exists and is connected. */
+  isCameraConnected(name: string): boolean {
+    const s = this.sessions.get(name);
+    return s !== undefined && s.isConnected();
+  }
+
+  startReconnect(camera: PairedCamera): boolean {
+    return this.getOrCreateSession(camera.name).startReconnect(camera);
+  }
+
+  /** Disconnect a specific camera, or (no arg) all connected cameras. */
+  disconnect(name?: string): void {
+    if (name) {
+      const s = this.sessions.get(name);
+      if (s) s.disconnect();
+      return;
+    }
+    this.sessions.forEach((s: CameraSession) => {
+      if (s.isConnected()) s.disconnect();
+    });
+  }
+
+  cancelPairing(): void {
+    this.sessions.forEach((s: CameraSession) => {
+      const st = s.getState();
+      if (st === ConnectionState.Connecting || st === ConnectionState.Discovering
+        || st === ConnectionState.Pairing || st === ConnectionState.Bonding) {
+        s.cancelPairing();
+      }
+    });
+  }
+
+  selectDiscoveredCamera(camera: DiscoveredCamera): void {
+    this.getOrCreateSession(camera.deviceName).selectDiscoveredCamera(camera);
+  }
 
   // ==================== GPS (single ticker, fan-out to Ready sessions) ====================
 
@@ -330,11 +350,13 @@ export class CameraService {
     this.startBackgroundTask();
   }
 
-  /** Ready sessions — Phase 0 returns the single session iff connected. */
+  /** Ready sessions — every session whose GATT link is up. */
   private getReadySessions(): CameraSession[] {
-    const s = this.activeSession;
-    if (s && s.isConnected()) return [s];
-    return [];
+    const ready: CameraSession[] = [];
+    this.sessions.forEach((s: CameraSession) => {
+      if (s.isConnected()) ready.push(s);
+    });
+    return ready;
   }
 
   private sendGpsTick(): void {
@@ -345,7 +367,7 @@ export class CameraService {
     }
     if (this.gpsStep === 0) {
       const timePayload = TimePayloadGenerator.build();
-      hilog.info(0x0001, TAG, `[GPS] TIME ${timePayload.length}B`);
+      hilog.info(0x0001, TAG, `[GPS] TIME ${timePayload.length}B to ${ready.length} camera(s)`);
       for (let i = 0; i < ready.length; i++) {
         ready[i].writeTime(timePayload);
       }
@@ -382,10 +404,6 @@ export class CameraService {
 
           const gps: GpsPosition = {
             latitude: lat, longitude: lon, altitude: alt,
-            // Wire payload needs a value in the protocol range 0-100; use 6 as a
-            // placeholder only when the real count is still unknown (-1). Never
-            // fabricate a "normal-looking" value for the UI — that stays raw
-            // (unknown → "--") so the display never lies.
             satellites: sats >= 0 ? sats : 6, timestamp: new Date()
           };
           hilog.info(0x0001, TAG, `[GPS] GEO real lat=${lat.toFixed(6)} lon=${lon.toFixed(6)}`);
@@ -415,10 +433,6 @@ export class CameraService {
     this.gpsData.satellites = -1;
   }
 
-  /**
-   * Subscribe to Location Kit's satelliteStatusChange event so the UI shows
-   * the REAL GNSS satellite count instead of a hardcoded value. Non-fatal.
-   */
   private subscribeSatelliteStatus(): void {
     if (this.satelliteSubscribed) return;
     try {
@@ -470,7 +484,7 @@ export class CameraService {
   onAppBackground(): void {
     hilog.info(0x0001, TAG, '[LIFECYCLE] App → Background');
     this.isForeground = false;
-    if (this._state === ConnectionState.Ready) {
+    if (this.getReadySessions().length > 0) {
       this.stopGpsLoop();
       this.startGpsLoop(5000); // switch to slow background interval
     }
@@ -479,7 +493,7 @@ export class CameraService {
   onAppForeground(): void {
     hilog.info(0x0001, TAG, '[LIFECYCLE] App → Foreground');
     this.isForeground = true;
-    if (this._state === ConnectionState.Ready) {
+    if (this.getReadySessions().length > 0) {
       this.stopGpsLoop();
       this.startGpsLoop(); // restore default 1500ms interval
     }
@@ -535,47 +549,25 @@ export class CameraService {
     }
   }
 
-  // ==================== State Management ====================
+  // ==================== State broadcast ====================
 
-  setState(state: ConnectionState, message: string): void {
-    this._state = state;
-    this._statusMessage = message;
-    // Terminal states end the connect watchdog (owned by the active session)
-    if (state === ConnectionState.Ready || state === ConnectionState.Idle
-      || state === ConnectionState.Error || state === ConnectionState.Bonding) {
-      if (this.activeSession) this.activeSession.clearConnectTimeout();
-    }
-    hilog.info(0x0001, TAG, `[CHECKPOINT] STATE: ${state} — ${message}`);
-    this.broadcast();
-  }
-
-  setStatusMessage(message: string): void {
-    this._statusMessage = message;
-  }
-
-  /** Re-broadcast current state without changing it (pairing-step refresh). */
-  rebroadcastState(): void {
-    this.broadcast();
-  }
-
-  private broadcast(): void {
+  /** Broadcast a per-camera (or global, name='') state change to all listeners. */
+  broadcastSessionState(cameraName: string, state: ConnectionState, message: string): void {
+    hilog.info(0x0001, TAG, `[CHECKPOINT] STATE: [${cameraName || '(global)'}] ${state} — ${message}`);
     for (let i = 0; i < this.stateListeners.length; i++) {
-      this.stateListeners[i](this._state, this._statusMessage);
+      this.stateListeners[i]({ cameraName, state, message });
     }
   }
 
   // ==================== Session management ====================
 
-  /**
-   * The active session. Phase 0 lazily creates the single session; Phase 1
-   * replaces this with a name-keyed lookup (and raises the cap).
-   */
-  private getSession(): CameraSession {
-    if (!this.activeSession) {
-      this.activeSession = new CameraSession(this);
-      this.sessions.set('default', this.activeSession);
+  private getOrCreateSession(name: string): CameraSession {
+    let s = this.sessions.get(name);
+    if (!s) {
+      s = new CameraSession(this);
+      this.sessions.set(name, s);
     }
-    return this.activeSession;
+    return s;
   }
 }
 

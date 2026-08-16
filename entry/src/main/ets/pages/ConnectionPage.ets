@@ -1,25 +1,31 @@
 /**
  * ConnectionPage.ets — Connection status, GPS, & paired device management
  *
+ * Phase 1: per-camera status cards. Each paired camera shows its own state
+ * (from CameraStateEvent) and its own connect/disconnect/forget buttons,
+ * replacing the single global status card.
+ *
  * MessagesCommonView pattern (requires HdsNavigation ancestor).
- * WlanSection card pattern for paired device list.
  */
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { bundleManager } from '@kit.AbilityKit';
-import { cameraService, ConnectionState } from '../service/CameraService';
+import { cameraService, ConnectionState, CameraStateEvent } from '../service/CameraService';
 import { PairedCamera } from '../ble/protocol/NikonPairingEngine';
 import { HdsNavDestination, ScrollEffectType, hdsMaterial } from '@kit.UIDesignKit';
 
 const TAG = 'HarmoNiLink-ConnectionPage';
 
+/** Per-camera live state, updated from CameraStateEvent. */
+interface CameraStatus {
+  name: string;
+  state: ConnectionState;
+  message: string;
+}
+
 @Component
 export struct ConnectionPage {
-  @State state: ConnectionState = ConnectionState.Idle;
-  @State statusMsg: string = '';
-  @State serial: string = '';
-  @State deviceName: string = ''; // readable BLE broadcast name (shown in status card)
-  @State step: number = 0;
   @State savedCameras: PairedCamera[] = [];
+  @State cameraStatuses: CameraStatus[] = [];
   @State logMessages: string[] = [];
   @State showLogs: boolean = false;
   // GPS data mirrored as @State so ArkUI detects changes
@@ -38,20 +44,8 @@ export struct ConnectionPage {
   private gpsTimer: number = -1;
   private offStateListener: (() => void) | null = null;
 
-  // True when cancel button should show: any active ownership, not Ready
-  private showCancel(): boolean { return this.owner !== 'none' && this.state !== ConnectionState.Ready; }
-
-  // True when an operation is actively in progress (scan/connect/pair/bond)
-  private isInProgress(): boolean {
-    const s = this.state;
-    return s === ConnectionState.Scanning || s === ConnectionState.Connecting
-      || s === ConnectionState.Discovering || s === ConnectionState.Pairing
-      || s === ConnectionState.Bonding;
-  }
-  // True when any tab owns the resource — blocks starting new operations
-  private isBlocked(): boolean { return this.owner !== 'none'; }
-  private isConnectionOwner(): boolean { return this.owner === 'connection'; }
   private isPairingOwner(): boolean { return this.owner === 'pairing'; }
+  private isConnectionOwner(): boolean { return this.owner === 'connection'; }
 
   aboutToAppear(): void {
     hilog.info(0x0001, TAG, '[CHECKPOINT] ConnectionPage aboutToAppear');
@@ -59,29 +53,27 @@ export struct ConnectionPage {
     this.loadSavedCameras();
     this.controllerName = cameraService.getControllerName();
     this.reconnectEnabled = cameraService.isReconnectEnabled();
-    this.offStateListener = cameraService.setStateListener((s: ConnectionState, msg: string) => {
+    this.offStateListener = cameraService.setStateListener((event: CameraStateEvent) => {
       // Sync owner first — all derived helpers depend on @State reactivity
       this.owner = cameraService.getOwner();
-      this.state = s;
-      // When pairing tab owns the operation, show neutral status
-      this.statusMsg = this.isPairingOwner() ? '配对进行中…' : msg;
-      this.serial = cameraService.getCameraSerial();
-      this.deviceName = cameraService.getCameraName();
-      this.step = cameraService.getPairingStep();
-      if (s === ConnectionState.Ready || s === ConnectionState.Idle) { this.loadSavedCameras(); }
+      if (event.cameraName !== '') {
+        this.updateCameraStatus(event.cameraName, event.state, event.message);
+      }
       this.logMessages = [...this.logMessages.slice(-49),
-        `[${new Date().toLocaleTimeString()}] ${s}: ${msg}`];
+        `[${new Date().toLocaleTimeString()}] [${event.cameraName || '全局'}] ${event.state}: ${event.message}`];
       // Title bar subtitle — show progress only for our own operations
       if (this.isPairingOwner()) {
         this.titleSub = '配对页操作中';
-      } else if (s === ConnectionState.Idle) { this.titleSub = ''; }
-      else if (s === ConnectionState.Scanning) { this.titleSub = '正在扫描设备…'; }
-      else if (s === ConnectionState.Connecting) { this.titleSub = '正在连接…'; }
-      else if (s === ConnectionState.Discovering) { this.titleSub = '正在发现服务…'; }
-      else if (s === ConnectionState.Pairing) { this.titleSub = `正在进行配对 (${Math.min(this.step, 4)}/4)…`; }
-      else if (s === ConnectionState.Bonding) { this.titleSub = '正在完成绑定…'; }
-      else if (s === ConnectionState.Ready) { this.titleSub = ''; }
-      else if (s === ConnectionState.Error) { this.titleSub = ''; }
+      } else if (event.cameraName !== '' && (event.state === ConnectionState.Scanning
+        || event.state === ConnectionState.Connecting || event.state === ConnectionState.Discovering
+        || event.state === ConnectionState.Pairing || event.state === ConnectionState.Bonding)) {
+        this.titleSub = `正在连接 ${event.cameraName}…`;
+      } else {
+        this.titleSub = '';
+      }
+      if (event.state === ConnectionState.Ready || event.state === ConnectionState.Idle) {
+        this.loadSavedCameras();
+      }
     });
     this.gpsTimer = setInterval(() => { this.syncGps(); }, 1000);
   }
@@ -89,6 +81,21 @@ export struct ConnectionPage {
   aboutToDisappear(): void {
     if (this.gpsTimer !== -1) { clearInterval(this.gpsTimer); this.gpsTimer = -1; }
     if (this.offStateListener) { this.offStateListener(); this.offStateListener = null; }
+  }
+
+  private updateCameraStatus(name: string, state: ConnectionState, message: string): void {
+    const next = this.cameraStatuses.map((c) =>
+      c.name === name ? { name, state, message } as CameraStatus : c);
+    const found = this.cameraStatuses.some((c) => c.name === name);
+    this.cameraStatuses = found ? next : [...this.cameraStatuses, { name, state, message } as CameraStatus];
+  }
+
+  private getCameraStatus(name: string): CameraStatus | undefined {
+    return this.cameraStatuses.find((c) => c.name === name);
+  }
+
+  private hasReadyCamera(): boolean {
+    return this.cameraStatuses.some((c) => c.state === ConnectionState.Ready);
   }
 
   private syncGps(): void {
@@ -137,7 +144,10 @@ export struct ConnectionPage {
   }
 
   private onReconnect(cam: PairedCamera): void {
-    if (this.isBlocked()) return;
+    // Pairing is serial (classic bonding needs the radio exclusively) — block
+    // new connections while the pairing tab owns the resource.
+    if (this.isPairingOwner()) return;
+    if (cameraService.isCameraConnected(cam.name)) return;
     // Reconnect also needs BLE + location permissions — request on demand
     cameraService.requestPermissionsIfNeeded().then((granted: boolean) => {
       if (!granted) {
@@ -160,8 +170,11 @@ export struct ConnectionPage {
     });
   }
 
+  private onDisconnectCamera(cam: PairedCamera): void {
+    cameraService.disconnect(cam.name);
+  }
+
   private onForget(cam: PairedCamera): void {
-    if (this.isInProgress()) return;
     this.getUIContext().getPromptAction().showDialog({
       title: '删除已配对设备',
       message: `确定删除「${cam.name}」？\n\n删除后需同时在系统蓝牙设置和相机端清除配对信息，否则可能无法重新连接。`,
@@ -171,11 +184,9 @@ export struct ConnectionPage {
       ]
     }).then((result) => {
       if (result.index === 1) {
-        // Disconnect first if this camera is connected — compare the readable
-        // broadcast name (serial is only meaningful for Z-series and differs
-        // from the saved name, which would skip the disconnect).
-        if (cameraService.getCameraName() === cam.name) {
-          cameraService.disconnect();
+        // Disconnect first if this camera is connected
+        if (cameraService.isCameraConnected(cam.name)) {
+          cameraService.disconnect(cam.name);
         }
         cameraService.removeCamera(cam.name).then(() => this.loadSavedCameras())
           .catch((e: Error) => hilog.warn(0x0001, TAG, `Forget err: ${e.message}`));
@@ -185,54 +196,43 @@ export struct ConnectionPage {
     });
   }
 
-  private onDisconnect(): void { cameraService.disconnect(); }
-
-  private getStateColor(): ResourceColor {
-    if (this.state === ConnectionState.Ready) return $r('app.color.success');
-    if (this.state === ConnectionState.Error) return $r('app.color.danger');
-    if (this.state === ConnectionState.Idle) return $r('app.color.text_secondary');
+  private stateColor(state: ConnectionState): ResourceColor {
+    if (state === ConnectionState.Ready) return $r('app.color.success');
+    if (state === ConnectionState.Error) return $r('app.color.danger');
+    if (state === ConnectionState.Idle) return $r('app.color.text_secondary');
     return $r('app.color.warning');
   }
-  private getStateLabel(): string {
-    if (this.isPairingOwner() && this.state !== ConnectionState.Idle
-      && this.state !== ConnectionState.Ready && this.state !== ConnectionState.Error) {
-      return '配对页操作中';
-    }
-    if (this.state === ConnectionState.Ready) return '已连接';
-    if (this.state === ConnectionState.Error) return '连接错误';
-    if (this.state === ConnectionState.Idle) return '未连接';
-    if (this.state === ConnectionState.Scanning) return '扫描中';
-    if (this.state === ConnectionState.Connecting) return '连接中';
-    if (this.state === ConnectionState.Discovering) return '发现服务';
-    if (this.state === ConnectionState.Pairing) return `配对中 (${Math.min(this.step, 4)}/4)`;
-    if (this.state === ConnectionState.Bonding) return '绑定中';
-    return this.state;
+
+  private stateLabel(state: ConnectionState): string {
+    if (state === ConnectionState.Ready) return '已连接';
+    if (state === ConnectionState.Error) return '连接错误';
+    if (state === ConnectionState.Idle) return '未连接';
+    if (state === ConnectionState.Scanning) return '扫描中';
+    if (state === ConnectionState.Connecting) return '连接中';
+    if (state === ConnectionState.Discovering) return '发现服务';
+    if (state === ConnectionState.Pairing) return '配对中';
+    if (state === ConnectionState.Bonding) return '绑定中';
+    return state;
   }
 
-  @Builder statusCard() {
+  private cameraBusy(state: ConnectionState): boolean {
+    return state === ConnectionState.Scanning || state === ConnectionState.Connecting
+      || state === ConnectionState.Discovering || state === ConnectionState.Pairing
+      || state === ConnectionState.Bonding;
+  }
+
+  @Builder pairingNotice() {
     Column() {
       Row({ space: 8 }) {
-        Circle({ width: 8, height: 8 }).fill(this.getStateColor())
-        Text(this.getStateLabel()).fontSize(13).fontColor(this.getStateColor())
-      }
-      if (this.deviceName || this.serial) {
-        Text(this.deviceName || this.serial).fontSize(15).fontColor($r('app.color.text_primary'))
-          .fontWeight(FontWeight.Medium).margin({ top: 6 })
-      }
-      if (this.isPairingOwner()) {
-        Text('配对页正在进行设备配对，请稍候…').fontSize(13)
-          .fontColor($r('app.color.text_secondary')).maxLines(2)
-          .textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 6 })
-      } else if (this.statusMsg) {
-        Text(this.statusMsg).fontSize(13).fontColor($r('app.color.text_secondary'))
-          .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 6 })
+        Circle({ width: 8, height: 8 }).fill($r('app.color.warning'))
+        Text('配对页正在进行设备配对，连接操作已暂停').fontSize(13).fontColor($r('app.color.warning'))
       }
     }
     .width('100%').alignItems(HorizontalAlign.Start)
-    .justifyContent(FlexAlign.Center)
     .padding({ left: 16, right: 16, top: 12, bottom: 12 })
     .borderRadius(16).backgroundColor($r('app.color.card_background'))
     .shadow({ radius: 12, color: '#0D000000', offsetY: 2 })
+    .margin({ bottom: 12 })
   }
 
   @Builder gpsCard() {
@@ -259,25 +259,45 @@ export struct ConnectionPage {
       if (this.savedCameras.length > 0) {
         Column() {
           ForEach(this.savedCameras, (cam: PairedCamera, i: number) => {
-            Row() {
-              Text(cam.name).fontSize(16).fontWeight(500).fontColor($r('app.color.text_primary'))
-                .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
-              Row({ space: 8 }) {
-                Button(this.isBlocked() ? '…' : '连接')
-                  .fontSize(12).fontWeight(FontWeight.Medium).height(32).borderRadius(16)
-                  .backgroundColor(this.isBlocked() ? $r('app.color.text_secondary') : $r('app.color.brand')).fontColor(Color.White)
-                  .padding({ left: 16, right: 16 })
-                  .enabled(!this.isBlocked())
-                  .onClick(() => { this.onReconnect(cam); })
-                Button('删除')
-                  .fontSize(12).fontWeight(FontWeight.Medium).height(32).borderRadius(16)
-                  .backgroundColor(this.isInProgress() || this.isPairingOwner()
-                    ? $r('app.color.text_secondary') : $r('app.color.danger')).fontColor(Color.White)
-                  .padding({ left: 16, right: 16 })
-                  .enabled(!this.isInProgress() && !this.isPairingOwner())
-                  .onClick(() => { this.onForget(cam); })
-              }
-            }.width('100%').height(48).padding({ left: 8, right: 8 })
+            Column() {
+              Row() {
+                Text(cam.name).fontSize(16).fontWeight(500).fontColor($r('app.color.text_primary'))
+                  .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
+                Row({ space: 8 }) {
+                  Button(this.cameraBusy(this.getCameraStatus(cam.name)?.state ?? ConnectionState.Idle)
+                    || this.getCameraStatus(cam.name)?.state === ConnectionState.Ready
+                    ? '断开' : '连接')
+                    .fontSize(12).fontWeight(FontWeight.Medium).height(32).borderRadius(16)
+                    .backgroundColor(this.getCameraStatus(cam.name)?.state === ConnectionState.Ready
+                      || this.cameraBusy(this.getCameraStatus(cam.name)?.state ?? ConnectionState.Idle)
+                      ? $r('app.color.danger') : $r('app.color.brand')).fontColor(Color.White)
+                    .padding({ left: 16, right: 16 })
+                    .enabled(!this.isPairingOwner())
+                    .onClick(() => {
+                      const st = this.getCameraStatus(cam.name)?.state ?? ConnectionState.Idle;
+                      if (st === ConnectionState.Ready || this.cameraBusy(st)) {
+                        this.onDisconnectCamera(cam);
+                      } else {
+                        this.onReconnect(cam);
+                      }
+                    })
+                  Button('删除')
+                    .fontSize(12).fontWeight(FontWeight.Medium).height(32).borderRadius(16)
+                    .backgroundColor(this.cameraBusy(this.getCameraStatus(cam.name)?.state ?? ConnectionState.Idle)
+                      || this.isPairingOwner()
+                      ? $r('app.color.text_secondary') : $r('app.color.danger')).fontColor(Color.White)
+                    .padding({ left: 16, right: 16 })
+                    .enabled(!this.cameraBusy(this.getCameraStatus(cam.name)?.state ?? ConnectionState.Idle) && !this.isPairingOwner())
+                    .onClick(() => { this.onForget(cam); })
+                }
+              }.width('100%').padding({ left: 8, right: 8 })
+              // Per-camera state line
+              Row({ space: 6 }) {
+                Circle({ width: 6, height: 6 }).fill(this.stateColor(this.getCameraStatus(cam.name)?.state ?? ConnectionState.Idle))
+                Text(this.stateLabel(this.getCameraStatus(cam.name)?.state ?? ConnectionState.Idle))
+                  .fontSize(11).fontColor(this.stateColor(this.getCameraStatus(cam.name)?.state ?? ConnectionState.Idle))
+              }.width('100%').padding({ left: 8, bottom: 6 }).alignItems(VerticalAlign.Center)
+            }.width('100%')
             if (i < this.savedCameras.length - 1) {
               Divider().strokeWidth(0.5).color($r('app.color.divider')).margin({ left: 8, right: 8 })
             }
@@ -326,7 +346,7 @@ export struct ConnectionPage {
         Column() {
           Blank().height(56)
 
-          this.statusCard()
+          if (this.isPairingOwner()) { this.pairingNotice() }
           Row() {
             Column() {
               Text('保持连接').fontSize(14).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
@@ -340,18 +360,7 @@ export struct ConnectionPage {
           .borderRadius(16).backgroundColor($r('app.color.card_background'))
           .shadow({ radius: 12, color: '#0D000000', offsetY: 2 })
           .margin({ top: 12 })
-          if (this.state === ConnectionState.Ready) { this.gpsCard() }
-          if (this.showCancel()) {
-            Button('取消').fontSize(14).fontWeight(FontWeight.Medium).height(40).borderRadius(20)
-              .backgroundColor($r('app.color.warning')).fontColor(Color.White).padding({ left: 36, right: 36 })
-              .margin({ top: 12 })
-              .onClick(() => { cameraService.disconnect(); })
-          } else if (this.state === ConnectionState.Ready) {
-            Button('断开连接').fontSize(14).fontWeight(FontWeight.Medium).height(40).borderRadius(20)
-              .backgroundColor($r('app.color.danger')).fontColor(Color.White).padding({ left: 36, right: 36 })
-              .margin({ top: 12 })
-              .onClick(() => { this.onDisconnect(); })
-          }
+          if (this.hasReadyCamera()) { this.gpsCard() }
 
           Text('相机开启「关闭时发送」选项后，连接始终自动保持。\n需要后台下发数据，请在系统设置中允许始终定位。')
             .fontSize(11).fontColor($r('app.color.text_secondary'))

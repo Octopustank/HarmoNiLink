@@ -9,7 +9,7 @@
  */
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { promptAction } from '@kit.ArkUI';
-import { cameraService, ConnectionState } from '../service/CameraService';
+import { cameraService, ConnectionState, CameraStateEvent } from '../service/CameraService';
 import { DiscoveredCamera } from '../ble/BleScanner';
 import { HdsNavDestination, ScrollEffectType, hdsMaterial } from '@kit.UIDesignKit';
 
@@ -48,8 +48,14 @@ export struct PairingPage {
 
   aboutToAppear(): void {
     hilog.info(0x0001, TAG, '[CHECKPOINT] PairingPage aboutToAppear');
-    this.offStateListener = cameraService.setStateListener((s: ConnectionState) => {
+    this.offStateListener = cameraService.setStateListener((event: CameraStateEvent) => {
       this.owner = cameraService.getOwner();
+      // Only react to global events (pairing scan / ownership) and this page's
+      // pairing target — ignore other cameras' connection events.
+      const relevant = event.cameraName === ''
+        || (this.pairingTarget !== '' && event.cameraName === this.pairingTarget);
+      if (!relevant) return;
+      const s = event.state;
       this.state = s;
       if (this.isPairingTabOwner()) {
         // Our operation — show detailed progress
