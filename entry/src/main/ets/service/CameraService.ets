@@ -257,8 +257,10 @@ export class CameraService {
   releaseOwnership(): void {
     hilog.info(0x0001, TAG, `[OWNER] released: ${this.owner}`);
     this.owner = 'none';
-    // Callers broadcast the resulting state right after (setState / scan stop),
-    // so ownership change reaches listeners there.
+    // Re-broadcast a global event so listeners refresh their ownership mirror.
+    // The caller's setState usually fires BEFORE this (while owner is still the
+    // old value) — without this the UI stays stuck thinking it still owns the tab.
+    this.broadcastSessionState('', ConnectionState.Idle, '');
   }
 
   // ==================== Scan (Pairing Page, shared) ====================

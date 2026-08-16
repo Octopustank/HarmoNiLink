@@ -263,9 +263,11 @@ export class CameraSession {
     this.pairingStep = 0;
     this.currentStage1 = null;
     this.cameraSerial = '';
-    this.cameraName = '';
-    // Idle BEFORE teardown so the synchronous BleDisconnected hits the stale guard.
+    // Idle BEFORE teardown + BEFORE clearing cameraName — the UI needs the
+    // camera name to route the event to the right camera's card, and the stale
+    // guard needs state=Idle to swallow the synchronous BleDisconnected.
     this.setState(ConnectionState.Idle, '已断开');
+    this.cameraName = '';
     this.bleClient.disconnect();
     this.hub.scanner.stopScan();
     try { connection.stopBluetoothDiscovery(); } catch (e) {}

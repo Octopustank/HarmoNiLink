@@ -259,45 +259,44 @@ export struct ConnectionPage {
       if (this.savedCameras.length > 0) {
         Column() {
           ForEach(this.savedCameras, (cam: PairedCamera, i: number) => {
-            Column() {
-              Row() {
+            Row() {
+              Column() {
                 Text(cam.name).fontSize(16).fontWeight(500).fontColor($r('app.color.text_primary'))
-                  .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
-                Row({ space: 8 }) {
-                  Button(this.cameraBusy(this.getCameraStatus(cam.name)?.state ?? ConnectionState.Idle)
-                    || this.getCameraStatus(cam.name)?.state === ConnectionState.Ready
-                    ? '断开' : '连接')
-                    .fontSize(12).fontWeight(FontWeight.Medium).height(32).borderRadius(16)
-                    .backgroundColor(this.getCameraStatus(cam.name)?.state === ConnectionState.Ready
-                      || this.cameraBusy(this.getCameraStatus(cam.name)?.state ?? ConnectionState.Idle)
-                      ? $r('app.color.danger') : $r('app.color.brand')).fontColor(Color.White)
-                    .padding({ left: 16, right: 16 })
-                    .enabled(!this.isPairingOwner())
-                    .onClick(() => {
-                      const st = this.getCameraStatus(cam.name)?.state ?? ConnectionState.Idle;
-                      if (st === ConnectionState.Ready || this.cameraBusy(st)) {
-                        this.onDisconnectCamera(cam);
-                      } else {
-                        this.onReconnect(cam);
-                      }
-                    })
-                  Button('删除')
-                    .fontSize(12).fontWeight(FontWeight.Medium).height(32).borderRadius(16)
-                    .backgroundColor(this.cameraBusy(this.getCameraStatus(cam.name)?.state ?? ConnectionState.Idle)
-                      || this.isPairingOwner()
-                      ? $r('app.color.text_secondary') : $r('app.color.danger')).fontColor(Color.White)
-                    .padding({ left: 16, right: 16 })
-                    .enabled(!this.cameraBusy(this.getCameraStatus(cam.name)?.state ?? ConnectionState.Idle) && !this.isPairingOwner())
-                    .onClick(() => { this.onForget(cam); })
-                }
-              }.width('100%').padding({ left: 8, right: 8 })
-              // Per-camera state line
-              Row({ space: 6 }) {
-                Circle({ width: 6, height: 6 }).fill(this.stateColor(this.getCameraStatus(cam.name)?.state ?? ConnectionState.Idle))
-                Text(this.stateLabel(this.getCameraStatus(cam.name)?.state ?? ConnectionState.Idle))
-                  .fontSize(11).fontColor(this.stateColor(this.getCameraStatus(cam.name)?.state ?? ConnectionState.Idle))
-              }.width('100%').padding({ left: 8, bottom: 6 }).alignItems(VerticalAlign.Center)
-            }.width('100%')
+                  .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+                Row({ space: 6 }) {
+                  Circle({ width: 6, height: 6 }).fill(this.stateColor(this.getCameraStatus(cam.name)?.state ?? ConnectionState.Idle))
+                  Text(this.stateLabel(this.getCameraStatus(cam.name)?.state ?? ConnectionState.Idle))
+                    .fontSize(11).fontColor(this.stateColor(this.getCameraStatus(cam.name)?.state ?? ConnectionState.Idle))
+                }.margin({ top: 3 })
+              }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+              Row({ space: 8 }) {
+                Button(this.cameraBusy(this.getCameraStatus(cam.name)?.state ?? ConnectionState.Idle)
+                  || this.getCameraStatus(cam.name)?.state === ConnectionState.Ready
+                  ? '断开' : '连接')
+                  .fontSize(12).fontWeight(FontWeight.Medium).height(32).borderRadius(16)
+                  .backgroundColor(this.getCameraStatus(cam.name)?.state === ConnectionState.Ready
+                    || this.cameraBusy(this.getCameraStatus(cam.name)?.state ?? ConnectionState.Idle)
+                    ? $r('app.color.danger') : $r('app.color.brand')).fontColor(Color.White)
+                  .padding({ left: 16, right: 16 })
+                  .enabled(!this.isPairingOwner())
+                  .onClick(() => {
+                    const st = this.getCameraStatus(cam.name)?.state ?? ConnectionState.Idle;
+                    if (st === ConnectionState.Ready || this.cameraBusy(st)) {
+                      this.onDisconnectCamera(cam);
+                    } else {
+                      this.onReconnect(cam);
+                    }
+                  })
+                Button('删除')
+                  .fontSize(12).fontWeight(FontWeight.Medium).height(32).borderRadius(16)
+                  .backgroundColor(this.cameraBusy(this.getCameraStatus(cam.name)?.state ?? ConnectionState.Idle)
+                    || this.isPairingOwner()
+                    ? $r('app.color.text_secondary') : $r('app.color.danger')).fontColor(Color.White)
+                  .padding({ left: 16, right: 16 })
+                  .enabled(!this.cameraBusy(this.getCameraStatus(cam.name)?.state ?? ConnectionState.Idle) && !this.isPairingOwner())
+                  .onClick(() => { this.onForget(cam); })
+              }
+            }.width('100%').padding({ left: 8, right: 8, top: 10, bottom: 10 }).alignItems(VerticalAlign.Center)
             if (i < this.savedCameras.length - 1) {
               Divider().strokeWidth(0.5).color($r('app.color.divider')).margin({ left: 8, right: 8 })
             }
