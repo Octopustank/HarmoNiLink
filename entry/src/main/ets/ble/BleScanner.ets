@@ -45,8 +45,10 @@ function parseManufacturerDevice(sr: Record<string, Object>): number | undefined
 export type ScanListener = (cameras: DiscoveredCamera[]) => void;
 
 /**
- * Runs three scan channels in parallel: classic BT discovery, the new
- * BleScanner API ('BLEDeviceFind' with ScanReport), and the old ble.on API.
+ * Runs two scan channels in parallel: classic BT discovery (D-series bonding
+ * + non-camera device listing) and the new BleScanner API ('BLEDeviceFind'
+ * with ScanReport) — the officially recommended multi-scan path since API 15.
+ * The legacy ble.on single-scan API has been removed.
  * Nikon cameras are identified by the 0xDE00 service UUID in the advertisement;
  * the new-API channel reports it via ScanResult.serviceUuids.
  */
@@ -66,10 +68,10 @@ export class BleScanner {
     // Self-test: check Bluetooth state
     this.selfTest();
 
-    // All three APIs in parallel
+    // Classic BT discovery + the new BleScanner API (the legacy ble.on
+    // single-scan API is removed — new API is the recommended multi-scan path).
     this.tryClassicDiscovery();
     this.tryNewBleApi();
-    this.tryOldBleApi();
   }
 
   private selfTest(): void {
@@ -180,45 +182,6 @@ export class BleScanner {
     }
   }
 
-  private tryOldBleApi(): void {
-    try {
-      ble.on('BLEDeviceFind', (results: Object) => {
-        const arr = results as Object[];
-        hilog.info(0x0001, TAG,
-          `[OLD BLE] FIRED! ${arr.length} results`);
-        for (let i = 0; i < arr.length; i++) {
-          const r = arr[i] as Record<string, Object>;
-          const id = (r['deviceId'] as string) ?? '';
-          const name = (r['deviceName'] as string) ?? '';
-          const rssi = (r['rssi'] as number) ?? 0;
-          // Service UUIDs from the advertisement — Nikon cameras advertise
-          // 0xDE00; logged for verification of the filter approach.
-          const svcs = (r['serviceUuids'] as string[] ?? []) as string[];
-          const svcHit = svcs.some((u: string) => u.toUpperCase().includes('DE00'));
-          const mdev = parseManufacturerDevice(r);
-          if (!id || !name) {
-            const data = r['data'];
-            hilog.info(0x0001, TAG,
-              `[OLD BLE] result[${i}] keys=[${Object.keys(r).join(',')}] dataLen=${data ? (data as ArrayBuffer).byteLength : 0} svcUuids=[${svcs.join(',')}]`);
-          } else {
-            hilog.info(0x0001, TAG,
-              `[OLD BLE] result[${i}]: id=${id} name='${name}' rssi=${rssi} svcUuids=[${svcs.join(',')}] nikon=${svcHit || isNikonName(name)} dev=${mdev !== undefined ? mdev : '-'}`);
-          }
-          this.add(id, name, rssi, svcHit, mdev);
-        }
-      });
-      const opts: ble.ScanOptions = {
-        interval: 100, dutyMode: ble.ScanDuty.SCAN_MODE_LOW_LATENCY,
-        matchMode: ble.MatchMode.MATCH_MODE_AGGRESSIVE,
-      };
-      ble.startBLEScan(null, opts);
-      hilog.info(0x0001, TAG, `[OLD BLE] startBLEScan(null) OK`);
-    } catch (err) {
-      const e = err as BusinessError;
-      hilog.error(0x0001, TAG, `[OLD BLE] FAILED: ${e.code} ${e.message}`);
-    }
-  }
-
   stopScan(): void {
     this.isScanning = false;
     try { connection.stopBluetoothDiscovery(); } catch (e) {}
@@ -226,7 +189,6 @@ export class BleScanner {
     try { connection.off('discoveryResult'); } catch (e) {}
     try { this.bleScanner?.stopScan(); this.bleScanner?.off('BLEDeviceFind'); } catch (e) {}
     this.bleScanner = null;
-    try { ble.stopBLEScan(); ble.off('BLEDeviceFind'); } catch (e) {}
   }
 
   private add(deviceId: string, deviceName: string, rssi: number, isNikonByUuid: boolean, manufacturerDevice?: number): void {
