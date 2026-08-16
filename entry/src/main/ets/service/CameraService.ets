@@ -383,6 +383,10 @@ export class CameraService {
     const interval = this.isForeground ? intervalMs : 5000;
     hilog.info(0x0001, TAG, `[GPS] startGpsLoop: interval=${interval}ms fg=${this.isForeground}`);
     this.stopGpsLoop();
+    // Idempotent retry: setContext() subscribes at startup, but location
+    // permission may not be granted yet then (it's requested on first scan).
+    // Re-attempt here (no-op if already subscribed).
+    this.subscribeSatelliteStatus();
     this.gpsStep = 0;
     // Send TIME immediately, then alternate TIME/GEO
     this.sendGpsTick();
