@@ -415,16 +415,16 @@ export class CameraService {
       // manufacturer parse returns unsigned, but a legacy-persisted
       // camera.device may still be signed-negative for IDs >= 2^31. `>>> 0`
       // reconciles them regardless of how the saved value was stored.
-      let foundDevMatch = false;
-      const found = cameras.find((c) => {
-        const devMatch = c.manufacturerDevice !== undefined
-          && (c.manufacturerDevice >>> 0) === (camera.device >>> 0);
-        if (devMatch || c.deviceName === camera.name) {
-          foundDevMatch = devMatch;
-          return true;
-        }
-        return false;
-      });
+      // Two passes: the stable device-ID match always wins over name. A
+      // single-pass `devMatch || nameMatch` find could return an earlier
+      // name-matching entry (a different camera sharing the broadcast name,
+      // or a name hit listed before the true dev hit) and skip the real
+      // device-ID match that came later.
+      const devHit = cameras.find((c) =>
+        c.manufacturerDevice !== undefined
+          && (c.manufacturerDevice >>> 0) === (camera.device >>> 0));
+      const found = devHit ?? cameras.find((c) => c.deviceName === camera.name);
+      const foundDevMatch = devHit !== undefined;
       if (found) {
         this.scanner.stopScan();
         hilog.info(0x0001, TAG,
