@@ -42,9 +42,6 @@ export class BleClient {
   private mtuTimeoutId: number = -1; // cancel MTU timeout when response arrives
   private discoveryRetries: number = 0; // D-series slow service-discovery retries
   private discoveryInFlight: boolean = false; // only one getServices at a time
-  private connParamFailed: boolean = false; // LOW_POWER update failed — camera-busy signal
-
-  isConnParamFailed(): boolean { return this.connParamFailed; }
 
   connect(deviceId: string, listener: BleListener): void {
     hilog.info(0x0001, TAG, `[C] ${deviceId}`);
@@ -54,7 +51,6 @@ export class BleClient {
     this.servicesDiscovered = false;
     this.discoveryRetries = 0;
     this.discoveryInFlight = false;
-    this.connParamFailed = false;
     clearTimeout(this.mtuTimeoutId);
     try {
       this.gattClient = ble.createGattClientDevice(deviceId);
@@ -63,19 +59,6 @@ export class BleClient {
         if (d.state === 2) {
           if (this.servicesDiscovered) return; // already set up
           this.emit(new BleConnected());
-          // Set low-power connection mode (camera can sleep without dropping BLE)
-          try {
-            const gatt = this.gattClient as Object as Record<string, Function>;
-            if (gatt['updateConnectionParam']) {
-              gatt['updateConnectionParam'](ble.ConnectionParam.LOW_POWER).catch((e: Error) => {
-                // Failure is a camera-busy signal: on a healthy link this
-                // succeeds; when the camera is waiting for another paired
-                // device it fails consistently.
-                this.connParamFailed = true;
-                hilog.warn(0x0001, TAG, `[M] updateConnectionParam fail: ${e.message}`);
-              });
-            }
-          } catch (e) { this.connParamFailed = true; }
           try { this.gattClient?.setBLEMtuSize(517); hilog.info(0x0001, TAG, `[M] setMTU`); } catch (e) {}
           // MTU timeout: if no response in 5s, proceed anyway. 3s was too
           // tight — D5600 on some stacks takes ~4.5s to negotiate MTU, and
