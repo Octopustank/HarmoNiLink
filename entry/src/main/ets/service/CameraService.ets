@@ -358,11 +358,21 @@ export class CameraService {
    */
   refreshGps(): void {
     if (this.getReadySessions().length > 0) {
-      this.startGpsLoop();
+      // A Ready camera exists: keep the ticker running, but DON'T restart it.
+      // Restarting resets the satellite count (stopGpsLoop sets it to -1) and
+      // re-subscribes; getReadySessions() is dynamic, so the running ticker
+      // already fans out to the changed set on its next beat.
+      this.ensureGpsRunning();
     } else {
       this.stopGpsLoop();
       this.stopBackgroundTask();
     }
+  }
+
+  /** Start the ticker only if it isn't already running (no satellite reset). */
+  private ensureGpsRunning(): void {
+    if (this.gpsTimer !== null) return;
+    this.startGpsLoop();
   }
 
   startGpsLoop(intervalMs: number = 1500): void {
@@ -377,7 +387,6 @@ export class CameraService {
     this.startBackgroundTask();
   }
 
-  /** Ready sessions — every session whose GATT link is up. */
   /** Ready sessions — only those whose handshake finished (chars prepared).
    *  isConnected() alone is true mid-pairing (gattClient exists but TIME/GEO
    *  chars aren't ready), and fanning GPS writes into such a session crashes

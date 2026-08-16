@@ -781,7 +781,7 @@ export class CameraSession {
     } else {
       this.setState(ConnectionState.Ready,
         '已连接');
-      this.hub.startGpsLoop();
+      this.hub.refreshGps();
       // Release connection ownership once Ready (see onBonded).
       if (this.hub.getOwner() === 'connection') this.hub.releaseOwnership();
     }
@@ -808,7 +808,7 @@ export class CameraSession {
     // PAIR mode: handled by checkBondedAndFinish → classic bonding → finishBonding
     if (!this.isPairMode) {
       this.setState(ConnectionState.Ready, '已连接');
-      this.hub.startGpsLoop();
+      this.hub.refreshGps();
       // Release connection ownership once Ready — the link is established, and
       // the pairing tab must stay free to pair another camera concurrently.
       if (this.hub.getOwner() === 'connection') this.hub.releaseOwnership();
