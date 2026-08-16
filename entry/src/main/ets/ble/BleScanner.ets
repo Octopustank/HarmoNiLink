@@ -61,19 +61,35 @@ export class BleScanner {
   private isScanning: boolean = false;
   /** New BleScanner API instance (ScanReport-based 'BLEDeviceFind'). */
   private bleScanner: ble.BleScanner | null = null;
+  /** Classic-discovery listeners kept by reference so stopScan can off them
+   *  precisely — a bare connection.off('discoveryResult') would also kill
+   *  CameraSession's bonding listener registered on the same event. */
+  private classicDeviceFindCb: ((data: Object) => void) | null = null;
+  private classicDiscoveryCb: ((data: Object) => void) | null = null;
+  /** True while THIS scan started classic discovery — stopScan only stops it
+   *  when we own it (a reconnect scan with withClassic=false must not stop the
+   *  pairing tab's in-flight bonding discovery). */
+  private withClassicActive: boolean = false;
 
-  startScan(listener: ScanListener): void {
-    hilog.info(0x0001, TAG, `=== startScan() ===`);
+  startScan(listener: ScanListener, withClassic: boolean = true): void {
+    hilog.info(0x0001, TAG, `=== startScan(withClassic=${withClassic}) ===`);
     this.scanListener = listener;
     this.discoveredCameras.clear();
     this.isScanning = true;
+    this.withClassicActive = withClassic;
 
     // Self-test: check Bluetooth state
     this.selfTest();
 
-    // Classic BT discovery + the new BleScanner API (the legacy ble.on
-    // single-scan API is removed — new API is the recommended multi-scan path).
-    this.tryClassicDiscovery();
+    // Classic BT discovery is only needed for the PAIRING page (D-series
+    // bonding + non-camera device listing). A RECONNECT scan must NOT start
+    // classic discovery — it shares the radio with the other connected
+    // camera's GATT writes (GPS), and classic discovery would starve/kill
+    // those writes (observed: 2900099 write failures on the first camera as
+    // soon as the second camera's reconnect scan ran classic discovery).
+    if (withClassic) {
+      this.tryClassicDiscovery();
+    }
     this.tryNewBleApi();
   }
 
@@ -91,16 +107,19 @@ export class BleScanner {
   private tryClassicDiscovery(): void {
     hilog.info(0x0001, TAG, `[CLASSIC] starting...`);
     try {
-      connection.on('bluetoothDeviceFind', (data: Object) => {
+      if (this.classicDeviceFindCb) { try { connection.off('bluetoothDeviceFind', this.classicDeviceFindCb); } catch (e) {} }
+      this.classicDeviceFindCb = (data: Object) => {
         const arr = data as string[];
         hilog.info(0x0001, TAG, `[CLASSIC v17] FIRED! ${arr.length} devices: [${arr.join(', ')}]`);
         for (let i = 0; i < arr.length; i++) {
           const cId = arr[i];
           this.add(cId, `BT-device-${i}`, 0, false);
         }
-      });
+      };
+      connection.on('bluetoothDeviceFind', this.classicDeviceFindCb);
 
-      connection.on('discoveryResult', (data: Object) => {
+      if (this.classicDiscoveryCb) { try { connection.off('discoveryResult', this.classicDiscoveryCb); } catch (e) {} }
+      this.classicDiscoveryCb = (data: Object) => {
         const arr = data as Object[];
         hilog.info(0x0001, TAG, `[CLASSIC v18] FIRED! ${arr.length} results`);
         for (let i = 0; i < arr.length; i++) {
@@ -113,7 +132,8 @@ export class BleScanner {
             false
           );
         }
-      });
+      };
+      connection.on('discoveryResult', this.classicDiscoveryCb);
 
       const wasDiscovering = connection.isBluetoothDiscovering();
       hilog.info(0x0001, TAG, `[CLASSIC] wasDiscovering=${wasDiscovering}`);
@@ -187,9 +207,15 @@ export class BleScanner {
 
   stopScan(): void {
     this.isScanning = false;
-    try { connection.stopBluetoothDiscovery(); } catch (e) {}
-    try { connection.off('bluetoothDeviceFind'); } catch (e) {}
-    try { connection.off('discoveryResult'); } catch (e) {}
+    // Only stop classic discovery / off its listeners when THIS scan started
+    // them — otherwise a reconnect scan (withClassic=false) would stop the
+    // pairing tab's in-flight bonding discovery and kill its listener.
+    if (this.withClassicActive) {
+      try { connection.stopBluetoothDiscovery(); } catch (e) {}
+      if (this.classicDeviceFindCb) { try { connection.off('bluetoothDeviceFind', this.classicDeviceFindCb); } catch (e) {} this.classicDeviceFindCb = null; }
+      if (this.classicDiscoveryCb) { try { connection.off('discoveryResult', this.classicDiscoveryCb); } catch (e) {} this.classicDiscoveryCb = null; }
+    }
+    this.withClassicActive = false;
     try { this.bleScanner?.stopScan(); this.bleScanner?.off('BLEDeviceFind'); } catch (e) {}
     this.bleScanner = null;
   }

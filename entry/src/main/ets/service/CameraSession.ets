@@ -186,7 +186,7 @@ export class CameraSession {
         this.hub.prefs.saveCameraSync(updated);
         this.connectToDevice(found.deviceId);
       }
-    });
+    }, false);
 
     // Timeout: fall back to the saved address after 10 seconds. This is NOT
     // just a last-ditch fallback — connecting to the (possibly stale) address

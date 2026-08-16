@@ -340,6 +340,21 @@ export class CameraService {
 
   // ==================== GPS (single ticker, fan-out to Ready sessions) ====================
 
+  /**
+   * Reconcile the GPS ticker with the current Ready sessions: restart (fan out
+   * to the remaining cameras) if any remain, else stop. Call after ONE camera
+   * disconnects/links-out — a bare stopGpsLoop() would kill GPS for the OTHER
+   * still-connected cameras.
+   */
+  refreshGps(): void {
+    if (this.getReadySessions().length > 0) {
+      this.startGpsLoop();
+    } else {
+      this.stopGpsLoop();
+      this.stopBackgroundTask();
+    }
+  }
+
   startGpsLoop(intervalMs: number = 1500): void {
     const interval = this.isForeground ? intervalMs : 5000;
     hilog.info(0x0001, TAG, `[GPS] startGpsLoop: interval=${interval}ms fg=${this.isForeground}`);
