@@ -5,7 +5,6 @@
  * WlanSection card pattern for paired device list.
  */
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { promptAction } from '@kit.ArkUI';
 import { bundleManager } from '@kit.AbilityKit';
 import { cameraService, ConnectionState } from '../service/CameraService';
 import { PairedCamera } from '../ble/protocol/NikonPairingEngine';
@@ -110,10 +109,12 @@ export struct ConnectionPage {
       // One-time explanation the first time the user enables 保持连接
       if (!cameraService.wasReconnectPrompted()) {
         cameraService.markReconnectPrompted();
-        promptAction.showDialog({
+        this.getUIContext().getPromptAction().showDialog({
           title: '保持连接',
           message: '开启后，连接断开时将自动持续重连（含后台），直到相机恢复或您手动断开。\n\n持续重连会保持蓝牙与定位后台任务运行，可能增加耗电。',
           buttons: [{ text: '知道了', color: $r('app.color.brand') }]
+        }).catch((e: Error) => {
+          hilog.warn(0x0001, TAG, `Reconnect hint dialog err: ${e.message}`);
         });
       }
     }
@@ -140,17 +141,19 @@ export struct ConnectionPage {
     // Reconnect also needs BLE + location permissions — request on demand
     cameraService.requestPermissionsIfNeeded().then((granted: boolean) => {
       if (!granted) {
-        promptAction.showToast({ message: '需要蓝牙和位置权限才能连接', duration: 2500 });
+        this.getUIContext().getPromptAction().showToast({ message: '需要蓝牙和位置权限才能连接', duration: 2500 });
         return;
       }
       // One-time hint on first connect: camera "关闭时发送" + 保持连接
       if (!cameraService.wasConnectHintShown()) {
         cameraService.markConnectHintShown();
-        promptAction.showDialog({
+        this.getUIContext().getPromptAction().showDialog({
           title: '连接提示',
           message: '为获得稳定连接，推荐：\n\n1. 在相机设置中开启「关闭时发送」——相机休眠/关机后仍保持连接，本 App 可自动重连。\n\n2. 开启本页的「保持连接」开关——连接意外断开时自动持续重连，直到相机恢复。',
           buttons: [{ text: '继续连接', color: $r('app.color.brand') }]
-        }).then(() => { cameraService.startReconnect(cam); });
+        }).then(() => { cameraService.startReconnect(cam); }).catch((e: Error) => {
+          hilog.warn(0x0001, TAG, `Connect hint dialog err: ${e.message}`);
+        });
       } else {
         cameraService.startReconnect(cam);
       }
@@ -159,15 +162,14 @@ export struct ConnectionPage {
 
   private onForget(cam: PairedCamera): void {
     if (this.isInProgress()) return;
-    const dialog = promptAction.showDialog({
+    this.getUIContext().getPromptAction().showDialog({
       title: '删除已配对设备',
       message: `确定删除「${cam.name}」？\n\n删除后需同时在系统蓝牙设置和相机端清除配对信息，否则可能无法重新连接。`,
       buttons: [
         { text: '取消', color: $r('app.color.brand') },
         { text: '删除', color: $r('app.color.danger') }
       ]
-    });
-    dialog.then((result) => {
+    }).then((result) => {
       if (result.index === 1) {
         // Disconnect first if this camera is connected — compare the readable
         // broadcast name (serial is only meaningful for Z-series and differs
@@ -178,6 +180,8 @@ export struct ConnectionPage {
         cameraService.removeCamera(cam.name).then(() => this.loadSavedCameras())
           .catch((e: Error) => hilog.warn(0x0001, TAG, `Forget err: ${e.message}`));
       }
+    }).catch((err: Error) => {
+      hilog.warn(0x0001, TAG, `Forget dialog err: ${err.message}`);
     });
   }
 

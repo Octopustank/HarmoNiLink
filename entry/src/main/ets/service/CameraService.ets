@@ -20,7 +20,7 @@ import { geoLocationManager } from '@kit.LocationKit';
 import { backgroundTaskManager } from '@kit.BackgroundTasksKit';
 import { common, wantAgent, WantAgent, abilityAccessCtrl } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
-import { promptAction } from '@kit.ArkUI';
+import { window } from '@kit.ArkUI';
 import { PairedCamera, NikonPairingEngine } from '../ble/protocol/NikonPairingEngine';
 import { PairingMessage } from '../ble/protocol/PairingMessage';
 import { GeoPayloadGenerator, GpsPosition } from '../ble/protocol/GeoPayloadGenerator';
@@ -776,12 +776,18 @@ export class CameraService {
     if (Date.now() - this.lastPairTargetHintAt < 60000) return;
     this.lastPairTargetHintAt = Date.now();
     hilog.warn(0x0001, TAG, '[CHECKPOINT] Camera may be waiting for another device — showing hint');
-    promptAction.showDialog({
-      title: '连接提示',
-      message: `相机端可能未选择本设备。请在相机【已配对设备】里，将当前设备切换为「${this.controllerName || 'HarmoNiLink'}」后重试。`,
-      buttons: [{ text: '知道了', color: '#0A59F7' }]
+    const ctx = this.abilityContext;
+    if (!ctx) return;
+    window.getLastWindow(ctx).then((win) => {
+      win.getUIContext().getPromptAction().showDialog({
+        title: '连接提示',
+        message: `相机端可能未选择本设备。请在相机【已配对设备】里，将当前设备切换为「${this.controllerName || 'HarmoNiLink'}」后重试。`,
+        buttons: [{ text: '知道了', color: '#0A59F7' }]
+      }).catch((e: BusinessError) => {
+        hilog.warn(0x0001, TAG, `[CHECKPOINT] Hint dialog failed: ${e.message}`);
+      });
     }).catch((e: BusinessError) => {
-      hilog.warn(0x0001, TAG, `[CHECKPOINT] Hint dialog failed: ${e.message}`);
+      hilog.warn(0x0001, TAG, `[CHECKPOINT] getLastWindow failed: ${e.message}`);
     });
   }
 
@@ -981,7 +987,7 @@ export class CameraService {
 
     // Use discoveryResult event (v18 API) which gives deviceId + deviceName + rssi.
     // Unregister any previous listener first (connection.on accumulates).
-    if (this.bondDiscoveryCb) connection.off('discoveryResult', this.bondDiscoveryCb);
+    if (this.bondDiscoveryCb) { try { connection.off('discoveryResult', this.bondDiscoveryCb); } catch (e) {} }
     this.bondDiscoveryCb = (data: Object) => {
       // Guard: once bonding finished (or was abandoned), ignore late results —
       // a camera that re-broadcasts under a new random address would otherwise
@@ -1059,7 +1065,7 @@ export class CameraService {
         return;
       }
     };
-    connection.on('discoveryResult', this.bondDiscoveryCb);
+    try { connection.on('discoveryResult', this.bondDiscoveryCb); } catch (e) {}
 
     // Timeout: 15 seconds
     setTimeout(() => {
@@ -1128,8 +1134,8 @@ export class CameraService {
   }
 
   private unregisterBondListeners(): void {
-    if (this.bondDiscoveryCb) { connection.off('discoveryResult', this.bondDiscoveryCb); this.bondDiscoveryCb = null; }
-    if (this.bondStateCb) { connection.off('bondStateChange', this.bondStateCb); this.bondStateCb = null; }
+    if (this.bondDiscoveryCb) { try { connection.off('discoveryResult', this.bondDiscoveryCb); } catch (e) {} this.bondDiscoveryCb = null; }
+    if (this.bondStateCb) { try { connection.off('bondStateChange', this.bondStateCb); } catch (e) {} this.bondStateCb = null; }
   }
 
   private finishBonding(bonded: boolean): void {

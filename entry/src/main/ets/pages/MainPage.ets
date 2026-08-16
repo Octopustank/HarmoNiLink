@@ -25,8 +25,10 @@ struct MainPage {
 
   aboutToAppear(): void {
     hilog.info(0x0001, TAG, '[CHECKPOINT] MainPage aboutToAppear');
-    const ctx = getContext(this) as common.UIAbilityContext;
-    cameraService.setContext(ctx);
+    const ctx = this.getUIContext().getHostContext();
+    if (ctx) {
+      cameraService.setContext(ctx as common.UIAbilityContext);
+    }
   }
 
   @Builder tabBar(index: number, label: string, icon: Resource) {

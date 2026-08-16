@@ -70,11 +70,11 @@ export struct PairingPage {
             const target = this.pairingTarget;
             this.pairingTarget = '';
             this.statusLabel = '配对完成';
-            promptAction.showDialog({
+            this.getUIContext().getPromptAction().showDialog({
               title: '配对成功',
               message: `「${target}」已添加到已配对设备列表。\n请前往「连接」页面手动连接相机。`,
               buttons: [{ text: '好的', color: $r('app.color.brand') }]
-            });
+            }).catch(() => { /* dialog dismissed */ });
           } else {
             // Cancel / failure / connection drop — clear the stuck target state
             this.pairingTarget = '';
@@ -180,13 +180,13 @@ export struct PairingPage {
       // avoids the startup privacy-dialog conflict). Scan only when granted.
       cameraService.requestPermissionsIfNeeded().then((granted: boolean) => {
         if (!granted) {
-          promptAction.showToast({ message: '需要蓝牙和位置权限才能扫描', duration: 2500 });
+          this.getUIContext().getPromptAction().showToast({ message: '需要蓝牙和位置权限才能扫描', duration: 2500 });
           return;
         }
         // One-time prompt after first grant: explain precise location, and that
         // background GPS requires "always allow" in system settings (optional).
         if (cameraService.wasPermissionJustGranted() && !cameraService.isBackgroundLocationGranted()) {
-          promptAction.showDialog({
+          this.getUIContext().getPromptAction().showDialog({
             title: '定位权限说明',
             message: '已授予位置权限。\n\n请确保授予「精确位置」，相机才能收到准确的 GPS 坐标。\n\n如需相机休眠或应用在后台时持续下发 GPS，请在系统设置中将定位权限设为「始终允许」（会略微增加耗电）。',
             buttons: [
@@ -202,11 +202,11 @@ export struct PairingPage {
         if (cameraService.startPairingScan()) {
           this.startPolling();
         } else {
-          promptAction.showToast({ message: '连接页操作中，请稍后', duration: 2000 });
+          this.getUIContext().getPromptAction().showToast({ message: '连接页操作中，请稍后', duration: 2000 });
         }
       });
     } else {
-      promptAction.showToast({ message: '正在操作中，请稍后', duration: 2000 });
+      try { this.getUIContext().getPromptAction().showToast({ message: '正在操作中，请稍后', duration: 2000 }); } catch (e) {}
     }
   }
 
@@ -216,7 +216,7 @@ export struct PairingPage {
     if (this.owner !== 'none' && !this.isPairingTabOwner()) return;
     if (this.owner === 'none') {
       if (!cameraService.requestOwnership('pairing')) {
-        promptAction.showToast({ message: '连接页操作中，请稍后', duration: 2000 });
+        try { this.getUIContext().getPromptAction().showToast({ message: '连接页操作中，请稍后', duration: 2000 }); } catch (e) {}
         return;
       }
     }
