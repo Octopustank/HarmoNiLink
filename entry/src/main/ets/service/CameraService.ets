@@ -29,6 +29,16 @@ import { CameraSession } from './CameraSession';
 
 const TAG = 'HarmoNiLink-CameraService';
 
+// Conservative multi-camera connection cap. HarmonyOS has no public API to
+// query the platform's GATT connection limit, so use the agreed conservative
+// target (3). Raising it needs on-device validation of simultaneous links.
+const MAX_CONNECTIONS = 3;
+
+// GPS phase stagger: with N cameras, space each camera's write by this many ms
+// so they don't all grab the radio in the same millisecond (Phase 2 power/
+// scheduling strategy). 200ms is comfortably below the 1500ms foreground tick.
+const GPS_PHASE_STAGGER_MS = 200;
+
 // User-grant permissions needed for scan/pair/connect. Requested in ONE batch
 // (system queues the dialogs) on first user action, not at app startup.
 const USER_GRANT_PERMISSIONS: string[] = [
@@ -322,7 +332,22 @@ export class CameraService {
     return s !== undefined && s.isConnected();
   }
 
+  /** Number of currently Ready (connected) cameras. */
+  getConnectedCount(): number {
+    return this.getReadySessions().length;
+  }
+
+  /** True if another camera can still be connected under the cap. */
+  canConnectMore(): boolean {
+    return this.getConnectedCount() < MAX_CONNECTIONS;
+  }
+
   startReconnect(camera: PairedCamera): boolean {
+    if (!this.canConnectMore()) {
+      hilog.warn(0x0001, TAG,
+        `[CONN] limit reached (${this.getConnectedCount()}/${MAX_CONNECTIONS}) — refused ${camera.name}`);
+      return false;
+    }
     return this.getOrCreateSession(camera.name).startReconnect(camera);
   }
 
@@ -416,7 +441,7 @@ export class CameraService {
       const timePayload = TimePayloadGenerator.build();
       hilog.info(0x0001, TAG, `[GPS] TIME ${timePayload.length}B to ${ready.length} camera(s)`);
       for (let i = 0; i < ready.length; i++) {
-        ready[i].writeTime(timePayload);
+        this.staggeredWrite(ready[i], i, timePayload, true);
       }
       this.gpsStep = 1;
     } else {
@@ -456,7 +481,7 @@ export class CameraService {
           hilog.info(0x0001, TAG, `[GPS] GEO real lat=${lat.toFixed(6)} lon=${lon.toFixed(6)}`);
           const payload = GeoPayloadGenerator.buildReal(gps);
           for (let i = 0; i < stillReady.length; i++) {
-            stillReady[i].writeGeo(payload);
+            this.staggeredWrite(stillReady[i], i, payload, false);
           }
         }).catch(() => {
           hilog.debug(0x0001, TAG, '[GPS] GEO skip — no location');
@@ -464,6 +489,24 @@ export class CameraService {
       } catch (e) {
         hilog.debug(0x0001, TAG, '[GPS] GEO skip — exception');
       }
+    }
+  }
+
+  /**
+   * Fan a write out to one camera, staggered by its index so N cameras don't
+   * all transmit in the same instant. Writes are self-guarding (BleClient
+   * drops them if the link is gone), so a delayed write after a disconnect is
+   * harmless.
+   */
+  private staggeredWrite(session: CameraSession, index: number, payload: Uint8Array, isTime: boolean): void {
+    const delay = index * GPS_PHASE_STAGGER_MS;
+    const doWrite = (): void => {
+      if (isTime) { session.writeTime(payload); } else { session.writeGeo(payload); }
+    };
+    if (delay === 0) {
+      doWrite();
+    } else {
+      setTimeout(doWrite, delay);
     }
   }
 

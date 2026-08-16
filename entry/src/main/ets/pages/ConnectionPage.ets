@@ -148,6 +148,13 @@ export struct ConnectionPage {
     // new connections while the pairing tab owns the resource.
     if (this.isPairingOwner()) return;
     if (cameraService.isCameraConnected(cam.name)) return;
+    // Connection cap guard — refuse with a hint before starting the flow.
+    if (!cameraService.canConnectMore()) {
+      this.getUIContext().getPromptAction().showToast({
+        message: `已达连接上限（${cameraService.getConnectedCount()} 台），请先断开其他相机`, duration: 2500
+      });
+      return;
+    }
     // Reconnect also needs BLE + location permissions — request on demand
     cameraService.requestPermissionsIfNeeded().then((granted: boolean) => {
       if (!granted) {
