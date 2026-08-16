@@ -20,7 +20,10 @@ const TAG = 'HarmoNiLink-MainPage';
 @Component
 struct MainPage {
   @State currentIndex: number = 0;
-  @Provide pathStack: NavPathStack = new NavPathStack();
+  // Plain field (NOT @Provide): HdsNavigation mutates this NavPathStack during
+  // render, and @Provide would make ArkUI treat that as an illegal state change
+  // ("changed during render") — no child @Consumes it, so plain is safe.
+  private pathStack: NavPathStack = new NavPathStack();
   private tabsController: HdsTabsController = new HdsTabsController();
 
   aboutToAppear(): void {
