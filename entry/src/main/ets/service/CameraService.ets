@@ -368,10 +368,14 @@ export class CameraService {
   }
 
   /** Ready sessions — every session whose GATT link is up. */
+  /** Ready sessions — only those whose handshake finished (chars prepared).
+   *  isConnected() alone is true mid-pairing (gattClient exists but TIME/GEO
+   *  chars aren't ready), and fanning GPS writes into such a session crashes
+   *  writeCharacteristicValue with a 401. */
   private getReadySessions(): CameraSession[] {
     const ready: CameraSession[] = [];
     this.sessions.forEach((s: CameraSession) => {
-      if (s.isConnected()) ready.push(s);
+      if (s.getState() === ConnectionState.Ready) ready.push(s);
     });
     return ready;
   }

@@ -315,40 +315,52 @@ export class BleClient {
       }
     }, 10000);
 
-    c['writeCharacteristicValue'](obj, 1, (err: BusinessError) => {
-      if (seq !== this.writeSeq) return; // stale callback for a superseded write — must NOT clear a newer write's timer or release its busy
-      if (this.gattClient !== client) return; // stale callback from previous connection
-      if (this.writeTimeoutId !== null) {
-        clearTimeout(this.writeTimeoutId);
-        this.writeTimeoutId = null;
-      }
+    // writeCharacteristicValue can throw SYNCHRONOUSLY (e.g. 401 Invalid
+    // parameter when the char isn't prepared) — that must surface as a
+    // BleError through the normal link-loss path, never as an uncaught
+    // exception that crashes the app.
+    try {
+      c['writeCharacteristicValue'](obj, 1, (err: BusinessError) => {
+        if (seq !== this.writeSeq) return; // stale callback for a superseded write — must NOT clear a newer write's timer or release its busy
+        if (this.gattClient !== client) return; // stale callback from previous connection
+        if (this.writeTimeoutId !== null) {
+          clearTimeout(this.writeTimeoutId);
+          this.writeTimeoutId = null;
+        }
+        this.writeBusy = false;
+        this.writeTimeoutStreak = 0; // the stack responded — not a timeout
+        if (err) {
+          // Observed on-device: a GEO write failure fires at sleep/power
+          // transitions (the link drops as the camera powers down), NOT as an
+          // ATT 0x80 "reject GPS" reply. HarmonyOS surfaces it as a generic
+          // error (2900099 / "Inner error"), so flag the GEO uuid to keep the
+          // drop visible in logs.
+          if (uuid === GEO) {
+            hilog.warn(0x0001, TAG, `[W] ERR GEO ${err.code}: ${err.message} — sleep/power link drop`);
+          } else {
+            hilog.error(0x0001, TAG, `[W] ERR ${uuid} ${err.code}: ${err.message}`);
+          }
+          this.emit(new BleError(`Write ${uuid}: ${err.message}`));
+        }
+        else { hilog.info(0x0001, TAG, `[W] OK`); this.emit(new BleWriteDone(uuid, 0)); }
+        // Flush the buffered (newest-wins) write now that the slot is free.
+        if (this.pendingWrite !== null) {
+          if (this.gattClient !== null) {
+            const pending = this.pendingWrite;
+            this.pendingWrite = null;
+            this.send(pending.uuid, pending.data);
+          } else {
+            this.pendingWrite = null; // connection torn down — drop silently
+          }
+        }
+      });
+    } catch (e) {
+      const be = e as BusinessError;
       this.writeBusy = false;
-      this.writeTimeoutStreak = 0; // the stack responded — not a timeout
-      if (err) {
-        // Observed on-device: a GEO write failure fires at sleep/power
-        // transitions (the link drops as the camera powers down), NOT as an
-        // ATT 0x80 "reject GPS" reply. HarmonyOS surfaces it as a generic
-        // error (2900099 / "Inner error"), so flag the GEO uuid to keep the
-        // drop visible in logs.
-        if (uuid === GEO) {
-          hilog.warn(0x0001, TAG, `[W] ERR GEO ${err.code}: ${err.message} — sleep/power link drop`);
-        } else {
-          hilog.error(0x0001, TAG, `[W] ERR ${uuid} ${err.code}: ${err.message}`);
-        }
-        this.emit(new BleError(`Write ${uuid}: ${err.message}`));
-      }
-      else { hilog.info(0x0001, TAG, `[W] OK`); this.emit(new BleWriteDone(uuid, 0)); }
-      // Flush the buffered (newest-wins) write now that the slot is free.
-      if (this.pendingWrite !== null) {
-        if (this.gattClient !== null) {
-          const pending = this.pendingWrite;
-          this.pendingWrite = null;
-          this.send(pending.uuid, pending.data);
-        } else {
-          this.pendingWrite = null; // connection torn down — drop silently
-        }
-      }
-    });
+      if (this.writeTimeoutId !== null) { clearTimeout(this.writeTimeoutId); this.writeTimeoutId = null; }
+      hilog.error(0x0001, TAG, `[W] SYNC-THROW ${uuid} ${be.code}: ${be.message}`);
+      this.emit(new BleError(`Write ${uuid}: ${be.message}`));
+    }
   }
 
   private obj(uuid: string): ble.BLECharacteristic {
