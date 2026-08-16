@@ -146,6 +146,10 @@ export class CameraService {
 
   setContext(ctx: common.UIAbilityContext): void {
     this.abilityContext = ctx;
+    // Satellite subscription is INDEPENDENT of camera connection: the GNSS
+    // satellite count is a device-level reading that must NOT reset to "--"
+    // when all cameras drop. Subscribe once at startup, keep it alive.
+    this.subscribeSatelliteStatus();
     this.prefs.init(ctx).then(() => {
       // Persisted values are ready — sync the in-memory "保持连接" state
       this.reconnectEnabled = this.prefs.loadReconnectEnabledSync();
@@ -379,7 +383,6 @@ export class CameraService {
     const interval = this.isForeground ? intervalMs : 5000;
     hilog.info(0x0001, TAG, `[GPS] startGpsLoop: interval=${interval}ms fg=${this.isForeground}`);
     this.stopGpsLoop();
-    this.subscribeSatelliteStatus();
     this.gpsStep = 0;
     // Send TIME immediately, then alternate TIME/GEO
     this.sendGpsTick();
@@ -466,11 +469,8 @@ export class CameraService {
       this.gpsTimer = null;
       hilog.info(0x0001, TAG, '[CHECKPOINT] GPS loop stopped');
     }
-    this.unsubscribeSatelliteStatus();
-    // Reset to "unknown" so the next connection does NOT briefly show the
-    // previous session's stale satellite count before the first fix.
-    this.lastSatelliteCount = -1;
-    this.gpsData.satellites = -1;
+    // Satellite subscription is independent of the ticker — do NOT reset
+    // lastSatelliteCount here, so the satellite count survives camera drops.
   }
 
   private subscribeSatelliteStatus(): void {
@@ -489,18 +489,6 @@ export class CameraService {
       this.satelliteStatusCb = null;
       hilog.warn(0x0001, TAG, `[GPS] satelliteStatusChange subscribe failed: ${JSON.stringify(err)}`);
     }
-  }
-
-  private unsubscribeSatelliteStatus(): void {
-    const cb = this.satelliteStatusCb;
-    if (!this.satelliteSubscribed || cb === null) return;
-    try {
-      geoLocationManager.off('satelliteStatusChange', cb);
-    } catch (err) {
-      hilog.warn(0x0001, TAG, `[GPS] satelliteStatusChange unsubscribe failed: ${JSON.stringify(err)}`);
-    }
-    this.satelliteStatusCb = null;
-    this.satelliteSubscribed = false;
   }
 
   // ==================== Persistence ====================
