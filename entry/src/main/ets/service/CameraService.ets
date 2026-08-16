@@ -62,6 +62,12 @@ export interface CameraStateEvent {
 export type StateListener = (event: CameraStateEvent) => void;
 export type OperationOwner = 'pairing' | 'connection' | 'none';
 
+/** A camera awaiting reconnect on the shared scan (reconnectPool). */
+interface ReconnectWatch {
+  camera: PairedCamera;
+  session: CameraSession;
+}
+
 export class CameraService {
   // ==== Public shared state ====
 
@@ -83,6 +89,10 @@ export class CameraService {
   private stateListeners: StateListener[] = [];
   // Sessions keyed by camera name — multiple in Phase 1.
   private sessions: Map<string, CameraSession> = new Map();
+  // Reconnect pool: cameras waiting for their BLE address to be found by ONE
+  // shared scan (routed by manufacturerDevice), instead of one scan each.
+  private reconnectWatchers: ReconnectWatch[] = [];
+  private reconnectScanActive: boolean = false;
 
   // Ownership — prevents cross-tab operation conflicts (Hub-level mutex).
   private owner: OperationOwner = 'none';
@@ -577,6 +587,50 @@ export class CameraService {
     hilog.info(0x0001, TAG, `[CHECKPOINT] STATE: [${cameraName || '(global)'}] ${state} — ${message}`);
     for (let i = 0; i < this.stateListeners.length; i++) {
       this.stateListeners[i]({ cameraName, state, message });
+    }
+  }
+
+  // ==================== Reconnect pool (shared scan) ====================
+
+  /**
+   * Register a camera waiting to be reconnected. One shared scan serves all
+   * watchers (routed by manufacturerDevice), so N sleeping cameras open one
+   * scan instead of N — and their callbacks can't overwrite each other.
+   */
+  watchReconnect(camera: PairedCamera, session: CameraSession): void {
+    this.unwatchReconnect(camera.name); // dedupe by name
+    this.reconnectWatchers.push({ camera, session });
+    if (!this.reconnectScanActive) {
+      this.reconnectScanActive = true;
+      this.scanner.startScan((cameras: DiscoveredCamera[]) => {
+        this.routeReconnect(cameras);
+      }, false); // reconnect scan — never classic discovery (it starves GPS writes)
+    }
+  }
+
+  unwatchReconnect(name: string): void {
+    this.reconnectWatchers = this.reconnectWatchers.filter((w) => w.camera.name !== name);
+    if (this.reconnectWatchers.length === 0 && this.reconnectScanActive) {
+      this.reconnectScanActive = false;
+      this.scanner.stopScan();
+    }
+  }
+
+  /** Shared-scan callback: match each watcher by device ID (name fallback). */
+  private routeReconnect(cameras: DiscoveredCamera[]): void {
+    const matched: ReconnectWatch[] = [];
+    for (const w of this.reconnectWatchers) {
+      const devHit = cameras.find((c) =>
+        c.manufacturerDevice !== undefined
+          && (c.manufacturerDevice >>> 0) === (w.camera.device >>> 0));
+      const found = devHit ?? cameras.find((c) => c.deviceName === w.camera.name);
+      if (found) {
+        matched.push(w);
+        w.session.onReconnectFound(found, w.camera, devHit !== undefined);
+      }
+    }
+    for (const m of matched) {
+      this.unwatchReconnect(m.camera.name);
     }
   }
 

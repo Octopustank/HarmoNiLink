@@ -146,61 +146,38 @@ export class CameraSession {
     // bodies) and the UI device-name display both rely on it.
     this.cameraName = camera.name;
 
-    // For reconnect, the camera's BLE address may have changed.
-    // Scan for current advertisement by name, fall back to saved address.
+    // Register with the Hub's shared reconnect scan (reconnectPool): ONE scan
+    // serves all reconnecting cameras, routed back here by manufacturerDevice
+    // match — no per-camera scan whose callback would overwrite another's.
     this.setState(ConnectionState.Scanning, `正在搜索 ${camera.name}…`);
-    this.hub.scanner.startScan((cameras: DiscoveredCamera[]) => {
-      // Reliable reconnect: match the device ID of the camera's CURRENT
-      // pairing target (this controller) from manufacturer data (companyID
-      // 0x0399). It identifies the pairing relationship, not the camera body
-      // (re-pairing changes it; a camera waiting for another controller
-      // broadcasts that controller's ID instead). Nikon rotates its BLE
-      // address on restart, so the saved address is stale after sleep; the
-      // device ID picks the camera's CURRENT address. Name match is only a
-      // fallback (e.g. pairing-mode camera that no longer advertises 0x0399).
-      //
-      // Both sides are normalized to unsigned 32-bit before comparing: the
-      // manufacturer parse returns unsigned, but a legacy-persisted
-      // camera.device may still be signed-negative for IDs >= 2^31. `>>> 0`
-      // reconciles them regardless of how the saved value was stored.
-      // Two passes: the stable device-ID match always wins over name. A
-      // single-pass `devMatch || nameMatch` find could return an earlier
-      // name-matching entry (a different camera sharing the broadcast name,
-      // or a name hit listed before the true dev hit) and skip the real
-      // device-ID match that came later.
-      const devHit = cameras.find((c) =>
-        c.manufacturerDevice !== undefined
-          && (c.manufacturerDevice >>> 0) === (camera.device >>> 0));
-      const found = devHit ?? cameras.find((c) => c.deviceName === camera.name);
-      const foundDevMatch = devHit !== undefined;
-      if (found) {
-        this.hub.scanner.stopScan();
-        hilog.info(0x0001, TAG,
-          `[CHECKPOINT] reconnect scan found: newAddr=${found.deviceId} savedAddr=${camera.address} devMatch=${foundDevMatch}`);
-        // Update address
-        const updated = new PairedCamera(
-          camera.name, found.deviceId, camera.addressType,
-          camera.device, camera.nonce, camera.controllerName
-        );
-        this.savedCamera = updated;
-        this.hub.prefs.saveCameraSync(updated);
-        this.connectToDevice(found.deviceId);
-      }
-    }, false);
+    this.hub.watchReconnect(camera, this);
 
     // Timeout: fall back to the saved address after 10 seconds. This is NOT
     // just a last-ditch fallback — connecting to the (possibly stale) address
     // is a deliberate "poke" that wakes a sleeping camera. Once woken, the
-    // camera re-advertises a fresh address that the next scan picks up
-    // (observed in logs: poke -> disconnect -> fresh scan -> reconnect).
+    // camera re-advertises a fresh address that the next scan picks up.
     setTimeout(() => {
       if (this.state === ConnectionState.Scanning && this.hub.getOwner() === 'connection') {
+        this.hub.unwatchReconnect(camera.name);
         hilog.info(0x0001, TAG, '[CHECKPOINT] reconnect scan timeout, using saved address');
-        this.hub.scanner.stopScan();
         this.connectToDevice(camera.address);
       }
     }, 10000);
     return true;
+  }
+
+  /** The Hub routes a shared-scan match back to this session. */
+  onReconnectFound(found: DiscoveredCamera, camera: PairedCamera, devMatch: boolean): void {
+    if (this.state !== ConnectionState.Scanning) return; // already timed out → fallback path
+    hilog.info(0x0001, TAG,
+      `[CHECKPOINT] reconnect scan found: newAddr=${found.deviceId} savedAddr=${camera.address} devMatch=${devMatch}`);
+    const updated = new PairedCamera(
+      camera.name, found.deviceId, camera.addressType,
+      camera.device, camera.nonce, camera.controllerName
+    );
+    this.savedCamera = updated;
+    this.hub.prefs.saveCameraSync(updated);
+    this.connectToDevice(found.deviceId);
   }
 
   // ==================== Pair Flow (Pairing Page) ====================
@@ -242,8 +219,6 @@ export class CameraSession {
 
   disconnect(): void {
     hilog.info(0x0001, TAG, '[CHECKPOINT] disconnect() called');
-    this.hub.stopGpsLoop();
-    this.hub.stopBackgroundTask();
     this.clearConnectTimeout();
     // Release ownership only if THIS session holds it (in-flight connect/pair).
     // A Ready session's owner is already released (or belongs to another tab's
@@ -263,13 +238,19 @@ export class CameraSession {
     this.pairingStep = 0;
     this.currentStage1 = null;
     this.cameraSerial = '';
+    // Leave the shared reconnect scan: this session is disconnecting, but other
+    // sessions may still be waiting on the SAME scan — unwatch only ourselves
+    // (a bare scanner.stopScan() would kill their shared scan too).
+    this.hub.unwatchReconnect(this.cameraName);
     // Idle BEFORE teardown + BEFORE clearing cameraName — the UI needs the
     // camera name to route the event to the right camera's card, and the stale
     // guard needs state=Idle to swallow the synchronous BleDisconnected.
     this.setState(ConnectionState.Idle, '已断开');
     this.cameraName = '';
+    // Reconcile GPS now that THIS session is Idle — keep the ticker running for
+    // any remaining Ready camera, stop it (and the background task) otherwise.
+    this.hub.refreshGps();
     this.bleClient.disconnect();
-    this.hub.scanner.stopScan();
     try { connection.stopBluetoothDiscovery(); } catch (e) {}
   }
 
@@ -724,16 +705,15 @@ export class CameraSession {
 
   private handleLinkLost(): void {
     if (this.state === ConnectionState.Ready) {
-      this.hub.stopGpsLoop();
       if (this.savedCamera && this.hub.isReconnectEnabled()) {
-        this.scheduleReconnect();
+        this.scheduleReconnect(); // sets Idle + refreshes GPS for remaining cameras
       } else {
         // Owner was already released on Ready — do NOT release here (would
         // clobber a concurrent pairing tab's ownership).
         this.cameraSerial = '';
         this.cameraName = '';
-        this.hub.stopBackgroundTask();
         this.setState(ConnectionState.Idle, '相机已断开，请重新连接');
+        this.hub.refreshGps();
       }
       return;
     }
@@ -767,6 +747,7 @@ export class CameraSession {
     this.reconnectRetries++;
     hilog.info(0x0001, TAG, `[RECONNECT] attempt ${this.reconnectRetries} in ${delay}ms`);
     this.setState(ConnectionState.Idle, `正在自动重连（第 ${this.reconnectRetries} 次）…`);
+    this.hub.refreshGps(); // keep GPS ticking for any remaining Ready camera
     const cam = this.savedCamera;
     this.reconnectTimerId = setTimeout(() => {
       this.reconnectTimerId = null;
