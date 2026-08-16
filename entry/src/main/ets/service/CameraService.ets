@@ -405,11 +405,14 @@ export class CameraService {
     // Scan for current advertisement by name, fall back to saved address.
     this.setState(ConnectionState.Scanning, `正在搜索 ${camera.name}…`);
     this.scanner.startScan((cameras: DiscoveredCamera[]) => {
-      // Reliable reconnect: match the STABLE device ID from manufacturer data
-      // (companyID 0x0399). Nikon rotates its BLE address on restart, so the
-      // saved address is stale after sleep; the device ID picks the camera's
-      // CURRENT address. Name match is only a fallback (e.g. pairing-mode
-      // camera that no longer advertises 0x0399).
+      // Reliable reconnect: match the device ID of the camera's CURRENT
+      // pairing target (this controller) from manufacturer data (companyID
+      // 0x0399). It identifies the pairing relationship, not the camera body
+      // (re-pairing changes it; a camera waiting for another controller
+      // broadcasts that controller's ID instead). Nikon rotates its BLE
+      // address on restart, so the saved address is stale after sleep; the
+      // device ID picks the camera's CURRENT address. Name match is only a
+      // fallback (e.g. pairing-mode camera that no longer advertises 0x0399).
       //
       // Both sides are normalized to unsigned 32-bit before comparing: the
       // manufacturer parse returns unsigned, but a legacy-persisted

@@ -11,10 +11,13 @@ export interface DiscoveredCamera {
    *  advertisement (reliable, protocol-level). Name heuristics are only used
    *  to dedupe the classic-BT echo of an already-listed camera. */
   isNikon: boolean;
-  /** Nikon device ID parsed from manufacturer data (companyID 0x0399, 4-byte
-   *  LE uint32). Present only on PAIRED cameras (a camera in pairing mode does
-   *  not advertise 0x0399) — used for reliable reconnect matching when the BLE
-   *  address has rotated. */
+  /** Nikon device ID of the camera's CURRENT pairing target (this controller),
+   *  parsed from manufacturer data (companyID 0x0399, 4-byte LE uint32).
+   *  Present only on PAIRED cameras (pairing mode advertises no 0x0399). It
+   *  identifies the pairing RELATIONSHIP, not the camera body: re-pairing
+   *  changes it, and a camera waiting for a different controller broadcasts
+   *  that controller's ID instead. Used to match the camera's current BLE
+   *  address after a restart rotates it. */
   manufacturerDevice?: number;
 }
 

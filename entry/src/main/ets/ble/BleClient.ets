@@ -325,12 +325,13 @@ export class BleClient {
       this.writeBusy = false;
       this.writeTimeoutStreak = 0; // the stack responded — not a timeout
       if (err) {
-        // A GEO write failure is the strongest signal of "camera rejected the
-        // GPS payload" (reference doc: ATT 0x80 = camera rejecting GPS).
-        // HarmonyOS does NOT surface the raw ATT 0x80 (it maps to generic
-        // 2900099 etc.), so flag the GEO uuid to make it visible in logs.
+        // Observed on-device: a GEO write failure fires at sleep/power
+        // transitions (the link drops as the camera powers down), NOT as an
+        // ATT 0x80 "reject GPS" reply. HarmonyOS surfaces it as a generic
+        // error (2900099 / "Inner error"), so flag the GEO uuid to keep the
+        // drop visible in logs.
         if (uuid === GEO) {
-          hilog.warn(0x0001, TAG, `[W] ERR GEO ${err.code}: ${err.message} — camera may reject GPS`);
+          hilog.warn(0x0001, TAG, `[W] ERR GEO ${err.code}: ${err.message} — sleep/power link drop`);
         } else {
           hilog.error(0x0001, TAG, `[W] ERR ${uuid} ${err.code}: ${err.message}`);
         }
