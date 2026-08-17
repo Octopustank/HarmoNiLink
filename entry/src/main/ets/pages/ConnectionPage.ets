@@ -130,17 +130,21 @@ export struct ConnectionPage {
         this.revertToggle();
         return;
       }
+      // Persist the ON intent FIRST, synchronously — the async continuation
+      // below re-reads it as its ghost guard (flipping the toggle OFF
+      // mid-flight must abort the chain, but a fresh ON must never abort
+      // itself before the intent is even written).
+      cameraService.setKeepAlive(cam.name, true);
       // Connecting needs BLE + location permissions — request on demand
       cameraService.requestPermissionsIfNeeded().then((granted: boolean) => {
-        // Ghost guard: the user may have flipped the toggle OFF while this
-        // async chain was in flight — never turn it back on behind their back.
+        // Ghost guard: turned OFF while this chain was in flight — abort.
         if (!cameraService.isKeepAlive(cam.name)) return;
         if (!granted) {
           this.getUIContext().getPromptAction().showToast({ message: '需要蓝牙和位置权限才能连接', duration: 2500 });
+          cameraService.setKeepAlive(cam.name, false);
           this.revertToggle();
           return;
         }
-        cameraService.setKeepAlive(cam.name, true);
         // One-time hint on first connect: camera "关闭时发送" + auto-reconnect
         if (!cameraService.wasConnectHintShown()) {
           cameraService.markConnectHintShown();
@@ -276,18 +280,16 @@ export struct ConnectionPage {
   }
 
   /** Always-present GPS card — stable layout, no jump on connect/disconnect.
-   * The status light replaces the old 定位 row: green = a camera is connected
-   * and the GPS heartbeat is running; yellow = acquiring (link up but no fix,
-   * or a connection is being established). */
+   * The status light is ALWAYS visible (grey = nothing connected, yellow =
+   * acquiring / connecting, green = heartbeat running with a fix) and
+   * replaces the old 定位 row. */
   @Builder gpsCard() {
     Column() {
       Row() {
         Text('GPS 信息').fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
         Blank()
-        if (this.gpsLightVisible()) {
-          Circle({ width: 8, height: 8 }).fill(this.gpsLightColor())
-          Text(this.gpsLightLabel()).fontSize(11).fontColor(this.gpsLightColor()).margin({ left: 6 })
-        }
+        Circle({ width: 8, height: 8 }).fill(this.gpsLightColor())
+        Text(this.gpsLightLabel()).fontSize(11).fontColor(this.gpsLightColor()).margin({ left: 6 })
       }.width('100%').margin({ bottom: 10 })
       GpsRow({ label: '配对名称', value: this.controllerName })
       Divider().strokeWidth(0.5).color($r('app.color.divider')).margin({ top: 4, bottom: 6 })
@@ -312,20 +314,20 @@ export struct ConnectionPage {
     return this.cameraStatuses.some((c) => c.state !== ConnectionState.Ready && c.state !== ConnectionState.Idle);
   }
 
-  private gpsLightVisible(): boolean {
-    return this.anyCameraReady() || this.anyCameraBusy();
-  }
-
   private gpsLightColor(): ResourceColor {
-    if (this.anyCameraReady() && this.gpsHasFix) return $r('app.color.success');
-    return $r('app.color.warning'); // acquiring fix, or connection in progress
+    if (this.anyCameraReady()) {
+      return this.gpsHasFix ? $r('app.color.success') : $r('app.color.warning');
+    }
+    if (this.anyCameraBusy()) return $r('app.color.warning'); // connecting / acquiring
+    return $r('app.color.text_secondary'); // nothing connected — grey
   }
 
   private gpsLightLabel(): string {
     if (this.anyCameraReady()) {
       return this.gpsHasFix ? '定位下发中' : '正在获取';
     }
-    return '正在连接';
+    if (this.anyCameraBusy()) return '正在连接';
+    return '未连接';
   }
 
   @Builder savedDevicesSection() {
