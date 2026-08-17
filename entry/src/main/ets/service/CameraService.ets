@@ -175,12 +175,11 @@ export class CameraService {
     return cam !== undefined && cam.keepAlive;
   }
 
-  /** Flip one camera's keep-alive; turning it off stops that camera's pending reconnect. */
+  /** Flip one camera's connection toggle (SESSION-RUNTIME state — never
+   * persisted, so a fresh app launch always starts with every switch OFF);
+   * turning it off stops that camera's pending reconnect. */
   setKeepAlive(name: string, on: boolean): void {
-    const cam = this.prefs.loadSavedCamerasSync().find((c: PairedCamera) => c.name === name);
-    if (!cam) return;
-    cam.keepAlive = on;
-    this.prefs.saveCameraSync(cam);
+    this.prefs.setKeepAliveRuntime(name, on);
     hilog.info(0x0001, TAG, `[RECONNECT] keep-alive ${on ? 'on' : 'off'} for '${name}'`);
     if (!on) {
       const s = this.sessions.get(name);

@@ -26,10 +26,11 @@ export class PairedCamera {
   readonly nonce: number;   // uint32
   readonly controllerName: string;
   // Per-camera connection toggle ("连接开关"): ON = connect and auto-reconnect
-  // until turned off (Phase 3 merged the old global "保持连接" into this).
-  // Mutable UI setting, so NOT readonly. Serialized with the camera record.
-  // NEW pairings default OFF — the user enables the connection manually after
-  // pairing; pre-Phase-3 records migrate ON (see PreferencesRepository).
+  // until turned off. SESSION-RUNTIME ONLY — deliberately NOT persisted: the
+  // intent must die with the app process (killing the app ends the session;
+  // a fresh launch starts with every switch OFF so users never get surprised
+  // by a mysterious auto-connect). PreferencesRepository strips this field
+  // on every disk write.
   keepAlive: boolean;
 
   constructor(

@@ -28,7 +28,6 @@ interface SerializedCamera {
   device: number;
   nonce: number;
   controllerName: string;
-  keepAlive?: boolean; // absent in pre-Phase-3 records → default ON
 }
 
 export class PreferencesRepository {
@@ -54,8 +53,9 @@ export class PreferencesRepository {
       const arr: SerializedCamera[] = JSON.parse(json);
       this.cache = arr.map((s) => new PairedCamera(
         s.name, s.address, s.addressType,
-        s.device, s.nonce, s.controllerName,
-        s.keepAlive ?? true // Phase 3: connection toggle defaults ON for legacy records
+        s.device, s.nonce, s.controllerName
+        // keepAlive intentionally NOT loaded — connection intent is
+        // session-runtime state and always starts OFF on a fresh launch
       ));
       const saved = await this.store.get(KEY_CONTROLLER_NAME, '') as string;
       if (saved) this.controllerNameCache = saved; // don't overwrite a freshly generated name
@@ -174,6 +174,14 @@ export class PreferencesRepository {
     hilog.info(0x0001, TAG, `[CHECKPOINT] removeCamera: removed '${name}' (${filtered.length} remaining)`);
   }
 
+  /** Runtime-only mutation of a camera's connection toggle. Deliberately
+   * does NOT touch disk: connection intent must not survive an app restart
+   * (killing the app ends the session; a fresh launch starts all-OFF). */
+  setKeepAliveRuntime(name: string, on: boolean): void {
+    const cam = this.cache.find((c) => c.name === name);
+    if (cam) cam.keepAlive = on;
+  }
+
   /** Queue a strictly-ordered snapshot write of the current cache. */
   private enqueueSnapshotWrite(): void {
     const run = (): Promise<void> => this.writeSnapshot();
@@ -187,10 +195,14 @@ export class PreferencesRepository {
       return this.writeSnapshot();
     }
     try {
-      const json = JSON.stringify(this.cache);
+      // Strip the runtime keepAlive flag — it is session state, never disk.
+      const persistable = this.cache.map((c) => new PairedCamera(
+        c.name, c.address, c.addressType, c.device, c.nonce, c.controllerName
+      ));
+      const json = JSON.stringify(persistable);
       await this.store.put(KEY_CAMERAS, json);
       await this.store.flush();
-      hilog.info(0x0001, TAG, `[CHECKPOINT] prefs snapshot persisted (${this.cache.length} cameras)`);
+      hilog.info(0x0001, TAG, `[CHECKPOINT] prefs snapshot persisted (${persistable.length} cameras)`);
     } catch (err) {
       hilog.error(0x0001, TAG, `writeSnapshot ERROR: ${JSON.stringify(err)}`);
     }
