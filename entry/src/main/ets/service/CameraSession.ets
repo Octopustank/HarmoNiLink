@@ -705,7 +705,7 @@ export class CameraSession {
 
   private handleLinkLost(): void {
     if (this.state === ConnectionState.Ready) {
-      if (this.savedCamera && this.hub.isReconnectEnabled()) {
+      if (this.savedCamera && this.hub.isKeepAlive(this.savedCamera.name)) {
         this.scheduleReconnect(); // sets Idle + refreshes GPS for remaining cameras
       } else {
         // Owner was already released on Ready — do NOT release here (would
@@ -725,7 +725,7 @@ export class CameraSession {
     // the rate at 60s). Only the user's disconnect()/toggle-off stops it.
     this.pairingStep = 0;
     this.currentStage1 = null;
-    if (this.savedCamera && this.hub.isReconnectEnabled()) {
+    if (this.savedCamera && this.hub.isKeepAlive(this.savedCamera.name)) {
       this.scheduleReconnect();
     } else {
       this.hub.releaseOwnership();
@@ -753,10 +753,26 @@ export class CameraSession {
       this.reconnectTimerId = null;
       // Reconnect unless the pairing tab owns the resource (pairing is serial;
       // a Ready session's owner is already released so 'none' still reconnects).
-      if (cam && this.hub.isReconnectEnabled() && this.hub.getOwner() !== 'pairing') {
+      if (cam && this.hub.isKeepAlive(cam.name) && this.hub.getOwner() !== 'pairing') {
         this.startReconnect(cam);
       }
     }, delay);
+  }
+
+  /**
+   * Keep-alive was turned OFF for this camera (Phase 3 per-camera toggle).
+   * Stop any pending auto-reconnect and settle. An in-flight connect attempt
+   * is left alone — if it fails, handleLinkLost re-checks the flag and settles.
+   */
+  onKeepAliveDisabled(): void {
+    this.cancelReconnectTimer();
+    if (this.savedCamera) this.hub.unwatchReconnect(this.savedCamera.name);
+    if (this.reconnectRetries > 0) {
+      this.reconnectRetries = 0;
+      if (this.state === ConnectionState.Idle) {
+        this.setState(ConnectionState.Idle, '连接已断开，请重新连接');
+      }
+    }
   }
 
   private unregisterBondListeners(): void {

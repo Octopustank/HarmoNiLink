@@ -1,9 +1,10 @@
 /**
  * ConnectionPage.ets — Connection status, GPS, & paired device management
  *
- * Phase 1: per-camera status cards. Each paired camera shows its own state
- * (from CameraStateEvent) and its own connect/disconnect/forget buttons,
- * replacing the single global status card.
+ * Phase 3: per-camera "连接开关" (connection toggle, ON by default = connect +
+ * auto-reconnect until switched off) replaces the old connect/disconnect
+ * buttons and the global keep-alive toggle. Deleting a camera is a standard
+ * HDS swipe-left action (trash icon / swipe-through).
  *
  * MessagesCommonView pattern (requires HdsNavigation ancestor).
  */
@@ -11,7 +12,7 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { bundleManager } from '@kit.AbilityKit';
 import { cameraService, ConnectionState, CameraStateEvent } from '../service/CameraService';
 import { PairedCamera } from '../ble/protocol/NikonPairingEngine';
-import { HdsNavDestination, ScrollEffectType, hdsMaterial } from '@kit.UIDesignKit';
+import { HdsNavDestination, ScrollEffectType, hdsMaterial, HdsListItem } from '@kit.UIDesignKit';
 
 const TAG = 'HarmoNiLink-ConnectionPage';
 
@@ -39,7 +40,9 @@ export struct ConnectionPage {
   @State titleSub: string = '';
   @State owner: string = 'none'; // synced from cameraService — drives @State re-render
   @State controllerName: string = ''; // per-install name shown on the camera
-  @State reconnectEnabled: boolean = false; // 保持连接 — mirrored from cameraService
+  // Bumped on every savedCameras reload — part of the ForEach key so toggles
+  // re-render (a refused toggle must visually snap back).
+  @State refreshTick: number = 0;
   private scroller: Scroller = new Scroller();
   private gpsTimer: number = -1;
   private offStateListener: (() => void) | null = null;
@@ -52,7 +55,6 @@ export struct ConnectionPage {
     this.loadAppVersion();
     this.loadSavedCameras();
     this.controllerName = cameraService.getControllerName();
-    this.reconnectEnabled = cameraService.isReconnectEnabled();
     this.offStateListener = cameraService.setStateListener((event: CameraStateEvent) => {
       // Sync owner first — all derived helpers depend on @State reactivity
       this.owner = cameraService.getOwner();
@@ -76,6 +78,9 @@ export struct ConnectionPage {
       }
     });
     this.gpsTimer = setInterval(() => { this.syncGps(); }, 1000);
+    // prefs init is async — the first loadSavedCameras() may see an empty
+    // cache. Re-read once it has certainly settled (also triggers reconcile).
+    setTimeout(() => { this.loadSavedCameras(); }, 1500);
   }
 
   aboutToDisappear(): void {
@@ -106,31 +111,84 @@ export struct ConnectionPage {
     this.gpsSats = gps.satellites >= 0 ? `${gps.satellites}` : '--';
     this.gpsHasFix = gps.hasFix;
     this.gpsTime = gps.lastUpdateTime;
-    // Keep the toggle in sync with the service (e.g. prefs loaded after page shows)
-    const en = cameraService.isReconnectEnabled();
-    if (en !== this.reconnectEnabled) this.reconnectEnabled = en;
   }
 
-  private onReconnectToggle(on: boolean): void {
+  /**
+   * Per-camera connection toggle (Phase 3). ON = connect and keep reconnecting
+   * until switched off; OFF = disconnect and stop reconnecting.
+   */
+  private onConnectToggle(cam: PairedCamera, on: boolean): void {
     if (on) {
-      // One-time explanation the first time the user enables 保持连接
-      if (!cameraService.wasReconnectPrompted()) {
-        cameraService.markReconnectPrompted();
-        this.getUIContext().getPromptAction().showDialog({
-          title: '保持连接',
-          message: '开启后，连接断开时将自动持续重连（含后台），直到相机恢复或您手动断开。\n\n持续重连会保持蓝牙与定位后台任务运行，可能增加耗电。',
-          buttons: [{ text: '知道了', color: $r('app.color.brand') }]
-        }).catch((e: Error) => {
-          hilog.warn(0x0001, TAG, `Reconnect hint dialog err: ${e.message}`);
+      if (this.isPairingOwner()) { this.revertToggle(); return; }
+      // Already connected/connecting — just persist the intent.
+      if (cameraService.isCameraConnected(cam.name) || cameraService.isCameraBusy(cam.name)) {
+        cameraService.setKeepAlive(cam.name, true);
+        return;
+      }
+      if (!cameraService.canConnectMore()) {
+        this.getUIContext().getPromptAction().showToast({
+          message: `已达连接上限（${cameraService.getConnectedCount()} 台），请先关闭其他相机的连接开关`, duration: 2500
         });
+        this.revertToggle();
+        return;
+      }
+      // Connecting needs BLE + location permissions — request on demand
+      cameraService.requestPermissionsIfNeeded().then((granted: boolean) => {
+        if (!granted) {
+          this.getUIContext().getPromptAction().showToast({ message: '需要蓝牙和位置权限才能连接', duration: 2500 });
+          this.revertToggle();
+          return;
+        }
+        cameraService.setKeepAlive(cam.name, true);
+        // One-time hint on first connect: camera "关闭时发送" + auto-reconnect
+        if (!cameraService.wasConnectHintShown()) {
+          cameraService.markConnectHintShown();
+          this.getUIContext().getPromptAction().showDialog({
+            title: '连接提示',
+            message: '为获得稳定连接，推荐：\n\n1. 在相机设置中开启「关闭时发送」——相机休眠/关机后仍保持连接，本 App 可自动重连。\n\n2. 保持设备的连接开关开启——断开后自动持续重连，直到相机恢复。',
+            buttons: [{ text: '继续连接', color: $r('app.color.brand') }]
+          }).then(() => { cameraService.startReconnect(cam); }).catch((e: Error) => {
+            hilog.warn(0x0001, TAG, `Connect hint dialog err: ${e.message}`);
+          });
+        } else {
+          cameraService.startReconnect(cam);
+        }
+      });
+    } else {
+      // OFF: stop auto-reconnect, then drop the link if one exists.
+      cameraService.setKeepAlive(cam.name, false);
+      if (cameraService.isCameraConnected(cam.name) || cameraService.isCameraBusy(cam.name)) {
+        cameraService.disconnect(cam.name);
       }
     }
-    this.reconnectEnabled = on;
-    cameraService.setReconnectEnabled(on);
+  }
+
+  /** A toggle was refused — reload so it visually snaps back to the saved flag. */
+  private revertToggle(): void {
+    this.loadSavedCameras();
+  }
+
+  /**
+   * Keep-alive cameras that are neither connected nor connecting get their
+   * connection started (app start / page revisit / after prefs settle).
+   */
+  private reconcileConnections(): void {
+    if (this.isPairingOwner()) return;
+    for (const cam of this.savedCameras) {
+      if (!cam.keepAlive) continue;
+      if (cameraService.isCameraConnected(cam.name) || cameraService.isCameraBusy(cam.name)) continue;
+      if (!cameraService.canConnectMore()) break; // cap reached — stop here
+      cameraService.startReconnect(cam); // service re-checks cap/owner internally
+    }
   }
 
   private async loadSavedCameras(): Promise<void> {
-    try { this.savedCameras = await cameraService.getSavedCameras(); }
+    try {
+      const cams = await cameraService.getSavedCameras();
+      this.savedCameras = cams.slice(); // new array ref so ForEach re-diffs
+      this.refreshTick++;
+      this.reconcileConnections();
+    }
     catch (e) { hilog.warn(0x0001, TAG, `loadSavedCameras err: ${JSON.stringify(e)}`); }
   }
 
@@ -141,44 +199,6 @@ export struct ConnectionPage {
     } catch (e) {
       this.appVersion = '';
     }
-  }
-
-  private onReconnect(cam: PairedCamera): void {
-    // Pairing is serial (classic bonding needs the radio exclusively) — block
-    // new connections while the pairing tab owns the resource.
-    if (this.isPairingOwner()) return;
-    if (cameraService.isCameraConnected(cam.name)) return;
-    // Connection cap guard — refuse with a hint before starting the flow.
-    if (!cameraService.canConnectMore()) {
-      this.getUIContext().getPromptAction().showToast({
-        message: `已达连接上限（${cameraService.getConnectedCount()} 台），请先断开其他相机`, duration: 2500
-      });
-      return;
-    }
-    // Reconnect also needs BLE + location permissions — request on demand
-    cameraService.requestPermissionsIfNeeded().then((granted: boolean) => {
-      if (!granted) {
-        this.getUIContext().getPromptAction().showToast({ message: '需要蓝牙和位置权限才能连接', duration: 2500 });
-        return;
-      }
-      // One-time hint on first connect: camera "关闭时发送" + 保持连接
-      if (!cameraService.wasConnectHintShown()) {
-        cameraService.markConnectHintShown();
-        this.getUIContext().getPromptAction().showDialog({
-          title: '连接提示',
-          message: '为获得稳定连接，推荐：\n\n1. 在相机设置中开启「关闭时发送」——相机休眠/关机后仍保持连接，本 App 可自动重连。\n\n2. 开启本页的「保持连接」开关——连接意外断开时自动持续重连，直到相机恢复。',
-          buttons: [{ text: '继续连接', color: $r('app.color.brand') }]
-        }).then(() => { cameraService.startReconnect(cam); }).catch((e: Error) => {
-          hilog.warn(0x0001, TAG, `Connect hint dialog err: ${e.message}`);
-        });
-      } else {
-        cameraService.startReconnect(cam);
-      }
-    });
-  }
-
-  private onDisconnectCamera(cam: PairedCamera): void {
-    cameraService.disconnect(cam.name);
   }
 
   private onForget(cam: PairedCamera): void {
@@ -222,10 +242,19 @@ export struct ConnectionPage {
     return state;
   }
 
-  private cameraBusy(state: ConnectionState): boolean {
-    return state === ConnectionState.Scanning || state === ConnectionState.Connecting
-      || state === ConnectionState.Discovering || state === ConnectionState.Pairing
-      || state === ConnectionState.Bonding;
+  /**
+   * Status line under the camera name. While the toggle is ON but the link is
+   * down (waiting / auto-reconnecting), show the live message instead of a
+   * bare "未连接" — the toggle promises a connection, so say where it is.
+   */
+  private cameraStateText(cam: PairedCamera): string {
+    const status = this.getCameraStatus(cam.name);
+    const st = status?.state ?? ConnectionState.Idle;
+    if (st === ConnectionState.Idle && cam.keepAlive) {
+      const msg = status?.message ?? '';
+      return msg !== '' ? msg : '待连接';
+    }
+    return this.stateLabel(st);
   }
 
   @Builder pairingNotice() {
@@ -264,59 +293,55 @@ export struct ConnectionPage {
       Text('已配对设备').fontSize(14).fontColor($r('app.color.text_secondary'))
         .margin({ left: 12, bottom: 8, top: 28 }).alignSelf(ItemAlign.Start).fontWeight(500)
       if (this.savedCameras.length > 0) {
-        Column() {
-          ForEach(this.savedCameras, (cam: PairedCamera, i: number) => {
-            Row() {
-              Column() {
-                Text(cam.name).fontSize(16).fontWeight(500).fontColor($r('app.color.text_primary'))
-                  .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-                Row({ space: 6 }) {
-                  Circle({ width: 6, height: 6 }).fill(this.stateColor(this.getCameraStatus(cam.name)?.state ?? ConnectionState.Idle))
-                  Text(this.stateLabel(this.getCameraStatus(cam.name)?.state ?? ConnectionState.Idle))
-                    .fontSize(11).fontColor(this.stateColor(this.getCameraStatus(cam.name)?.state ?? ConnectionState.Idle))
-                }.margin({ top: 3 })
-              }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-              Row({ space: 8 }) {
-                Button(this.cameraBusy(this.getCameraStatus(cam.name)?.state ?? ConnectionState.Idle)
-                  || this.getCameraStatus(cam.name)?.state === ConnectionState.Ready
-                  ? '断开' : '连接')
-                  .fontSize(12).fontWeight(FontWeight.Medium).height(32).borderRadius(16)
-                  .backgroundColor(this.getCameraStatus(cam.name)?.state === ConnectionState.Ready
-                    || this.cameraBusy(this.getCameraStatus(cam.name)?.state ?? ConnectionState.Idle)
-                    ? $r('app.color.danger') : $r('app.color.brand')).fontColor(Color.White)
-                  .padding({ left: 16, right: 16 })
-                  .enabled(!this.isPairingOwner())
-                  .onClick(() => {
-                    const st = this.getCameraStatus(cam.name)?.state ?? ConnectionState.Idle;
-                    if (st === ConnectionState.Ready || this.cameraBusy(st)) {
-                      this.onDisconnectCamera(cam);
-                    } else {
-                      this.onReconnect(cam);
-                    }
-                  })
-                Button('删除')
-                  .fontSize(12).fontWeight(FontWeight.Medium).height(32).borderRadius(16)
-                  .backgroundColor(this.cameraBusy(this.getCameraStatus(cam.name)?.state ?? ConnectionState.Idle)
-                    || this.isPairingOwner()
-                    ? $r('app.color.text_secondary') : $r('app.color.danger')).fontColor(Color.White)
-                  .padding({ left: 16, right: 16 })
-                  .enabled(!this.cameraBusy(this.getCameraStatus(cam.name)?.state ?? ConnectionState.Idle) && !this.isPairingOwner())
-                  .onClick(() => { this.onForget(cam); })
+        List({ space: 8 }) {
+          ForEach(this.savedCameras, (cam: PairedCamera) => {
+            HdsListItem({
+              customItemBuilder: (): void => { this.cameraRow(cam); },
+              swipeActionOptions: {
+                deleteIconOptions: {
+                  onAction: () => { this.onForget(cam); }
+                },
+                fullDeleteOptions: {
+                  isFullDelete: true, // swipe through the card to delete
+                  onFullDeleteAction: () => { this.onForget(cam); }
+                }
               }
-            }.width('100%').padding({ left: 8, right: 8, top: 10, bottom: 10 }).alignItems(VerticalAlign.Center)
-            if (i < this.savedCameras.length - 1) {
-              Divider().strokeWidth(0.5).color($r('app.color.divider')).margin({ left: 8, right: 8 })
-            }
-          }, (cam: PairedCamera, i: number) => cam.name + i)
+            })
+          }, (cam: PairedCamera) => `${cam.name}_${cam.keepAlive}_${this.refreshTick}`)
         }
-        .width('100%').backgroundColor($r('app.color.card_background')).borderRadius(16).padding(4)
-        .shadow({ radius: 12, color: '#0D000000', offsetY: 2 })
+        .width('100%')
+        .scrollBar(BarState.Off)
+        .edgeEffect(EdgeEffect.None)
       } else {
         Column() { Text('暂无已配对设备').fontSize(13).fontColor($r('app.color.text_secondary')).textAlign(TextAlign.Center) }
         .width('100%').height(48).justifyContent(FlexAlign.Center).backgroundColor($r('app.color.card_background')).borderRadius(16)
         .padding({ left: 8, right: 8 })
       }
     }.width('100%').alignItems(HorizontalAlign.Start)
+  }
+
+  /** One paired-camera card: name + live state on the left, connection toggle on the right. */
+  @Builder cameraRow(cam: PairedCamera) {
+    Row() {
+      Column() {
+        Text(cam.name).fontSize(16).fontWeight(500).fontColor($r('app.color.text_primary'))
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        Row({ space: 6 }) {
+          Circle({ width: 6, height: 6 }).fill(this.stateColor(this.getCameraStatus(cam.name)?.state ?? ConnectionState.Idle))
+          Text(this.cameraStateText(cam))
+            .fontSize(11).fontColor(this.stateColor(this.getCameraStatus(cam.name)?.state ?? ConnectionState.Idle))
+            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        }.margin({ top: 3 })
+      }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+      Toggle({ type: ToggleType.Switch, isOn: cam.keepAlive })
+        .enabled(!this.isPairingOwner())
+        .onChange((on: boolean) => { this.onConnectToggle(cam, on); })
+    }
+    .width('100%')
+    .padding({ left: 16, right: 16, top: 12, bottom: 12 })
+    .alignItems(VerticalAlign.Center)
+    .borderRadius(16).backgroundColor($r('app.color.card_background'))
+    .shadow({ radius: 12, color: '#0D000000', offsetY: 2 })
   }
 
   @Builder logSection() {
@@ -353,22 +378,9 @@ export struct ConnectionPage {
           Blank().height(56)
 
           if (this.isPairingOwner()) { this.pairingNotice() }
-          Row() {
-            Column() {
-              Text('保持连接').fontSize(14).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
-              Text('断开后自动持续重连，直到相机恢复或手动断开').fontSize(11)
-                .fontColor($r('app.color.text_secondary')).margin({ top: 2 })
-            }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-            Toggle({ type: ToggleType.Switch, isOn: this.reconnectEnabled })
-              .onChange((on: boolean) => { this.onReconnectToggle(on); })
-          }
-          .width('100%').padding({ left: 16, right: 16, top: 12, bottom: 12 })
-          .borderRadius(16).backgroundColor($r('app.color.card_background'))
-          .shadow({ radius: 12, color: '#0D000000', offsetY: 2 })
-          .margin({ top: 12 })
           if (this.hasReadyCamera()) { this.gpsCard() }
 
-          Text('相机开启「关闭时发送」选项后，连接始终自动保持。\n需要后台下发数据，请在系统设置中允许始终定位。')
+          Text('连接开关打开的相机将保持连接，断开后自动重连，直到关闭开关。\n左滑设备卡片可删除配对。\n需要后台下发数据，请在系统设置中允许始终定位。')
             .fontSize(11).fontColor($r('app.color.text_secondary'))
             .width('100%').textAlign(TextAlign.Center).padding({ left: 4, right: 4 })
             .margin({ top: 12 })

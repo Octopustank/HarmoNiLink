@@ -25,10 +25,16 @@ export class PairedCamera {
   readonly device: number;  // uint32
   readonly nonce: number;   // uint32
   readonly controllerName: string;
+  // Per-camera connection toggle ("连接开关"): ON = connect and auto-reconnect
+  // until turned off (Phase 3 merged the old global "保持连接" into this).
+  // Mutable UI setting, so NOT readonly. Serialized with the camera record;
+  // pre-Phase-3 records without this field default ON on load.
+  keepAlive: boolean;
 
   constructor(
     name: string, address: string, addressType: number,
-    device: number, nonce: number, controllerName: string
+    device: number, nonce: number, controllerName: string,
+    keepAlive: boolean = true
   ) {
     this.name = name;
     this.address = address;
@@ -40,6 +46,7 @@ export class PairedCamera {
     this.device = device >>> 0;
     this.nonce = nonce >>> 0;
     this.controllerName = controllerName;
+    this.keepAlive = keepAlive;
   }
 }
 

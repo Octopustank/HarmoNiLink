@@ -16,8 +16,6 @@ const TAG = 'HarmoNiLink-Prefs';
 const STORE_NAME = 'harmonilink_prefs';
 const KEY_CAMERAS = 'paired_cameras';
 const KEY_CONTROLLER_NAME = 'controller_name';
-const KEY_RECONNECT_ENABLED = 'reconnect_enabled';
-const KEY_RECONNECT_PROMPTED = 'reconnect_prompted';
 const KEY_CONNECT_HINT_SHOWN = 'connect_hint_shown';
 // Suffix alphabet — no 0/O/1/I to avoid confusion when reading the name on the camera
 const SUFFIX_CHARS: string = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
@@ -29,18 +27,14 @@ interface SerializedCamera {
   device: number;
   nonce: number;
   controllerName: string;
+  keepAlive?: boolean; // absent in pre-Phase-3 records → default ON
 }
 
 export class PreferencesRepository {
   private store: preferences.Preferences | null = null;
   private cache: PairedCamera[] = []; // in-memory cache for sync access
   private controllerNameCache: string = '';
-  private reconnectEnabledCache: boolean = false; // "保持连接" — default off
-  private reconnectPromptedCache: boolean = false; // one-time explanation shown
   private connectHintShownCache: boolean = false; // one-time first-connect hint shown
-  // True once the user touched the toggle this session — init() must not
-  // overwrite a fresh user choice with the stale on-disk value.
-  private reconnectTouched: boolean = false;
 
   async init(context: common.UIAbilityContext): Promise<void> {
     try {
@@ -48,12 +42,8 @@ export class PreferencesRepository {
       this.cache = await this.loadSavedCameras();
       const saved = await this.store.get(KEY_CONTROLLER_NAME, '') as string;
       if (saved) this.controllerNameCache = saved; // don't overwrite a freshly generated name
-      if (!this.reconnectTouched) {
-        this.reconnectEnabledCache = await this.store.get(KEY_RECONNECT_ENABLED, false) as boolean;
-      }
-      this.reconnectPromptedCache = await this.store.get(KEY_RECONNECT_PROMPTED, false) as boolean;
       this.connectHintShownCache = await this.store.get(KEY_CONNECT_HINT_SHOWN, false) as boolean;
-      hilog.info(0x0001, TAG, `[CHECKPOINT] PreferencesRepository initialized (${this.cache.length} cameras, reconnect=${this.reconnectEnabledCache})`);
+      hilog.info(0x0001, TAG, `[CHECKPOINT] PreferencesRepository initialized (${this.cache.length} cameras)`);
     } catch (err) {
       hilog.error(0x0001, TAG, `[CHECKPOINT] PreferencesRepository init ERROR: ${JSON.stringify(err)}`);
     }
@@ -61,27 +51,6 @@ export class PreferencesRepository {
 
   loadSavedCamerasSync(): PairedCamera[] {
     return this.cache;
-  }
-
-  // ==================== 保持连接 (auto-reconnect) ====================
-
-  loadReconnectEnabledSync(): boolean {
-    return this.reconnectEnabledCache;
-  }
-
-  saveReconnectEnabled(enabled: boolean): void {
-    this.reconnectTouched = true; // init() must not overwrite this choice
-    this.reconnectEnabledCache = enabled;
-    this.putBool(KEY_RECONNECT_ENABLED, enabled);
-  }
-
-  wasReconnectPromptedSync(): boolean {
-    return this.reconnectPromptedCache;
-  }
-
-  saveReconnectPrompted(): void {
-    this.reconnectPromptedCache = true;
-    this.putBool(KEY_RECONNECT_PROMPTED, true);
   }
 
   // ==================== 首次连接提示 (one-time hint) ====================
@@ -168,7 +137,8 @@ export class PreferencesRepository {
       const arr: SerializedCamera[] = JSON.parse(json);
       const cameras = arr.map((s) => new PairedCamera(
         s.name, s.address, s.addressType,
-        s.device, s.nonce, s.controllerName
+        s.device, s.nonce, s.controllerName,
+        s.keepAlive ?? true // Phase 3: connection toggle defaults ON
       ));
       hilog.info(0x0001, TAG,
         `[CHECKPOINT] loadSavedCameras: loaded ${cameras.length} cameras`);

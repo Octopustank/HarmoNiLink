@@ -129,9 +129,8 @@ export class CameraService {
   private gpsTimer: number | null = null;
   private gpsStep: number = 0; // 0=TIME, 1=GEO — alternating
 
-  // "保持连接" — auto-reconnect toggle (default off, GLOBAL — Phase 3 may split
-  // per camera).
-  private reconnectEnabled: boolean = false;
+  // "保持连接" is a PER-CAMERA flag on PairedCamera (Phase 3). No global
+  // toggle state lives here anymore — see isKeepAlive/setKeepAlive below.
 
   // ==================== Public API ====================
 
@@ -160,37 +159,31 @@ export class CameraService {
     // satellite count is a device-level reading that must NOT reset to "--"
     // when all cameras drop. Subscribe once at startup, keep it alive.
     this.subscribeSatelliteStatus();
-    this.prefs.init(ctx).then(() => {
-      // Persisted values are ready — sync the in-memory "保持连接" state
-      this.reconnectEnabled = this.prefs.loadReconnectEnabledSync();
-      hilog.info(0x0001, TAG, `[RECONNECT] loaded from prefs: ${this.reconnectEnabled}`);
-    }); // start async init — loadSavedCamerasSync will return cache once ready
+    this.prefs.init(ctx); // async init — loadSavedCamerasSync will return cache once ready
   }
 
-  // ==================== 保持连接 (auto-reconnect, global toggle) ====================
+  // ==================== 保持连接 (per-camera auto-reconnect, Phase 3) ====================
 
-  isReconnectEnabled(): boolean { return this.reconnectEnabled; }
+  /** Keep-alive flag of one paired camera (reads live from the prefs cache). */
+  isKeepAlive(name: string): boolean {
+    const cam = this.prefs.loadSavedCamerasSync().find((c: PairedCamera) => c.name === name);
+    return cam !== undefined && cam.keepAlive;
+  }
 
-  setReconnectEnabled(enabled: boolean): void {
-    this.reconnectEnabled = enabled;
-    this.prefs.saveReconnectEnabled(enabled);
-    hilog.info(0x0001, TAG, `[RECONNECT] keep-connected ${enabled ? 'enabled' : 'disabled'}`);
-    if (!enabled) {
-      // Cancel any pending auto-reconnect attempt on every session
-      this.sessions.forEach((s: CameraSession) => { s.cancelReconnectTimer(); });
+  /** Flip one camera's keep-alive; turning it off stops that camera's pending reconnect. */
+  setKeepAlive(name: string, on: boolean): void {
+    const cam = this.prefs.loadSavedCamerasSync().find((c: PairedCamera) => c.name === name);
+    if (!cam) return;
+    cam.keepAlive = on;
+    this.prefs.saveCameraSync(cam);
+    hilog.info(0x0001, TAG, `[RECONNECT] keep-alive ${on ? 'on' : 'off'} for '${name}'`);
+    if (!on) {
+      const s = this.sessions.get(name);
+      if (s) s.onKeepAliveDisabled();
     }
   }
 
-  /** True if the "保持连接" explanation dialog has never been shown. */
-  wasReconnectPrompted(): boolean {
-    return this.prefs.wasReconnectPromptedSync();
-  }
-
-  markReconnectPrompted(): void {
-    this.prefs.saveReconnectPrompted();
-  }
-
-  /** True if the first-connect hint (camera "关闭时发送" + 保持连接) has never been shown. */
+  /** True if the first-connect hint (camera "关闭时发送" + keep-alive) has never been shown. */
   wasConnectHintShown(): boolean {
     return this.prefs.wasConnectHintShownSync();
   }
@@ -330,6 +323,12 @@ export class CameraService {
   isCameraConnected(name: string): boolean {
     const s = this.sessions.get(name);
     return s !== undefined && s.isConnected();
+  }
+
+  /** True while this camera is connecting/pairing/reconnecting (not Idle). */
+  isCameraBusy(name: string): boolean {
+    const s = this.sessions.get(name);
+    return s !== undefined && s.getState() !== ConnectionState.Idle;
   }
 
   /** Number of currently Ready (connected) cameras. */
