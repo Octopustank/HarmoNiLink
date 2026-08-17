@@ -109,12 +109,18 @@ export class CameraSession {
   writeTime(payload: Uint8Array): void { this.bleClient.writeTime(payload); }
   writeGeo(payload: Uint8Array): void { this.bleClient.writeGeo(payload); }
 
-  /** Hub cancels a pending reconnect when the global toggle is turned off. */
+  /** Hub cancels a pending reconnect when the camera's keep-alive goes off. */
   cancelReconnectTimer(): void {
     if (this.reconnectTimerId !== null) {
       clearTimeout(this.reconnectTimerId);
       this.reconnectTimerId = null;
     }
+  }
+
+  /** True while a backoff timer is armed — an external reconcile must not
+   * bypass it by starting a connect directly. */
+  isReconnectScheduled(): boolean {
+    return this.reconnectTimerId !== null;
   }
 
   /** Watchdog cleanup — Hub.setState invokes this on terminal states. */
@@ -756,6 +762,13 @@ export class CameraSession {
       // a Ready session's owner is already released so 'none' still reconnects).
       if (cam && this.hub.isKeepAlive(cam.name) && this.hub.getOwner() !== 'pairing') {
         this.startReconnect(cam);
+      } else if (cam && this.hub.isKeepAlive(cam.name)) {
+        // Pairing owns the radio right now — re-arm at the SAME backoff step
+        // (retries was already incremented by this firing; undo it so the
+        // schedule below re-computes the same delay). Dropping the attempt
+        // here would strand the camera until some unrelated event pokes it.
+        this.reconnectRetries--;
+        this.scheduleReconnect();
       }
     }, delay);
   }

@@ -331,6 +331,13 @@ export class CameraService {
     return s !== undefined && s.getState() !== ConnectionState.Idle;
   }
 
+  /** True if this camera has a pending auto-reconnect backoff timer. The
+   * timer (not an external reconcile) owns when its next attempt fires. */
+  isCameraReconnectPending(name: string): boolean {
+    const s = this.sessions.get(name);
+    return s !== undefined && s.isReconnectScheduled();
+  }
+
   /** Number of currently Ready (connected) cameras. */
   getConnectedCount(): number {
     return this.getReadySessions().length;

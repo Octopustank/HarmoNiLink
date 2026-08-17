@@ -117,7 +117,12 @@ export struct ConnectionPage {
    */
   private onConnectToggle(cam: PairedCamera, on: boolean): void {
     if (on) {
-      if (this.isPairingOwner()) { this.revertToggle(); return; }
+      if (this.isPairingOwner()) {
+        // Starting a connect needs the radio — pairing owns it exclusively.
+        this.getUIContext().getPromptAction().showToast({ message: '配对进行中，请稍后再开启连接', duration: 2000 });
+        this.revertToggle();
+        return;
+      }
       // Already connected/connecting — just persist the intent.
       if (cameraService.isCameraConnected(cam.name) || cameraService.isCameraBusy(cam.name)) {
         cameraService.setKeepAlive(cam.name, true);
@@ -180,14 +185,19 @@ export struct ConnectionPage {
   }
 
   /**
-   * Keep-alive cameras that are neither connected nor connecting get their
-   * connection started (app start / page revisit / after prefs settle).
+   * Keep-alive cameras that are neither connected, connecting, NOR waiting in
+   * the reconnect backoff get their connection started (app start / page
+   * revisit / after prefs settle). A camera sitting out a backoff window owns
+   * its own retry schedule — restarting it here would bypass the backoff and
+   * make unrelated events (another camera's cancel, pairing completion) fire
+   * connects at random-looking moments.
    */
   private reconcileConnections(): void {
     if (this.isPairingOwner()) return;
     for (const cam of this.savedCameras) {
       if (!cam.keepAlive) continue;
       if (cameraService.isCameraConnected(cam.name) || cameraService.isCameraBusy(cam.name)) continue;
+      if (cameraService.isCameraReconnectPending(cam.name)) continue; // backoff owns it
       if (!cameraService.canConnectMore()) break; // cap reached — stop here
       cameraService.startReconnect(cam); // service re-checks cap/owner internally
     }
@@ -383,9 +393,11 @@ export struct ConnectionPage {
               .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
           }.margin({ top: 3 })
         }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-        Toggle({ type: ToggleType.Switch, isOn: cam.keepAlive })
-          .enabled(!this.isPairingOwner())
-          .onChange((on: boolean) => { this.onConnectToggle(cam, on); })
+      Toggle({ type: ToggleType.Switch, isOn: cam.keepAlive })
+        // Always interactive: turning OFF is a cancel and must work even
+        // while the pairing tab owns the radio (the ON direction refuses
+        // with a toast in onConnectToggle instead of a dead switch).
+        .onChange((on: boolean) => { this.onConnectToggle(cam, on); })
       }
       .width('100%')
       .padding({ left: 12, right: 12, top: 10, bottom: 10 })
