@@ -1,23 +1,27 @@
 /**
- * CameraSession.ets — Per-camera connection session
+ * CameraSession.ets — Per-camera connection session (MULTI-CAMERA)
  *
- * Phase 0: extracted from CameraService with ZERO behaviour change. A single
- * camera's state (pairing/connect/reconnect) that was previously scattered
- * across CameraService's singular fields now lives here. The Hub (CameraService)
- * still owns shared resources — scanner, prefs, pairing engine, satellite
- * subscription, background task, GPS ticker, ownership, state broadcast — and
- * exposes them to this session via a hub reference.
+ * One instance per paired camera; the Hub (CameraService) holds many. Owns
+ * what is per-connection: GATT client, handshake, bonding, watchdog, the
+ * per-camera reconnect backoff timer, and per-camera state. The Hub owns
+ * shared resources — scanner, prefs, pairing engine, satellite subscription,
+ * background task, GPS ticker, the reconnect-pool shared scan, the pairing
+ * radio mutex, state broadcast — exposed via a hub reference.
  *
- * Deliberately NOT in this session (kept in the Hub, per the multi-camera
- * design): the GPS ticker (one location source fanning out to all Ready
- * sessions), the reconnect-enabled flag (global toggle), and the satellite
- * subscription. A session only owns what is per-connection.
+ * Ownership model (Phase 3): the Hub's single `owner` is a PAIRING-ONLY
+ * mutex (classic bonding needs the radio exclusively). Connection/reconnect
+ * operations run on many sessions in parallel and never take it — they only
+ * defer to an active pairing via isPairingActive(). This replaces the old
+ * 'connection' owner that a sibling's early Ready could release, stranding a
+ * straggler's 10s saved-address fallback (P0-1).
  *
- * Phase 1+ will let the Hub hold multiple sessions. For now the Hub enforces
- * "at most one" so v1.7 behaviour is identical.
+ * Scan/discovery discipline (P0-2): sessions never call scanner.stopScan()
+ * or stop classic discovery unless they OWN it. Shared reconnect scan is
+ * unwatched per-camera (hub.unwatchReconnect); classic discovery is stopped
+ * only when this session's own bonding flags are set.
  *
- * [CHECKPOINT] log prefix is intentionally identical to the pre-split
- * CameraService so regression log diffs stay clean.
+ * Logs carry a per-camera `[name] ` prefix via slog() so multi-camera traces
+ * stay attributable.
  */
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { connection } from '@kit.ConnectivityKit';
@@ -78,6 +82,10 @@ export class CameraSession {
   // Connect watchdog — aborts stalled pairing against unresponsive devices
   private connectTimeoutId: number | null = null;
 
+  // 10s saved-address fallback of the reconnect scan — cancellable so a fast
+  // off→on cycle can't leave a stale timer aimed at the new attempt.
+  private scanFallbackTimerId: number | null = null;
+
   // Pending auto-reconnect timer — dedupes scheduleReconnect() calls
   private reconnectTimerId: number | null = null;
   private reconnectRetries: number = 0; // backoff counter
@@ -92,6 +100,11 @@ export class CameraSession {
 
   constructor(hub: CameraService) {
     this.hub = hub;
+  }
+
+  /** Per-session log prefix — with N cameras the log must say WHO did it. */
+  private slog(): string {
+    return this.cameraName !== '' ? `[${this.cameraName}] ` : '';
   }
 
   // ==== Getters / accessors used by the Hub's public API ====
@@ -134,16 +147,21 @@ export class CameraSession {
   // ==================== Connect Flow (Connection Page) ====================
 
   startReconnect(camera: PairedCamera): boolean {
-    if (!this.hub.requestOwnership('connection')) return false;
+    // Connection ops don't take the Hub mutex (many may run in parallel) —
+    // they only defer to an active pairing (classic bonding needs the radio).
+    if (this.hub.isPairingActive()) {
+      hilog.warn(0x0001, TAG, `${this.slog()}startReconnect deferred — pairing in progress`);
+      return false;
+    }
     // Re-entry guard: a double-tap would otherwise open two GATT clients and
     // two scan sessions racing each other.
     if (this.state === ConnectionState.Scanning || this.state === ConnectionState.Connecting
       || this.state === ConnectionState.Discovering || this.state === ConnectionState.Pairing) {
-      hilog.warn(0x0001, TAG, '[CHECKPOINT] startReconnect ignored — operation already in progress');
+      hilog.warn(0x0001, TAG, `${this.slog()}startReconnect ignored — operation already in progress`);
       return false;
     }
     hilog.info(0x0001, TAG,
-      `[CHECKPOINT] startReconnect: name='${camera.name}' addr=${camera.address}`);
+      `${this.slog()}startReconnect: name='${camera.name}' addr=${camera.address}`);
 
     this.isPairMode = false;
     this.savedCamera = camera;
@@ -162,21 +180,36 @@ export class CameraSession {
     // just a last-ditch fallback — connecting to the (possibly stale) address
     // is a deliberate "poke" that wakes a sleeping camera. Once woken, the
     // camera re-advertises a fresh address that the next scan picks up.
-    setTimeout(() => {
-      if (this.state === ConnectionState.Scanning && this.hub.getOwner() === 'connection') {
+    // The timer has a handle: a fast off→on cycle must not leave the OLD
+    // timer armed to fire at the NEW attempt (it would unwatch the fresh
+    // watcher and connect to a stale address).
+    this.clearScanFallbackTimer();
+    this.scanFallbackTimerId = setTimeout(() => {
+      this.scanFallbackTimerId = null;
+      // Pairing-serial check only — a sibling session's Ready no longer
+      // gates this fallback (connection ops hold no shared owner).
+      if (this.state === ConnectionState.Scanning && !this.hub.isPairingActive()) {
         this.hub.unwatchReconnect(camera.name);
-        hilog.info(0x0001, TAG, '[CHECKPOINT] reconnect scan timeout, using saved address');
+        hilog.info(0x0001, TAG, `${this.slog()}reconnect scan timeout, using saved address`);
         this.connectToDevice(camera.address);
       }
     }, 10000);
     return true;
   }
 
+  private clearScanFallbackTimer(): void {
+    if (this.scanFallbackTimerId !== null) {
+      clearTimeout(this.scanFallbackTimerId);
+      this.scanFallbackTimerId = null;
+    }
+  }
+
   /** The Hub routes a shared-scan match back to this session. */
   onReconnectFound(found: DiscoveredCamera, camera: PairedCamera, devMatch: boolean): void {
     if (this.state !== ConnectionState.Scanning) return; // already timed out → fallback path
+    this.clearScanFallbackTimer(); // the 10s saved-address poke must not fire anymore
     hilog.info(0x0001, TAG,
-      `[CHECKPOINT] reconnect scan found: newAddr=${found.deviceId} savedAddr=${camera.address} devMatch=${devMatch}`);
+      `${this.slog()}reconnect scan found: newAddr=${found.deviceId} savedAddr=${camera.address} devMatch=${devMatch}`);
     const updated = new PairedCamera(
       camera.name, found.deviceId, camera.addressType,
       camera.device, camera.nonce, camera.controllerName,
@@ -197,8 +230,9 @@ export class CameraSession {
     hilog.info(0x0001, TAG,
       `[CHECKPOINT] selectDiscoveredCamera: name='${camera.deviceName}' id=${camera.deviceId}`);
 
-    // Stop BLE scan only (no state change — avoids spurious Idle that resets PairingPage isPairing)
-    this.hub.scanner.stopScan();
+    // Stop the PAIRING scan only — never the shared reconnect scan riding the
+    // same scanner (direct scanner.stopScan() would off every listener).
+    this.hub.stopPairingScanOnly();
 
     // Check if we have saved data for this camera — if so, proceed with pair mode anyway
     // (ownership is pairing; reconnect flow requires connection ownership)
@@ -225,23 +259,33 @@ export class CameraSession {
   // ==================== Disconnect ====================
 
   disconnect(): void {
-    hilog.info(0x0001, TAG, '[CHECKPOINT] disconnect() called');
+    hilog.info(0x0001, TAG, `${this.slog()}disconnect() called`);
     this.clearConnectTimeout();
-    // Release ownership only if THIS session holds it (in-flight connect/pair).
-    // A Ready session's owner is already released (or belongs to another tab's
-    // pairing) — releasing here would clobber the pairing tab's ownership.
+    this.clearScanFallbackTimer();
+    // Release ownership ONLY if this session is the pairing holder: connection
+    // sessions never take the mutex (many connect in parallel), so releasing
+    // on their busy-state would free ANOTHER session's lock.
     const st = this.state;
-    if (st === ConnectionState.Scanning || st === ConnectionState.Connecting
-      || st === ConnectionState.Discovering || st === ConnectionState.Pairing
-      || st === ConnectionState.Bonding) {
+    if (this.isPairMode && this.hub.getOwner() === 'pairing'
+      && (st === ConnectionState.Scanning || st === ConnectionState.Connecting
+        || st === ConnectionState.Discovering || st === ConnectionState.Pairing
+        || st === ConnectionState.Bonding)) {
       this.hub.releaseOwnership();
     }
     // Cancel any bonding in flight — otherwise a late BONDED event (or the user
     // confirming a pending system dialog) could finish a pairing that was
     // cancelled, producing a ghost "已连接" with no connection.
+    // Capture discovery ownership BEFORE clearing the flags (the guard below
+    // must see the pre-cancel state).
+    const ownedDiscovery = this.bondingDiscoveryActive || this.pendingBondingDiscovery;
     this.bondingDiscoveryActive = false;
     this.pendingBondingDiscovery = false;
     this.unregisterBondListeners();
+    // Stop classic discovery ONLY if this session owned it (bonding). Killing
+    // it unconditionally would abort a sibling session's bonding (P0-2).
+    if (ownedDiscovery) {
+      try { connection.stopBluetoothDiscovery(); } catch (e) {}
+    }
     this.pairingStep = 0;
     this.currentStage1 = null;
     this.cameraSerial = '';
@@ -258,7 +302,6 @@ export class CameraSession {
     // any remaining Ready camera, stop it (and the background task) otherwise.
     this.hub.refreshGps();
     this.bleClient.disconnect();
-    try { connection.stopBluetoothDiscovery(); } catch (e) {}
   }
 
   /**
@@ -266,9 +309,13 @@ export class CameraSession {
    * Fully resets BLE + classic discovery + ownership so the UI returns to idle.
    */
   cancelPairing(): void {
-    hilog.info(0x0001, TAG, '[CHECKPOINT] cancelPairing() called');
-    this.hub.scanner.stopScan();
-    try { connection.stopBluetoothDiscovery(); } catch (e) {}
+    hilog.info(0x0001, TAG, `${this.slog()}cancelPairing() called`);
+    // No scanner.stopScan() here: the pairing scan was already stopped by
+    // selectDiscoveredCamera, and a bare stop would kill the shared reconnect
+    // scan other sessions are watching (P0-2). disconnect() unwatches us.
+    if (this.bondingDiscoveryActive || this.pendingBondingDiscovery) {
+      try { connection.stopBluetoothDiscovery(); } catch (e) {}
+    }
     this.disconnect();
   }
 
@@ -291,12 +338,16 @@ export class CameraSession {
         || st === ConnectionState.Error || st === ConnectionState.Bonding) {
         return; // already settled — nothing to abort
       }
-      hilog.warn(0x0001, TAG, '[CHECKPOINT] Connect watchdog fired (60s) — aborting stalled pairing');
+      hilog.warn(0x0001, TAG, `${this.slog()}Connect watchdog fired (60s) — aborting stalled pairing`);
       this.linkLostRootMarked = true;
-      hilog.warn(0x0001, TAG, '[CHECKPOINT] LINK LOST [ROOT] cause=watchdog');
+      hilog.warn(0x0001, TAG, `${this.slog()}LINK LOST [ROOT] cause=watchdog`);
       this.bleClient.disconnect();
-      this.hub.scanner.stopScan();
-      try { connection.stopBluetoothDiscovery(); } catch (e) {}
+      // Leave the shared reconnect scan for its other watchers; classic
+      // discovery is only stopped when THIS session owns it (P0-2).
+      this.hub.unwatchReconnect(this.cameraName);
+      if (this.bondingDiscoveryActive || this.pendingBondingDiscovery) {
+        try { connection.stopBluetoothDiscovery(); } catch (e) {}
+      }
       // Route through the unified recovery path instead of dying on Error —
       // auto-reconnect keeps trying while the camera is unavailable.
       this.handleLinkLost();
@@ -325,25 +376,25 @@ export class CameraSession {
     }
 
     if (event instanceof BleConnected) {
-      hilog.info(0x0001, TAG, '[CHECKPOINT] BLE Connected');
+      hilog.info(0x0001, TAG, `${this.slog()}BLE Connected`);
       this.reconnectRetries = 0; // reset backoff on success
       this.linkLostRootMarked = false; // fresh link — clear root-cause marker
       this.setState(ConnectionState.Discovering, '正在发现服务…');
     } else if (event instanceof BleServicesDiscovered) {
-      hilog.info(0x0001, TAG, '[CHECKPOINT] Services Discovered');
+      hilog.info(0x0001, TAG, `${this.slog()}Services Discovered`);
       if (this.pairingStep === 0) {
         this.pairingStep = 1;
         this.bleClient.prepare(() => {
-          hilog.info(0x0001, TAG, '[CHECKPOINT] prepare done, beginning handshake');
+          hilog.info(0x0001, TAG, `${this.slog()}prepare done, beginning handshake`);
           this.setState(ConnectionState.Pairing, '正在进行配对…');
           // Delay to let BLE stack settle after prepare
           setTimeout(() => { this.beginHandshake(); }, 500);
         });
       } else {
-        hilog.info(0x0001, TAG, `[CHECKPOINT] ServicesDiscovered ignored (pairingStep=${this.pairingStep})`);
+        hilog.info(0x0001, TAG, `${this.slog()}ServicesDiscovered ignored (pairingStep=${this.pairingStep})`);
       }
     } else if (event instanceof BleMtuChanged) {
-      hilog.info(0x0001, TAG, `[CHECKPOINT] MTU=${event.mtu}`);
+      hilog.info(0x0001, TAG, `${this.slog()}MTU=${event.mtu}`);
     } else if (event instanceof BlePairIndication) {
       this.handlePairIndication(event.data);
     } else if (event instanceof BleNot1Notification) {
@@ -351,12 +402,12 @@ export class CameraSession {
     } else if (event instanceof BleWriteDone) {
       this.handleWriteDone(event.uuid);
     } else if (event instanceof BleDisconnected) {
-      hilog.info(0x0001, TAG, '[CHECKPOINT] BLE Disconnected');
+      hilog.info(0x0001, TAG, `${this.slog()}BLE Disconnected`);
       if (this.state === ConnectionState.Bonding && this.pendingBondingDiscovery) {
         // BLE link fully down — camera should now be classic-discoverable.
         // Bonding path handles the rest; don't route to handleLinkLost.
         this.pendingBondingDiscovery = false;
-        hilog.info(0x0001, TAG, '[CHECKPOINT] BLE fully down — starting classic discovery');
+        hilog.info(0x0001, TAG, `${this.slog()}BLE fully down — starting classic discovery`);
         this.startClassicDiscoveryForBonding();
         return;
       }
@@ -365,11 +416,11 @@ export class CameraSession {
       // a watchdog kill or write error is a NESTED teardown whose root cause
       // was already logged with a [ROOT] marker — don't re-attribute it.
       if (!this.linkLostRootMarked) {
-        hilog.warn(0x0001, TAG, '[CHECKPOINT] LINK LOST cause=disconnected');
+        hilog.warn(0x0001, TAG, `${this.slog()}LINK LOST cause=disconnected`);
       }
       this.handleLinkLost();
     } else if (event instanceof BleError) {
-      hilog.error(0x0001, TAG, `[CHECKPOINT] BLE Error: ${event.message}`);
+      hilog.error(0x0001, TAG, `${this.slog()}BLE Error: ${event.message}`);
       // Link-death attribution: three-way split so a slow-waking camera's
       // death can be traced to exactly one cause. The P1 watchdog relaxation
       // (35s -> 60s) may shift it from watchdog to write timeout (3 x 10s) —
@@ -383,7 +434,7 @@ export class CameraSession {
         cause = 'ble-error';
       }
       this.linkLostRootMarked = true;
-      hilog.warn(0x0001, TAG, `[CHECKPOINT] LINK LOST [ROOT] cause=${cause}`);
+      hilog.warn(0x0001, TAG, `${this.slog()}LINK LOST [ROOT] cause=${cause}`);
       // Pair-target hint: reaching Pairing means connect + service discovery
       // both succeeded — a PAIR write failure at that point almost always
       // means the camera is not treating this link as a pairing target (it is
@@ -394,8 +445,12 @@ export class CameraSession {
       // Link-loss signal, not a terminal state: tear down and let
       // handleLinkLost decide between auto-reconnect and settling.
       this.bleClient.disconnect();
-      this.hub.scanner.stopScan();
-      try { connection.stopBluetoothDiscovery(); } catch (e) {}
+      // Leave the shared reconnect scan for its other watchers; classic
+      // discovery is only stopped when THIS session owns it (P0-2).
+      this.hub.unwatchReconnect(this.cameraName);
+      if (this.bondingDiscoveryActive || this.pendingBondingDiscovery) {
+        try { connection.stopBluetoothDiscovery(); } catch (e) {}
+      }
       this.handleLinkLost();
     }
   }
@@ -715,11 +770,12 @@ export class CameraSession {
       if (this.savedCamera && this.hub.isKeepAlive(this.savedCamera.name)) {
         this.scheduleReconnect(); // sets Idle + refreshes GPS for remaining cameras
       } else {
-        // Owner was already released on Ready — do NOT release here (would
-        // clobber a concurrent pairing tab's ownership).
+        // setState BEFORE clearing cameraName (P1-3): the UI routes the Idle
+        // event to the right card by name — clearing first broadcasts an empty
+        // name and the card stays stuck showing "已连接".
+        this.setState(ConnectionState.Idle, '相机已断开，请重新连接');
         this.cameraSerial = '';
         this.cameraName = '';
-        this.setState(ConnectionState.Idle, '相机已断开，请重新连接');
         this.hub.refreshGps();
       }
       return;
@@ -735,11 +791,18 @@ export class CameraSession {
     if (this.savedCamera && this.hub.isKeepAlive(this.savedCamera.name)) {
       this.scheduleReconnect();
     } else {
-      this.hub.releaseOwnership();
+      // Release the mutex ONLY if we are the pairing session — connection
+      // sessions never hold it (P0-1).
+      if (this.isPairMode && this.hub.getOwner() === 'pairing') {
+        this.hub.releaseOwnership();
+      }
+      // setState BEFORE clearing cameraName (P1-3); refreshGps() — NOT
+      // stopBackgroundTask() — so a sibling Ready camera's background task
+      // is never torn down by OUR failure (P1-4).
+      this.setState(ConnectionState.Idle, '连接已断开，请重新连接');
       this.cameraSerial = '';
       this.cameraName = '';
-      this.hub.stopBackgroundTask();
-      this.setState(ConnectionState.Idle, '连接已断开，请重新连接');
+      this.hub.refreshGps();
     }
   }
 
@@ -752,7 +815,7 @@ export class CameraSession {
     const delays = [1000, 2000, 4000, 8000, 16000, 30000, 30000, 30000, 60000, 60000];
     const delay = delays[Math.min(this.reconnectRetries, delays.length - 1)];
     this.reconnectRetries++;
-    hilog.info(0x0001, TAG, `[RECONNECT] attempt ${this.reconnectRetries} in ${delay}ms`);
+    hilog.info(0x0001, TAG, `${this.slog()}[RECONNECT] attempt ${this.reconnectRetries} in ${delay}ms`);
     this.setState(ConnectionState.Idle, `正在自动重连（第 ${this.reconnectRetries} 次）…`);
     this.hub.refreshGps(); // keep GPS ticking for any remaining Ready camera
     const cam = this.savedCamera;
@@ -812,13 +875,12 @@ export class CameraSession {
       this.setState(ConnectionState.Ready,
         '已连接');
       this.hub.refreshGps();
-      // Release connection ownership once Ready (see onBonded).
-      if (this.hub.getOwner() === 'connection') this.hub.releaseOwnership();
+      // Connection ops hold no Hub mutex — nothing to release here (P0-1).
     }
   }
 
   private onBonded(): void {
-    hilog.info(0x0001, TAG, '[CHECKPOINT] onBonded()');
+    hilog.info(0x0001, TAG, `${this.slog()}onBonded()`);
     this.pairingStep = 6;
 
     // Only save for PAIR mode (new cameras). Reconnects already have saved data.
@@ -839,9 +901,7 @@ export class CameraSession {
     if (!this.isPairMode) {
       this.setState(ConnectionState.Ready, '已连接');
       this.hub.refreshGps();
-      // Release connection ownership once Ready — the link is established, and
-      // the pairing tab must stay free to pair another camera concurrently.
-      if (this.hub.getOwner() === 'connection') this.hub.releaseOwnership();
+      // Connection ops hold no Hub mutex — nothing to release here (P0-1).
     }
   }
 

@@ -308,6 +308,18 @@ export class CameraService {
     this.broadcastSessionState('', ConnectionState.Idle, '');
   }
 
+  /**
+   * True while the pairing tab holds the global radio mutex. This is the ONLY
+   * real mutex: connection/reconnect operations may run on many sessions in
+   * parallel, so they never take ownership — they only defer to pairing
+   * (classic bonding needs the radio exclusively). The old 'connection' owner
+   * could not express "two sessions connecting at once" and let an early
+   * Ready release stragglers' fallbacks (P0-1).
+   */
+  isPairingActive(): boolean {
+    return this.owner === 'pairing';
+  }
+
   // ==================== Scan (Pairing Page, shared) ====================
 
   startPairingScan(): boolean {
@@ -318,7 +330,8 @@ export class CameraService {
     this.broadcastSessionState('', ConnectionState.Scanning, '正在扫描设备…');
     this.scanner.startScan((cameras: DiscoveredCamera[]) => {
       this.discoveredList = cameras;
-    });
+    }, false); // NO classic discovery — it starves connected cameras' GPS writes (P1-5);
+    // classic discovery only runs later, inside the short bonding window
     return true;
   }
 
@@ -326,10 +339,25 @@ export class CameraService {
     return this.discoveredList;
   }
 
+  /**
+   * Stop the pairing tab's scan WITHOUT killing the shared reconnect scan:
+   * if reconnect watchers still exist, the underlying BLE scan must keep
+   * running for them (sessions must never call scanner.stopScan() directly —
+   * that offs every listener, P0-2).
+   */
+  stopPairingScanOnly(): void {
+    if (!this.pairScanActive) return;
+    this.pairScanActive = false;
+    if (this.reconnectWatchers.length === 0) {
+      this.scanner.stopScan(); // nobody else needs the scan
+    }
+    // else: shared reconnect scan keeps running for the remaining watchers
+  }
+
   stopPairingScan(): void {
-    this.scanner.stopScan();
-    if (this.pairScanActive && this.owner === 'pairing') {
-      this.pairScanActive = false;
+    if (!this.pairScanActive) return; // handshake already in flight — mutex stays with pairing
+    this.stopPairingScanOnly();
+    if (this.owner === 'pairing') {
       this.releaseOwnership();
       this.broadcastSessionState('', ConnectionState.Idle, '扫描已停止');
     }
@@ -706,7 +734,9 @@ export class CameraService {
     this.reconnectWatchers = this.reconnectWatchers.filter((w) => w.camera.name !== name);
     if (this.reconnectWatchers.length === 0 && this.reconnectScanActive) {
       this.reconnectScanActive = false;
-      this.scanner.stopScan();
+      // The pairing tab's scan may be riding the same underlying scan —
+      // only stop the hardware scan when nobody needs it anymore.
+      if (!this.pairScanActive) this.scanner.stopScan();
     }
   }
 

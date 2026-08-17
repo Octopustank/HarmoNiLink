@@ -51,12 +51,23 @@ export class PreferencesRepository {
       // from here on; all mutations go through saveCameraSync/removeCamera).
       const json = await this.store.get(KEY_CAMERAS, '[]') as string;
       const arr: SerializedCamera[] = JSON.parse(json);
-      this.cache = arr.map((s) => new PairedCamera(
+      const diskCams = arr.map((s) => new PairedCamera(
         s.name, s.address, s.addressType,
         s.device, s.nonce, s.controllerName
         // keepAlive intentionally NOT loaded — connection intent is
         // session-runtime state and always starts OFF on a fresh launch
       ));
+      if (this.cache.length === 0) {
+        this.cache = diskCams;
+      } else {
+        // A save already landed before init() finished (e.g. ultra-fast
+        // pairing) — merge by name with the in-memory cache winning, so the
+        // disk read can't resurrect-delete the freshly-paired camera.
+        const byName = new Map<string, PairedCamera>();
+        for (const c of diskCams) byName.set(c.name, c);
+        for (const c of this.cache) byName.set(c.name, c);
+        this.cache = Array.from(byName.values());
+      }
       const saved = await this.store.get(KEY_CONTROLLER_NAME, '') as string;
       if (saved) this.controllerNameCache = saved; // don't overwrite a freshly generated name
       this.connectHintShownCache = await this.store.get(KEY_CONNECT_HINT_SHOWN, false) as boolean;
