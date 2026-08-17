@@ -29,10 +29,15 @@ import { CameraSession } from './CameraSession';
 
 const TAG = 'HarmoNiLink-CameraService';
 
-// Conservative multi-camera connection cap. HarmonyOS has no public API to
-// query the platform's GATT connection limit, so use the agreed conservative
-// target (3). Raising it needs on-device validation of simultaneous links.
-const MAX_CONNECTIONS = 3;
+// Multi-camera connection cap. 0 = UNLIMITED (default): HarmonyOS has no
+// public API for the platform's GATT limit, and field-tested stability only
+// covers 2 cameras — the UI warns (dismissable) beyond that instead of
+// refusing. Set a positive number to hard-enforce a cap again.
+const MAX_CONNECTIONS = 0;
+
+// Connected-camera count considered field-tested; opening connection
+// (threshold + 1) triggers the dismissable stability/battery warning.
+const MULTI_CAM_WARN_THRESHOLD = 2;
 
 // GPS phase stagger: with N cameras, space each camera's write by this many ms
 // so they don't all grab the radio in the same millisecond (Phase 2 power/
@@ -192,6 +197,21 @@ export class CameraService {
     this.prefs.saveConnectHintShown();
   }
 
+  /** True while the user has NOT dismissed the beyond-N-cameras warning. */
+  wasMultiCamWarned(): boolean {
+    return this.prefs.wasMultiCamWarnedSync();
+  }
+
+  markMultiCamWarned(): void {
+    this.prefs.saveMultiCamWarned();
+  }
+
+  /** True when opening ANOTHER connection would go beyond the field-tested
+   * count (2) — the UI warns (dismissable) before connecting. */
+  shouldWarnMultiCam(): boolean {
+    return this.getConnectedCount() >= MULTI_CAM_WARN_THRESHOLD && !this.wasMultiCamWarned();
+  }
+
   // ==================== Permissions ====================
 
   async requestPermissionsIfNeeded(): Promise<boolean> {
@@ -343,9 +363,9 @@ export class CameraService {
     return this.getReadySessions().length;
   }
 
-  /** True if another camera can still be connected under the cap. */
+  /** True if another camera can still be connected under the cap (0 = uncapped). */
   canConnectMore(): boolean {
-    return this.getConnectedCount() < MAX_CONNECTIONS;
+    return MAX_CONNECTIONS <= 0 || this.getConnectedCount() < MAX_CONNECTIONS;
   }
 
   startReconnect(camera: PairedCamera): boolean {

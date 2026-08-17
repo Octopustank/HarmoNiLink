@@ -17,6 +17,7 @@ const STORE_NAME = 'harmonilink_prefs';
 const KEY_CAMERAS = 'paired_cameras';
 const KEY_CONTROLLER_NAME = 'controller_name';
 const KEY_CONNECT_HINT_SHOWN = 'connect_hint_shown';
+const KEY_MULTI_CAM_WARNED = 'multi_cam_warned'; // beyond-N-cameras warning dismissed
 // Suffix alphabet — no 0/O/1/I to avoid confusion when reading the name on the camera
 const SUFFIX_CHARS: string = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
 
@@ -35,6 +36,7 @@ export class PreferencesRepository {
   private cache: PairedCamera[] = []; // in-memory cache for sync access
   private controllerNameCache: string = '';
   private connectHintShownCache: boolean = false; // one-time first-connect hint shown
+  private multiCamWarnedCache: boolean = false; // beyond-N-cameras warning "don't show again"
   // Serialized disk writes. The CACHE is the single source of truth: it is
   // updated synchronously on every mutation, and queued tasks merely snapshot
   // it to disk. This kills the old read-disk-modify-write race where a slow
@@ -58,6 +60,7 @@ export class PreferencesRepository {
       const saved = await this.store.get(KEY_CONTROLLER_NAME, '') as string;
       if (saved) this.controllerNameCache = saved; // don't overwrite a freshly generated name
       this.connectHintShownCache = await this.store.get(KEY_CONNECT_HINT_SHOWN, false) as boolean;
+      this.multiCamWarnedCache = await this.store.get(KEY_MULTI_CAM_WARNED, false) as boolean;
       hilog.info(0x0001, TAG, `[CHECKPOINT] PreferencesRepository initialized (${this.cache.length} cameras)`);
       for (const c of this.cache) {
         hilog.info(0x0001, TAG,
@@ -81,6 +84,17 @@ export class PreferencesRepository {
   saveConnectHintShown(): void {
     this.connectHintShownCache = true;
     this.putBool(KEY_CONNECT_HINT_SHOWN, true);
+  }
+
+  // ==================== 多设备连接提醒 (beyond-N-cameras warning) ====================
+
+  wasMultiCamWarnedSync(): boolean {
+    return this.multiCamWarnedCache;
+  }
+
+  saveMultiCamWarned(): void {
+    this.multiCamWarnedCache = true;
+    this.putBool(KEY_MULTI_CAM_WARNED, true);
   }
 
   private async putBool(key: string, value: boolean): Promise<void> {

@@ -135,40 +135,28 @@ export struct ConnectionPage {
         this.revertToggle();
         return;
       }
-      // Persist the ON intent FIRST, synchronously — the async continuation
-      // below re-reads it as its ghost guard (flipping the toggle OFF
-      // mid-flight must abort the chain, but a fresh ON must never abort
-      // itself before the intent is even written).
-      cameraService.setKeepAlive(cam.name, true);
-      // Connecting needs BLE + location permissions — request on demand
-      cameraService.requestPermissionsIfNeeded().then((granted: boolean) => {
-        // Ghost guard: turned OFF while this chain was in flight — abort.
-        if (!cameraService.isKeepAlive(cam.name)) return;
-        if (!granted) {
-          this.getUIContext().getPromptAction().showToast({ message: '需要蓝牙和位置权限才能连接', duration: 2500 });
-          cameraService.setKeepAlive(cam.name, false);
-          this.revertToggle();
-          return;
-        }
-        // One-time hint on first connect: camera "关闭时发送" + auto-reconnect
-        if (!cameraService.wasConnectHintShown()) {
-          cameraService.markConnectHintShown();
-          this.getUIContext().getPromptAction().showDialog({
-            title: '连接提示',
-            message: '为获得稳定连接，推荐：\n\n1. 在相机设置中开启「关闭时发送」——相机休眠/关机后仍保持连接，本 App 可自动重连。\n\n2. 保持设备的连接开关开启——断开后自动持续重连，直到相机恢复。',
-            buttons: [{ text: '继续连接', color: $r('app.color.brand') }]
-          }).then(() => {
-            // Re-check after the dialog too — it can stay up for a long time.
-            if (cameraService.isKeepAlive(cam.name)) {
-              cameraService.startReconnect(cam);
-            }
-          }).catch((e: Error) => {
-            hilog.warn(0x0001, TAG, `Connect hint dialog err: ${e.message}`);
-          });
-        } else {
-          cameraService.startReconnect(cam);
-        }
-      });
+      // Beyond the field-tested count: warn (dismissable), then connect.
+      // "不再提示" persists the dismissal; plain "继续" warns again next time.
+      if (cameraService.shouldWarnMultiCam()) {
+        this.getUIContext().getPromptAction().showDialog({
+          title: '连接更多设备',
+          message: '连接更多设备不保证稳定性，且可能增加耗电。',
+          buttons: [
+            { text: '不再提示', color: $r('app.color.text_secondary') },
+            { text: '继续', color: $r('app.color.brand') }
+          ]
+        }).then((result) => {
+          if (result.index === 0) {
+            cameraService.markMultiCamWarned();
+          }
+          this.startPendingConnect(cam);
+        }).catch((e: Error) => {
+          hilog.warn(0x0001, TAG, `Multi-cam warn dialog err: ${e.message}`);
+          this.startPendingConnect(cam); // dialog failed — don't block the user
+        });
+        return;
+      }
+      this.startPendingConnect(cam);
     } else {
       // OFF: stop auto-reconnect, then drop the link if one exists.
       cameraService.setKeepAlive(cam.name, false);
@@ -176,6 +164,45 @@ export struct ConnectionPage {
         cameraService.disconnect(cam.name);
       }
     }
+  }
+
+  /**
+   * Persist the ON intent and run the connect chain: permissions → (one-time
+   * first-connect hint dialog) → startReconnect. Every async continuation
+   * re-checks the persisted flag so flipping the toggle OFF mid-flight aborts
+   * the chain (ghost guard), while a fresh ON never aborts itself.
+   */
+  private startPendingConnect(cam: PairedCamera): void {
+    cameraService.setKeepAlive(cam.name, true);
+    // Connecting needs BLE + location permissions — request on demand
+    cameraService.requestPermissionsIfNeeded().then((granted: boolean) => {
+      // Ghost guard: turned OFF while this chain was in flight — abort.
+      if (!cameraService.isKeepAlive(cam.name)) return;
+      if (!granted) {
+        this.getUIContext().getPromptAction().showToast({ message: '需要蓝牙和位置权限才能连接', duration: 2500 });
+        cameraService.setKeepAlive(cam.name, false);
+        this.revertToggle();
+        return;
+      }
+      // One-time hint on first connect: camera "关闭时发送" + auto-reconnect
+      if (!cameraService.wasConnectHintShown()) {
+        cameraService.markConnectHintShown();
+        this.getUIContext().getPromptAction().showDialog({
+          title: '连接提示',
+          message: '为获得稳定连接，推荐：\n\n1. 在相机设置中开启「关闭时发送」——相机休眠/关机后仍保持连接，本 App 可自动重连。\n\n2. 保持设备的连接开关开启——断开后自动持续重连，直到相机恢复。',
+          buttons: [{ text: '继续连接', color: $r('app.color.brand') }]
+        }).then(() => {
+          // Re-check after the dialog too — it can stay up for a long time.
+          if (cameraService.isKeepAlive(cam.name)) {
+            cameraService.startReconnect(cam);
+          }
+        }).catch((e: Error) => {
+          hilog.warn(0x0001, TAG, `Connect hint dialog err: ${e.message}`);
+        });
+      } else {
+        cameraService.startReconnect(cam);
+      }
+    });
   }
 
   /** A toggle was refused — bump the key so it visually snaps back to the
