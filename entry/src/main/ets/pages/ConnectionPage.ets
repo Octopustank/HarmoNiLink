@@ -40,9 +40,11 @@ export struct ConnectionPage {
   @State titleSub: string = '';
   @State owner: string = 'none'; // synced from cameraService — drives @State re-render
   @State controllerName: string = ''; // per-install name shown on the camera
-  // Bumped on every savedCameras reload — part of the ForEach key so toggles
-  // re-render (a refused toggle must visually snap back).
-  @State refreshTick: number = 0;
+  // Bumped ONLY when a toggle must visually snap back after a refused flip.
+  // Part of the ForEach key: normal list reloads keep keys stable so toggles
+  // are NOT recreated (recreation in the same frame as the touch kills the
+  // switch animation and can desync the visual from the persisted flag).
+  @State revertTick: number = 0;
   private scroller: Scroller = new Scroller();
   private gpsTimer: number = -1;
   private offStateListener: (() => void) | null = null;
@@ -130,6 +132,9 @@ export struct ConnectionPage {
       }
       // Connecting needs BLE + location permissions — request on demand
       cameraService.requestPermissionsIfNeeded().then((granted: boolean) => {
+        // Ghost guard: the user may have flipped the toggle OFF while this
+        // async chain was in flight — never turn it back on behind their back.
+        if (!cameraService.isKeepAlive(cam.name)) return;
         if (!granted) {
           this.getUIContext().getPromptAction().showToast({ message: '需要蓝牙和位置权限才能连接', duration: 2500 });
           this.revertToggle();
@@ -143,7 +148,12 @@ export struct ConnectionPage {
             title: '连接提示',
             message: '为获得稳定连接，推荐：\n\n1. 在相机设置中开启「关闭时发送」——相机休眠/关机后仍保持连接，本 App 可自动重连。\n\n2. 保持设备的连接开关开启——断开后自动持续重连，直到相机恢复。',
             buttons: [{ text: '继续连接', color: $r('app.color.brand') }]
-          }).then(() => { cameraService.startReconnect(cam); }).catch((e: Error) => {
+          }).then(() => {
+            // Re-check after the dialog too — it can stay up for a long time.
+            if (cameraService.isKeepAlive(cam.name)) {
+              cameraService.startReconnect(cam);
+            }
+          }).catch((e: Error) => {
             hilog.warn(0x0001, TAG, `Connect hint dialog err: ${e.message}`);
           });
         } else {
@@ -159,9 +169,10 @@ export struct ConnectionPage {
     }
   }
 
-  /** A toggle was refused — reload so it visually snaps back to the saved flag. */
+  /** A toggle was refused — bump the key so it visually snaps back to the
+   * persisted flag (the only case where a toggle must be recreated). */
   private revertToggle(): void {
-    this.loadSavedCameras();
+    this.revertTick++;
   }
 
   /**
@@ -182,7 +193,6 @@ export struct ConnectionPage {
     try {
       const cams = await cameraService.getSavedCameras();
       this.savedCameras = cams.slice(); // new array ref so ForEach re-diffs
-      this.refreshTick++;
       this.reconcileConnections();
     }
     catch (e) { hilog.warn(0x0001, TAG, `loadSavedCameras err: ${JSON.stringify(e)}`); }
@@ -266,17 +276,25 @@ export struct ConnectionPage {
   }
 
   /** Always-present GPS card — stable layout, no jump on connect/disconnect.
-   * Values stay at "--"/未定位 placeholders until a link + fix arrives. */
+   * The status light replaces the old 定位 row: green = a camera is connected
+   * and the GPS heartbeat is running; yellow = acquiring (link up but no fix,
+   * or a connection is being established). */
   @Builder gpsCard() {
     Column() {
-      Text('GPS 信息').fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary')).width('100%').margin({ bottom: 10 })
+      Row() {
+        Text('GPS 信息').fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
+        Blank()
+        if (this.gpsLightVisible()) {
+          Circle({ width: 8, height: 8 }).fill(this.gpsLightColor())
+          Text(this.gpsLightLabel()).fontSize(11).fontColor(this.gpsLightColor()).margin({ left: 6 })
+        }
+      }.width('100%').margin({ bottom: 10 })
       GpsRow({ label: '配对名称', value: this.controllerName })
       Divider().strokeWidth(0.5).color($r('app.color.divider')).margin({ top: 4, bottom: 6 })
       GpsRow({ label: '纬度', value: this.gpsLat })
       GpsRow({ label: '经度', value: this.gpsLon })
       GpsRow({ label: '海拔', value: this.gpsAlt })
       GpsRow({ label: '卫星数', value: this.gpsSats })
-      GpsRow({ label: '定位', value: this.gpsHasFix ? '已定位' : '未定位' })
       GpsRow({ label: '更新时间', value: this.gpsTime })
     }
     .width('100%').alignItems(HorizontalAlign.Start)
@@ -284,6 +302,30 @@ export struct ConnectionPage {
     .borderRadius(16).backgroundColor($r('app.color.card_background'))
     .shadow({ radius: 12, color: '#0D000000', offsetY: 2 })
     .margin({ top: 12 })
+  }
+
+  private anyCameraReady(): boolean {
+    return this.cameraStatuses.some((c) => c.state === ConnectionState.Ready);
+  }
+
+  private anyCameraBusy(): boolean {
+    return this.cameraStatuses.some((c) => c.state !== ConnectionState.Ready && c.state !== ConnectionState.Idle);
+  }
+
+  private gpsLightVisible(): boolean {
+    return this.anyCameraReady() || this.anyCameraBusy();
+  }
+
+  private gpsLightColor(): ResourceColor {
+    if (this.anyCameraReady() && this.gpsHasFix) return $r('app.color.success');
+    return $r('app.color.warning'); // acquiring fix, or connection in progress
+  }
+
+  private gpsLightLabel(): string {
+    if (this.anyCameraReady()) {
+      return this.gpsHasFix ? '定位下发中' : '正在获取';
+    }
+    return '正在连接';
   }
 
   @Builder savedDevicesSection() {
@@ -308,7 +350,7 @@ export struct ConnectionPage {
                   }
                 }
               })
-            }, (cam: PairedCamera) => `${cam.name}_${cam.keepAlive}_${this.refreshTick}`)
+            }, (cam: PairedCamera) => `${cam.name}_${this.revertTick}`)
           }
           .width('100%')
           .scrollBar(BarState.Off)

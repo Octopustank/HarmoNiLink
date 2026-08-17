@@ -35,15 +35,34 @@ export class PreferencesRepository {
   private cache: PairedCamera[] = []; // in-memory cache for sync access
   private controllerNameCache: string = '';
   private connectHintShownCache: boolean = false; // one-time first-connect hint shown
+  // Serialized disk writes. The CACHE is the single source of truth: it is
+  // updated synchronously on every mutation, and queued tasks merely snapshot
+  // it to disk. This kills the old read-disk-modify-write race where a slow
+  // async save could overwrite the cache (and disk) with a STALE snapshot —
+  // e.g. reverting a fresh keepAlive=true to false and snapping the UI toggle
+  // off while the link stayed up.
+  private saveQueue: Promise<void> = Promise.resolve();
 
   async init(context: common.UIAbilityContext): Promise<void> {
     try {
       this.store = await preferences.getPreferences(context, STORE_NAME);
-      this.cache = await this.loadSavedCameras();
+      // One-time disk load → becomes the cache (the single source of truth
+      // from here on; all mutations go through saveCameraSync/removeCamera).
+      const json = await this.store.get(KEY_CAMERAS, '[]') as string;
+      const arr: SerializedCamera[] = JSON.parse(json);
+      this.cache = arr.map((s) => new PairedCamera(
+        s.name, s.address, s.addressType,
+        s.device, s.nonce, s.controllerName,
+        s.keepAlive ?? true // Phase 3: connection toggle defaults ON for legacy records
+      ));
       const saved = await this.store.get(KEY_CONTROLLER_NAME, '') as string;
       if (saved) this.controllerNameCache = saved; // don't overwrite a freshly generated name
       this.connectHintShownCache = await this.store.get(KEY_CONNECT_HINT_SHOWN, false) as boolean;
       hilog.info(0x0001, TAG, `[CHECKPOINT] PreferencesRepository initialized (${this.cache.length} cameras)`);
+      for (const c of this.cache) {
+        hilog.info(0x0001, TAG,
+          `[CHECKPOINT]   saved: name='${c.name}' addr=${c.address} keepAlive=${c.keepAlive}`);
+      }
     } catch (err) {
       hilog.error(0x0001, TAG, `[CHECKPOINT] PreferencesRepository init ERROR: ${JSON.stringify(err)}`);
     }
@@ -111,89 +130,55 @@ export class PreferencesRepository {
   }
 
   /**
-   * Save camera to memory cache immediately, then persist to disk asynchronously.
-   * This prevents data loss if the app crashes before the async write completes.
+   * Save camera: update the in-memory cache immediately (with a CLONE so the
+   * cache never shares mutable refs with callers), then persist a snapshot of
+   * the whole cache asynchronously through the serialized write queue.
    */
   saveCameraSync(camera: PairedCamera): void {
-    // Update in-memory cache immediately
-    const idx = this.cache.findIndex((c) => c.name === camera.name);
+    const clone = new PairedCamera(
+      camera.name, camera.address, camera.addressType,
+      camera.device, camera.nonce, camera.controllerName, camera.keepAlive
+    );
+    const idx = this.cache.findIndex((c) => c.name === clone.name);
     if (idx >= 0) {
-      this.cache[idx] = camera;
+      this.cache[idx] = clone;
     } else {
-      this.cache.push(camera);
+      this.cache.push(clone);
     }
-    // Persist asynchronously
-    this.saveCamera(camera);
-  }
-
-  async loadSavedCameras(): Promise<PairedCamera[]> {
-    if (!this.store) {
-      hilog.warn(0x0001, TAG, 'loadSavedCameras: store not initialized');
-      return [];
-    }
-
-    try {
-      const json = await this.store.get(KEY_CAMERAS, '[]') as string;
-      const arr: SerializedCamera[] = JSON.parse(json);
-      const cameras = arr.map((s) => new PairedCamera(
-        s.name, s.address, s.addressType,
-        s.device, s.nonce, s.controllerName,
-        s.keepAlive ?? true // Phase 3: connection toggle defaults ON
-      ));
-      hilog.info(0x0001, TAG,
-        `[CHECKPOINT] loadSavedCameras: loaded ${cameras.length} cameras`);
-      for (const c of cameras) {
-        hilog.info(0x0001, TAG,
-          `[CHECKPOINT]   saved: name='${c.name}' addr=${c.address} dev=0x${c.device.toString(16)}`);
-      }
-      return cameras;
-    } catch (err) {
-      hilog.error(0x0001, TAG, `loadSavedCameras ERROR: ${JSON.stringify(err)}`);
-      return [];
-    }
+    this.enqueueSnapshotWrite();
   }
 
   async saveCamera(camera: PairedCamera): Promise<void> {
-    if (!this.store) {
-      hilog.warn(0x0001, TAG, 'saveCamera: store not ready, queuing for later');
-      // Retry in 1 second
-      setTimeout(() => { this.saveCamera(camera); }, 1000);
-      return;
-    }
-
-    try {
-      const existing = await this.loadSavedCameras();
-      // Replace if exists (by name), otherwise add
-      const idx = existing.findIndex((c) => c.name === camera.name);
-      if (idx >= 0) {
-        existing[idx] = camera;
-      } else {
-        existing.push(camera);
-      }
-      const json = JSON.stringify(existing);
-      await this.store.put(KEY_CAMERAS, json);
-      await this.store.flush();
-      this.cache = existing; // update cache
-      hilog.info(0x0001, TAG,
-        `[CHECKPOINT] saveCamera: saved '${camera.name}' (${existing.length} total)`);
-    } catch (err) {
-      hilog.error(0x0001, TAG, `saveCamera ERROR: ${JSON.stringify(err)}`);
-    }
+    this.saveCameraSync(camera);
   }
 
   async removeCamera(name: string): Promise<void> {
-    if (!this.store) return;
+    const filtered = this.cache.filter((c) => c.name !== name);
+    if (filtered.length === this.cache.length) return;
+    this.cache = filtered;
+    this.enqueueSnapshotWrite();
+    hilog.info(0x0001, TAG, `[CHECKPOINT] removeCamera: removed '${name}' (${filtered.length} remaining)`);
+  }
 
+  /** Queue a strictly-ordered snapshot write of the current cache. */
+  private enqueueSnapshotWrite(): void {
+    const run = (): Promise<void> => this.writeSnapshot();
+    this.saveQueue = this.saveQueue.then(run, run);
+  }
+
+  private async writeSnapshot(): Promise<void> {
+    if (!this.store) {
+      // Store not initialized yet (very early mutation) — retry shortly.
+      await new Promise<void>((resolve) => { setTimeout(resolve, 500); });
+      return this.writeSnapshot();
+    }
     try {
-      const existing = await this.loadSavedCameras();
-      const filtered = existing.filter((c) => c.name !== name);
-      const json = JSON.stringify(filtered);
+      const json = JSON.stringify(this.cache);
       await this.store.put(KEY_CAMERAS, json);
       await this.store.flush();
-      this.cache = filtered; // sync memory cache
-      hilog.info(0x0001, TAG, `[CHECKPOINT] removeCamera: removed '${name}' (${filtered.length} remaining)`);
+      hilog.info(0x0001, TAG, `[CHECKPOINT] prefs snapshot persisted (${this.cache.length} cameras)`);
     } catch (err) {
-      hilog.error(0x0001, TAG, `removeCamera ERROR: ${JSON.stringify(err)}`);
+      hilog.error(0x0001, TAG, `writeSnapshot ERROR: ${JSON.stringify(err)}`);
     }
   }
 }
