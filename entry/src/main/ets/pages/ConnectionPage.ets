@@ -472,7 +472,7 @@ export struct ConnectionPage {
           if (this.isPairingOwner()) { this.pairingNotice() }
           this.gpsCard()
 
-          Text('连接开关打开的相机将保持连接，断开后自动重连，直到关闭开关。\n左滑设备卡片可删除配对。\n需要后台下发数据，请在系统设置中允许始终定位。')
+          Text('连接开关打开的相机将保持连接，断开后自动重连。\n左滑设备卡片可删除配对。\n需要后台下发数据，请在系统设置中允许始终定位。')
             .fontSize(11).fontColor($r('app.color.text_secondary'))
             .width('100%').textAlign(TextAlign.Center).padding({ left: 4, right: 4 })
             .margin({ top: 12 })
