@@ -550,7 +550,23 @@ export class CameraService {
   }
 
   async removeCamera(name: string): Promise<void> {
+    // Remove the record FIRST, then abort the session: disconnect() broadcasts
+    // an Idle event synchronously, and ConnectionPage's reconcile would see the
+    // still-saved record + an Idle session and immediately RESTART the connect
+    // the user just asked to delete (ghost reconnect race).
     await this.prefs.removeCamera(name);
+    const s = this.sessions.get(name);
+    if (s) {
+      s.cancelReconnectTimer();
+      // Kills the in-flight connect/pair (watchdog + owner + shared-scan watch
+      // + GATT link) and sets Idle so the stale guard swallows any late BLE
+      // callbacks — including a connect that succeeds after the delete.
+      s.disconnect();
+    }
+    // Drop the session entirely: a re-pair of the same camera must start from
+    // a fresh session, not inherit this one's leftovers.
+    this.sessions.delete(name);
+    this.refreshGps();
   }
 
   // ==================== Lifecycle (App Background/Foreground) ====================

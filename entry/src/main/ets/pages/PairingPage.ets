@@ -20,7 +20,6 @@ export struct PairingPage {
   @State discoveredCameras: DiscoveredCamera[] = [];
   @State showOthers: boolean = false; // "其他设备" collapsed section
   @State pairingTarget: string = '';
-  @State titleSub: string = '';
   @State statusLabel: string = '准备就绪';
   @State owner: string = 'none'; // synced from cameraService — drives @State re-render
   @State state: ConnectionState = ConnectionState.Idle; // reactive mirror for button states
@@ -58,19 +57,19 @@ export struct PairingPage {
       const s = event.state;
       this.state = s;
       if (this.isPairingTabOwner()) {
-        // Our operation — show detailed progress
+        // Our operation — show detailed progress in the title-bar subtitle
         if (s === ConnectionState.Scanning) {
-          this.titleSub = '正在扫描设备…'; this.statusLabel = '正在搜索附近的相机…';
+          this.statusLabel = '正在搜索附近的相机…';
         } else if (s === ConnectionState.Connecting) {
-          this.titleSub = ''; this.statusLabel = `正在连接 ${this.pairingTarget}…`;
+          this.statusLabel = `正在连接 ${this.pairingTarget}…`;
         } else if (s === ConnectionState.Discovering) {
-          this.titleSub = ''; this.statusLabel = '正在发现服务…';
+          this.statusLabel = '正在发现服务…';
         } else if (s === ConnectionState.Pairing) {
-          this.titleSub = ''; this.statusLabel = `正在进行配对 (${Math.min(cameraService.getPairingStep(), 4)}/4)…`;
+          this.statusLabel = `正在进行配对 (${Math.min(cameraService.getPairingStep(), 4)}/4)…`;
         } else if (s === ConnectionState.Bonding) {
-          this.titleSub = ''; this.statusLabel = '正在经典蓝牙绑定…';
+          this.statusLabel = '正在经典蓝牙绑定…';
         } else if (s === ConnectionState.Idle) {
-          this.titleSub = ''; this.stopPolling();
+          this.stopPolling();
           if (this.pairingTarget && cameraService.getPairingStep() === 6) {
             // Genuine pairing completion (handshake finished) — show success
             const target = this.pairingTarget;
@@ -87,14 +86,13 @@ export struct PairingPage {
             this.statusLabel = '准备就绪';
           }
         } else if (s === ConnectionState.Error) {
-          this.titleSub = ''; this.statusLabel = '配对出错，请重试'; this.pairingTarget = '';
+          this.statusLabel = '配对出错，请重试'; this.pairingTarget = '';
           this.stopPolling();
         }
       } else if (this.isConnectionTabBusy()) {
-        this.titleSub = ''; this.statusLabel = '连接页操作中'; this.stopPolling();
+        this.statusLabel = '连接页操作中'; this.stopPolling();
         this.pairingTarget = '';
       } else {
-        this.titleSub = '';
         this.statusLabel = s === ConnectionState.Error ? '配对出错，请重试' : '准备就绪';
         this.pairingTarget = ''; // safety net — never leave a stale target locked
         this.stopPolling();
@@ -244,18 +242,6 @@ export struct PairingPage {
         Column() {
           Blank().height(56)
 
-          // Status card
-          Row() {
-            Circle({ width: 8, height: 8 })
-              .fill(this.isPairingTabOwner() ? $r('app.color.warning')
-                : this.isConnectionTabBusy() ? $r('app.color.warning') : $r('app.color.text_secondary'))
-            Text(this.statusLabel)
-              .fontSize(13).fontColor($r('app.color.text_secondary')).margin({ left: 8 })
-          }
-          .width('100%').padding({ left: 16, right: 16, top: 12, bottom: 12 })
-          .borderRadius(16).backgroundColor($r('app.color.card_background'))
-          .shadow({ radius: 12, color: '#0D000000', offsetY: 2 })
-
           Button(this.scanButtonLabel())
             .fontSize(15).fontWeight(FontWeight.Medium).height(44).borderRadius(22)
             .backgroundColor(this.scanButtonColor()).fontColor(Color.White)
@@ -320,7 +306,7 @@ export struct PairingPage {
     .backgroundColor($r('app.color.page_background'))
     .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
     .titleBar({
-      content: { title: { mainTitle: '配对', subTitle: this.titleSub || undefined } },
+      content: { title: { mainTitle: '配对', subTitle: this.statusLabel || undefined } },
       style: {
         scrollEffectOpts: { scrollEffectType: ScrollEffectType.GRADIENT_BLUR },
         systemMaterialEffect: {

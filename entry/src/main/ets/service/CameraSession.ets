@@ -173,7 +173,8 @@ export class CameraSession {
       `[CHECKPOINT] reconnect scan found: newAddr=${found.deviceId} savedAddr=${camera.address} devMatch=${devMatch}`);
     const updated = new PairedCamera(
       camera.name, found.deviceId, camera.addressType,
-      camera.device, camera.nonce, camera.controllerName
+      camera.device, camera.nonce, camera.controllerName,
+      camera.keepAlive // preserve the user's connection toggle on address refresh
     );
     this.savedCamera = updated;
     this.hub.prefs.saveCameraSync(updated);

@@ -99,10 +99,6 @@ export struct ConnectionPage {
     return this.cameraStatuses.find((c) => c.name === name);
   }
 
-  private hasReadyCamera(): boolean {
-    return this.cameraStatuses.some((c) => c.state === ConnectionState.Ready);
-  }
-
   private syncGps(): void {
     const gps = cameraService.gpsData;
     this.gpsLat = gps.latitude.toFixed(6);
@@ -211,10 +207,8 @@ export struct ConnectionPage {
       ]
     }).then((result) => {
       if (result.index === 1) {
-        // Disconnect first if this camera is connected
-        if (cameraService.isCameraConnected(cam.name)) {
-          cameraService.disconnect(cam.name);
-        }
+        // removeCamera() aborts any in-flight connect/pair itself (no ghost
+        // connection keeps running after the record is gone).
         cameraService.removeCamera(cam.name).then(() => this.loadSavedCameras())
           .catch((e: Error) => hilog.warn(0x0001, TAG, `Forget err: ${e.message}`));
       }
@@ -271,9 +265,13 @@ export struct ConnectionPage {
     .margin({ bottom: 12 })
   }
 
+  /** Always-present GPS card — stable layout, no jump on connect/disconnect.
+   * Values stay at "--"/未定位 placeholders until a link + fix arrives. */
   @Builder gpsCard() {
     Column() {
       Text('GPS 信息').fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary')).width('100%').margin({ bottom: 10 })
+      GpsRow({ label: '配对名称', value: this.controllerName })
+      Divider().strokeWidth(0.5).color($r('app.color.divider')).margin({ top: 4, bottom: 6 })
       GpsRow({ label: '纬度', value: this.gpsLat })
       GpsRow({ label: '经度', value: this.gpsLon })
       GpsRow({ label: '海拔', value: this.gpsAlt })
@@ -293,25 +291,31 @@ export struct ConnectionPage {
       Text('已配对设备').fontSize(14).fontColor($r('app.color.text_secondary'))
         .margin({ left: 12, bottom: 8, top: 28 }).alignSelf(ItemAlign.Start).fontWeight(500)
       if (this.savedCameras.length > 0) {
-        List({ space: 8 }) {
-          ForEach(this.savedCameras, (cam: PairedCamera) => {
-            HdsListItem({
-              customItemBuilder: (): void => { this.cameraRow(cam); },
-              swipeActionOptions: {
-                deleteIconOptions: {
-                  onAction: () => { this.onForget(cam); }
-                },
-                fullDeleteOptions: {
-                  isFullDelete: true, // swipe through the card to delete
-                  onFullDeleteAction: () => { this.onForget(cam); }
+        // One table card: rows separated by dividers inside a single card
+        // (swipe-to-delete is per row via HdsListItem).
+        Column() {
+          List() {
+            ForEach(this.savedCameras, (cam: PairedCamera, i: number) => {
+              HdsListItem({
+                customItemBuilder: (): void => { this.cameraRow(cam, i < this.savedCameras.length - 1); },
+                swipeActionOptions: {
+                  deleteIconOptions: {
+                    onAction: () => { this.onForget(cam); }
+                  },
+                  fullDeleteOptions: {
+                    isFullDelete: true, // swipe through the card to delete
+                    onFullDeleteAction: () => { this.onForget(cam); }
+                  }
                 }
-              }
-            })
-          }, (cam: PairedCamera) => `${cam.name}_${cam.keepAlive}_${this.refreshTick}`)
+              })
+            }, (cam: PairedCamera) => `${cam.name}_${cam.keepAlive}_${this.refreshTick}`)
+          }
+          .width('100%')
+          .scrollBar(BarState.Off)
+          .edgeEffect(EdgeEffect.None)
         }
-        .width('100%')
-        .scrollBar(BarState.Off)
-        .edgeEffect(EdgeEffect.None)
+        .width('100%').backgroundColor($r('app.color.card_background')).borderRadius(16).padding(4)
+        .shadow({ radius: 12, color: '#0D000000', offsetY: 2 })
       } else {
         Column() { Text('暂无已配对设备').fontSize(13).fontColor($r('app.color.text_secondary')).textAlign(TextAlign.Center) }
         .width('100%').height(48).justifyContent(FlexAlign.Center).backgroundColor($r('app.color.card_background')).borderRadius(16)
@@ -320,28 +324,33 @@ export struct ConnectionPage {
     }.width('100%').alignItems(HorizontalAlign.Start)
   }
 
-  /** One paired-camera card: name + live state on the left, connection toggle on the right. */
-  @Builder cameraRow(cam: PairedCamera) {
-    Row() {
-      Column() {
-        Text(cam.name).fontSize(16).fontWeight(500).fontColor($r('app.color.text_primary'))
-          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-        Row({ space: 6 }) {
-          Circle({ width: 6, height: 6 }).fill(this.stateColor(this.getCameraStatus(cam.name)?.state ?? ConnectionState.Idle))
-          Text(this.cameraStateText(cam))
-            .fontSize(11).fontColor(this.stateColor(this.getCameraStatus(cam.name)?.state ?? ConnectionState.Idle))
+  /** One table row: name + live state on the left, connection toggle on the
+   * right; optional trailing divider separates rows inside the shared card. */
+  @Builder cameraRow(cam: PairedCamera, withDivider: boolean) {
+    Column() {
+      Row() {
+        Column() {
+          Text(cam.name).fontSize(16).fontWeight(500).fontColor($r('app.color.text_primary'))
             .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-        }.margin({ top: 3 })
-      }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-      Toggle({ type: ToggleType.Switch, isOn: cam.keepAlive })
-        .enabled(!this.isPairingOwner())
-        .onChange((on: boolean) => { this.onConnectToggle(cam, on); })
+          Row({ space: 6 }) {
+            Circle({ width: 6, height: 6 }).fill(this.stateColor(this.getCameraStatus(cam.name)?.state ?? ConnectionState.Idle))
+            Text(this.cameraStateText(cam))
+              .fontSize(11).fontColor(this.stateColor(this.getCameraStatus(cam.name)?.state ?? ConnectionState.Idle))
+              .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          }.margin({ top: 3 })
+        }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+        Toggle({ type: ToggleType.Switch, isOn: cam.keepAlive })
+          .enabled(!this.isPairingOwner())
+          .onChange((on: boolean) => { this.onConnectToggle(cam, on); })
+      }
+      .width('100%')
+      .padding({ left: 12, right: 12, top: 10, bottom: 10 })
+      .alignItems(VerticalAlign.Center)
+
+      if (withDivider) {
+        Divider().strokeWidth(0.5).color($r('app.color.divider')).margin({ left: 12, right: 12 })
+      }
     }
-    .width('100%')
-    .padding({ left: 16, right: 16, top: 12, bottom: 12 })
-    .alignItems(VerticalAlign.Center)
-    .borderRadius(16).backgroundColor($r('app.color.card_background'))
-    .shadow({ radius: 12, color: '#0D000000', offsetY: 2 })
   }
 
   @Builder logSection() {
@@ -378,18 +387,13 @@ export struct ConnectionPage {
           Blank().height(56)
 
           if (this.isPairingOwner()) { this.pairingNotice() }
-          if (this.hasReadyCamera()) { this.gpsCard() }
+          this.gpsCard()
 
           Text('连接开关打开的相机将保持连接，断开后自动重连，直到关闭开关。\n左滑设备卡片可删除配对。\n需要后台下发数据，请在系统设置中允许始终定位。')
             .fontSize(11).fontColor($r('app.color.text_secondary'))
             .width('100%').textAlign(TextAlign.Center).padding({ left: 4, right: 4 })
             .margin({ top: 12 })
             .lineHeight(16)
-
-          Text(`本设备配对名称：${this.controllerName}`)
-            .fontSize(11).fontColor($r('app.color.text_secondary'))
-            .width('100%').textAlign(TextAlign.Center).padding({ left: 4, right: 4 })
-            .margin({ top: 10 })
 
           this.savedDevicesSection()
           Text('找不到相机？请前往「配对」页面搜索设备')
