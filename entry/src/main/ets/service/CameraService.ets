@@ -206,10 +206,19 @@ export class CameraService {
     this.prefs.saveMultiCamWarned();
   }
 
+  /** Number of cameras whose connection toggle is ON — INTENT, not link
+   * state: a camera mid-connect counts too, so rapidly flipping several
+   * switches cannot slip past the warning while nothing is Ready yet. */
+  getKeepAliveCount(): number {
+    return this.prefs.loadSavedCamerasSync().filter((c: PairedCamera) => c.keepAlive).length;
+  }
+
   /** True when opening ANOTHER connection would go beyond the field-tested
-   * count (2) — the UI warns (dismissable) before connecting. */
+   * count — the UI warns (dismissable) before connecting. Based on toggle
+   * intent: the in-flight camera's own flag is persisted only inside
+   * startPendingConnect(), so the count here is the OTHERS already ON. */
   shouldWarnMultiCam(): boolean {
-    return this.getConnectedCount() >= MULTI_CAM_WARN_THRESHOLD && !this.wasMultiCamWarned();
+    return this.getKeepAliveCount() >= MULTI_CAM_WARN_THRESHOLD && !this.wasMultiCamWarned();
   }
 
   // ==================== Permissions ====================
