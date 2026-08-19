@@ -201,7 +201,10 @@ export class CameraSession {
       if (this.state === ConnectionState.Scanning && !this.hub.isPairingActive()) {
         this.hub.unwatchReconnect(camera.name);
         hilog.info(0x0001, TAG, `${this.slog()}reconnect scan timeout, using saved address`);
-        this.connectToDevice(camera.address);
+        // Saved-address POKE: wake the camera into re-advertising, not a real
+        // connect. A stale address hangs silently — give it only 30s, not the
+        // full devMatch 60s (its failure is expected, don't make the user wait).
+        this.connectToDevice(camera.address, 30000);
       }
     }, 10000);
     return true;
@@ -331,7 +334,16 @@ export class CameraSession {
 
   // ==================== Private — connection / handshake ====================
 
-  private connectToDevice(deviceId: string): void {
+  /**
+   * @param deviceId BLE address to connect.
+   * @param connectTimeoutMs watchdog for THIS connect. Default 60s for a
+   *   devMatch/paired connect (a slow-waking camera — D5600 — can take ~30s to
+   *   establish the link, then MTU + service discovery). The saved-address
+   *   POKE (scan fell back to a possibly-stale address) passes 30s: its whole
+   *   point is to wake the camera into re-advertising, not to actually connect
+   *   — a stale address hangs silently, so cap that doomed wait shorter.
+   */
+  private connectToDevice(deviceId: string, connectTimeoutMs: number = 60000): void {
     this.attemptStart = Date.now(); // [TIMING] anchor for this attempt
     this.setState(ConnectionState.Connecting, `正在连接 ${deviceId}…`);
     this.pairingStep = 0;
@@ -339,9 +351,6 @@ export class CameraSession {
 
     // Watchdog: if the device never responds (non-Nikon device, out of range),
     // abort instead of hanging forever. Cancelled on terminal states.
-    // 60s: a sleeping camera can take ~30s just to establish the connection
-    // (per the M5Stack reference), then MTU (up to 5s) + service-discovery
-    // retries — 35s could kill a legitimate slow wake-up reconnect.
     this.clearConnectTimeout();
     this.connectTimeoutId = setTimeout(() => {
       const st = this.state;
@@ -349,7 +358,7 @@ export class CameraSession {
         || st === ConnectionState.Error || st === ConnectionState.Bonding) {
         return; // already settled — nothing to abort
       }
-      hilog.warn(0x0001, TAG, `${this.slog()}Connect watchdog fired (60s) — aborting stalled pairing`);
+      hilog.warn(0x0001, TAG, `${this.slog()}Connect watchdog fired (${connectTimeoutMs}ms) — aborting stalled connect`);
       hilog.info(0x0001, TAG, `${this.slog()}[TIMING] elapsed=${this.timingElapsed()}ms cause=watchdog`);
       this.linkLostRootMarked = true;
       hilog.warn(0x0001, TAG, `${this.slog()}LINK LOST [ROOT] cause=watchdog`);
@@ -363,7 +372,7 @@ export class CameraSession {
       // Route through the unified recovery path instead of dying on Error —
       // auto-reconnect keeps trying while the camera is unavailable.
       this.handleLinkLost();
-    }, 60000);
+    }, connectTimeoutMs);
 
     this.bleClient.connect(deviceId, (event: BleEvent) => {
       this.handleBleEvent(event);
