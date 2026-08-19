@@ -185,6 +185,9 @@ export class CameraService {
       const s = this.sessions.get(name);
       if (s) s.onKeepAliveDisabled();
     }
+    // Turning ON creates reconnect intent — the ContinuousTask must start now
+    // (before any camera is Ready), not only when the GPS ticker spins up.
+    this.reconcileBackgroundTask();
   }
 
   /** True if the first-connect hint (camera "关闭时发送" + keep-alive) has never been shown. */
@@ -456,6 +459,29 @@ export class CameraService {
       this.ensureGpsRunning();
     } else {
       this.stopGpsLoop();
+    }
+    // The GPS ticker and the ContinuousTask have DIFFERENT lifecycles: the
+    // ticker needs a Ready session to write to, but the ContinuousTask must
+    // outlive it — a keep-alive camera in reconnect (backoff/scan/connect) has
+    // no Ready session, yet needs the process kept alive or the reconnect
+    // timer can never fire (suspended app → no reconnection, ever).
+    this.reconcileBackgroundTask();
+  }
+
+  /** True while any camera has its connection toggle ON — the INTENT alone
+   * warrants the ContinuousTask (see reconcileBackgroundTask). */
+  hasKeepAliveIntent(): boolean {
+    return this.prefs.loadSavedCamerasSync().some((c: PairedCamera) => c.keepAlive);
+  }
+
+  /** Start/stop the ContinuousTask to match current connection intent:
+   * keep it while any camera is Ready (GPS writing) OR has keep-alive intent
+   * (reconnecting in the background); stop it only when neither holds. */
+  private reconcileBackgroundTask(): void {
+    const need = this.getReadySessions().length > 0 || this.hasKeepAliveIntent();
+    if (need) {
+      this.startBackgroundTask();
+    } else {
       this.stopBackgroundTask();
     }
   }
@@ -641,6 +667,9 @@ export class CameraService {
       this.stopGpsLoop();
       this.startGpsLoop(5000); // switch to slow background interval
     }
+    // A keep-alive camera mid-reconnect has no Ready session — ensure the
+    // ContinuousTask is up so the background reconnect survives suspension.
+    this.reconcileBackgroundTask();
   }
 
   onAppForeground(): void {
@@ -650,6 +679,7 @@ export class CameraService {
       this.stopGpsLoop();
       this.startGpsLoop(); // restore default 1500ms interval
     }
+    this.reconcileBackgroundTask();
   }
 
   // ==================== Background Task ====================

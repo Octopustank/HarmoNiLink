@@ -86,6 +86,11 @@ export class CameraSession {
   // off→on cycle can't leave a stale timer aimed at the new attempt.
   private scanFallbackTimerId: number | null = null;
 
+  // Timestamp of the CURRENT connect() attempt — [TIMING] logs measure the
+  // attempt lifecycle from connect() to Ready/failure, so a silently-hanging
+  // connect (stale address, unresponsive camera) is attributable by elapsed.
+  private attemptStart: number = 0;
+
   // Pending auto-reconnect timer — dedupes scheduleReconnect() calls
   private reconnectTimerId: number | null = null;
   private reconnectRetries: number = 0; // backoff counter
@@ -105,6 +110,11 @@ export class CameraSession {
   /** Per-session log prefix — with N cameras the log must say WHO did it. */
   private slog(): string {
     return this.cameraName !== '' ? `[${this.cameraName}] ` : '';
+  }
+
+  /** Elapsed ms since the current connect() attempt, or -1 if not started. */
+  private timingElapsed(): number {
+    return this.attemptStart > 0 ? Date.now() - this.attemptStart : -1;
   }
 
   // ==== Getters / accessors used by the Hub's public API ====
@@ -322,6 +332,7 @@ export class CameraSession {
   // ==================== Private — connection / handshake ====================
 
   private connectToDevice(deviceId: string): void {
+    this.attemptStart = Date.now(); // [TIMING] anchor for this attempt
     this.setState(ConnectionState.Connecting, `正在连接 ${deviceId}…`);
     this.pairingStep = 0;
     this.currentStage1 = null;
@@ -339,6 +350,7 @@ export class CameraSession {
         return; // already settled — nothing to abort
       }
       hilog.warn(0x0001, TAG, `${this.slog()}Connect watchdog fired (60s) — aborting stalled pairing`);
+      hilog.info(0x0001, TAG, `${this.slog()}[TIMING] elapsed=${this.timingElapsed()}ms cause=watchdog`);
       this.linkLostRootMarked = true;
       hilog.warn(0x0001, TAG, `${this.slog()}LINK LOST [ROOT] cause=watchdog`);
       this.bleClient.disconnect();
@@ -418,6 +430,7 @@ export class CameraSession {
       if (!this.linkLostRootMarked) {
         hilog.warn(0x0001, TAG, `${this.slog()}LINK LOST cause=disconnected`);
       }
+      hilog.info(0x0001, TAG, `${this.slog()}[TIMING] elapsed=${this.timingElapsed()}ms cause=disconnected`);
       this.handleLinkLost();
     } else if (event instanceof BleError) {
       hilog.error(0x0001, TAG, `${this.slog()}BLE Error: ${event.message}`);
@@ -435,6 +448,7 @@ export class CameraSession {
       }
       this.linkLostRootMarked = true;
       hilog.warn(0x0001, TAG, `${this.slog()}LINK LOST [ROOT] cause=${cause}`);
+      hilog.info(0x0001, TAG, `${this.slog()}[TIMING] elapsed=${this.timingElapsed()}ms cause=${cause}`);
       // Pair-target hint: reaching Pairing means connect + service discovery
       // both succeeded — a PAIR write failure at that point almost always
       // means the camera is not treating this link as a pairing target (it is
@@ -872,6 +886,7 @@ export class CameraSession {
       this.setState(ConnectionState.Idle, '');
       this.hub.releaseOwnership(); // after setState so listener sees owner='pairing' for dialog
     } else {
+      hilog.info(0x0001, TAG, `${this.slog()}[TIMING] elapsed=${this.timingElapsed()}ms cause=ready`);
       this.setState(ConnectionState.Ready,
         '已连接');
       this.hub.refreshGps();
@@ -899,6 +914,7 @@ export class CameraSession {
     // RECONNECT mode: BLE is still connected, go Ready + GPS
     // PAIR mode: handled by checkBondedAndFinish → classic bonding → finishBonding
     if (!this.isPairMode) {
+      hilog.info(0x0001, TAG, `${this.slog()}[TIMING] elapsed=${this.timingElapsed()}ms cause=ready`);
       this.setState(ConnectionState.Ready, '已连接');
       this.hub.refreshGps();
       // Connection ops hold no Hub mutex — nothing to release here (P0-1).
