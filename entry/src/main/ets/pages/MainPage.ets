@@ -30,8 +30,12 @@ struct MainPage {
     hilog.info(0x0001, TAG, '[CHECKPOINT] MainPage aboutToAppear');
     const ctx = this.getUIContext().getHostContext();
     if (ctx) {
-      cameraService.setContext(ctx as common.UIAbilityContext);
+      cameraService.setContext(ctx as common.UIAbilityContext); // idempotent — prefs already init'd in onCreate
     }
+    // Tab persistence: reopen on the last-visited tab. prefs.init was started
+    // in EntryAbility.onCreate (well before this render), so this synchronous
+    // read is already settled — no deferred re-read / flash-of-wrong-tab.
+    this.currentIndex = cameraService.loadLastTabIndex();
   }
 
   @Builder tabBar(index: number, label: string, icon: Resource) {
@@ -75,7 +79,10 @@ struct MainPage {
           materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE
         }
       })
-      .onChange((index: number) => { this.currentIndex = index; })
+      .onChange((index: number) => {
+        this.currentIndex = index;
+        cameraService.saveLastTabIndex(index);
+      })
       .width('100%')
       .height('100%')
       .backgroundColor($r('app.color.page_background'))

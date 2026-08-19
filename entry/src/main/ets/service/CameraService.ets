@@ -102,6 +102,7 @@ export class CameraService {
   // ==== Private shared state ====
 
   private stateListeners: StateListener[] = [];
+  private devicesChangedListeners: Array<() => void> = [];
   // Sessions keyed by camera name — multiple in Phase 1.
   private sessions: Map<string, CameraSession> = new Map();
   // Reconnect pool: cameras waiting for their BLE address to be found by ONE
@@ -153,6 +154,24 @@ export class CameraService {
     };
   }
 
+  /** Subscribe to paired-device-list changes (pair saved / camera removed).
+   * Fired so the Pairing page can re-render its 已配对 markers — a live prefs
+   * read that ForEach only refreshes when its key changes. */
+  onDevicesChanged(listener: () => void): () => void {
+    this.devicesChangedListeners.push(listener);
+    return () => {
+      const idx = this.devicesChangedListeners.indexOf(listener);
+      if (idx !== -1) this.devicesChangedListeners.splice(idx, 1);
+    };
+  }
+
+  /** Notify subscribers that the paired-device set changed (save / remove). */
+  notifyDevicesChanged(): void {
+    for (let i = 0; i < this.devicesChangedListeners.length; i++) {
+      this.devicesChangedListeners[i]();
+    }
+  }
+
   getOwner(): OperationOwner { return this.owner; }
 
   getAbilityContext(): common.UIAbilityContext | null { return this.abilityContext; }
@@ -163,7 +182,13 @@ export class CameraService {
   }
 
   setContext(ctx: common.UIAbilityContext): void {
+    // Idempotent: EntryAbility.onCreate calls this early so prefs.init() can
+    // finish before MainPage reads the persisted tab index (no flash-of-wrong-
+    // tab). MainPage still calls it (to refresh abilityContext); only the FIRST
+    // call triggers the one-time satellite subscribe + async prefs load.
+    const first = this.abilityContext === null;
     this.abilityContext = ctx;
+    if (!first) return;
     // Satellite subscription is INDEPENDENT of camera connection: the GNSS
     // satellite count is a device-level reading that must NOT reset to "--"
     // when all cameras drop. Subscribe once at startup, keep it alive.
@@ -225,6 +250,22 @@ export class CameraService {
    * startPendingConnect(), so the count here is the OTHERS already ON. */
   shouldWarnMultiCam(): boolean {
     return this.getKeepAliveCount() >= MULTI_CAM_WARN_THRESHOLD && !this.wasMultiCamWarned();
+  }
+
+  // ==================== Tab 持久化 + 关于 ====================
+
+  /** Last selected tab index, persisted so the app reopens on the same page. */
+  loadLastTabIndex(): number {
+    return this.prefs.loadLastTabIndexSync();
+  }
+
+  saveLastTabIndex(index: number): void {
+    this.prefs.saveLastTabIndex(index);
+  }
+
+  /** Reset the one-time hints so they show again (关于 → 重置引导). */
+  resetOnboarding(): void {
+    this.prefs.resetOnboarding();
   }
 
   // ==================== Permissions ====================
@@ -660,6 +701,8 @@ export class CameraService {
     // a fresh session, not inherit this one's leftovers.
     this.sessions.delete(name);
     this.refreshGps();
+    // Pairing page must drop the deleted camera's 已配对 marker.
+    this.notifyDevicesChanged();
   }
 
   // ==================== Lifecycle (App Background/Foreground) ====================

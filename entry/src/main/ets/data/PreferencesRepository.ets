@@ -18,6 +18,7 @@ const KEY_CAMERAS = 'paired_cameras';
 const KEY_CONTROLLER_NAME = 'controller_name';
 const KEY_CONNECT_HINT_SHOWN = 'connect_hint_shown';
 const KEY_MULTI_CAM_WARNED = 'multi_cam_warned'; // beyond-N-cameras warning dismissed
+const KEY_LAST_TAB = 'last_tab_index'; // last selected tab (配对/连接), persisted
 // Suffix alphabet — no 0/O/1/I to avoid confusion when reading the name on the camera
 const SUFFIX_CHARS: string = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
 
@@ -36,6 +37,7 @@ export class PreferencesRepository {
   private controllerNameCache: string = '';
   private connectHintShownCache: boolean = false; // one-time first-connect hint shown
   private multiCamWarnedCache: boolean = false; // beyond-N-cameras warning "don't show again"
+  private lastTabIndexCache: number = 0; // last selected tab
   // Serialized disk writes. The CACHE is the single source of truth: it is
   // updated synchronously on every mutation, and queued tasks merely snapshot
   // it to disk. This kills the old read-disk-modify-write race where a slow
@@ -72,6 +74,7 @@ export class PreferencesRepository {
       if (saved) this.controllerNameCache = saved; // don't overwrite a freshly generated name
       this.connectHintShownCache = await this.store.get(KEY_CONNECT_HINT_SHOWN, false) as boolean;
       this.multiCamWarnedCache = await this.store.get(KEY_MULTI_CAM_WARNED, false) as boolean;
+      this.lastTabIndexCache = await this.store.get(KEY_LAST_TAB, 0) as number;
       hilog.info(0x0001, TAG, `[CHECKPOINT] PreferencesRepository initialized (${this.cache.length} cameras)`);
       for (const c of this.cache) {
         hilog.info(0x0001, TAG,
@@ -106,6 +109,42 @@ export class PreferencesRepository {
   saveMultiCamWarned(): void {
     this.multiCamWarnedCache = true;
     this.putBool(KEY_MULTI_CAM_WARNED, true);
+  }
+
+  // ==================== Tab 持久化 ====================
+
+  loadLastTabIndexSync(): number {
+    return this.lastTabIndexCache;
+  }
+
+  saveLastTabIndex(index: number): void {
+    this.lastTabIndexCache = index;
+    this.putNumber(KEY_LAST_TAB, index);
+  }
+
+  // ==================== 重置引导 (re-show one-time content) ====================
+
+  /** Reset all "show once" flags so the first-connect hint, the multi-camera
+   * warning, etc. are shown again. Invoked from the 关于 sheet. */
+  resetOnboarding(): void {
+    this.connectHintShownCache = false;
+    this.multiCamWarnedCache = false;
+    this.putBool(KEY_CONNECT_HINT_SHOWN, false);
+    this.putBool(KEY_MULTI_CAM_WARNED, false);
+    hilog.info(0x0001, TAG, '[CHECKPOINT] onboarding flags reset');
+  }
+
+  private async putNumber(key: string, value: number): Promise<void> {
+    if (!this.store) {
+      setTimeout(() => { this.putNumber(key, value); }, 1000);
+      return;
+    }
+    try {
+      await this.store.put(key, value);
+      await this.store.flush();
+    } catch (err) {
+      hilog.error(0x0001, TAG, `putNumber(${key}) ERROR: ${JSON.stringify(err)}`);
+    }
   }
 
   private async putBool(key: string, value: boolean): Promise<void> {

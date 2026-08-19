@@ -649,17 +649,20 @@ export class CameraSession {
       return;
     }
 
-    // PAIR mode: save camera data first
+    // PAIR mode: stage the camera object but DO NOT persist yet — classic
+    // bonding may still fail (discovery timeout / user declines the dialog),
+    // and a record persisted here would ghost into the Connection page while
+    // the Pairing page correctly reports failure. finishBonding(true) persists
+    // it only once the bond actually succeeded.
     if (this.currentStage1) {
       const deviceId = this.bleClient.getDeviceId();
       const camera = new PairedCamera(
         this.cameraName || deviceId, deviceId, 1,
         this.currentStage1.device, this.currentStage1.nonce, this.controllerName
       );
-      this.hub.prefs.saveCameraSync(camera);
       this.savedCamera = camera;
       hilog.info(0x0001, TAG,
-        `[CHECKPOINT] Camera saved: ${camera.name}`);
+        `${this.slog()}Camera staged for save: ${camera.name}`);
     }
 
     // Disconnect BLE GATT first — camera requires this before classic bonding.
@@ -885,9 +888,23 @@ export class CameraSession {
     this.pendingBondingDiscovery = false;
     this.unregisterBondListeners();
     try { connection.stopBluetoothDiscovery(); } catch (e) {}
-    // Only a real BONDED marks pairing complete. On failure keep pairingStep
-    // < 6 so PairingPage does not show a false "配对成功" dialog.
-    if (bonded) this.pairingStep = 6;
+    if (bonded) {
+      // Only a real BONDED marks pairing complete — persist the staged camera
+      // NOW (it was staged in checkBondedAndFinish, before the BLE teardown).
+      this.pairingStep = 6;
+      if (this.isPairMode && this.savedCamera) {
+        this.hub.prefs.saveCameraSync(this.savedCamera);
+        hilog.info(0x0001, TAG, `${this.slog()}Camera saved: ${this.savedCamera.name}`);
+        this.hub.notifyDevicesChanged(); // Pairing page flips this to 已配对
+      }
+    } else {
+      // Bond failed — discard the staged record so nothing ghosts into the
+      // Connection page, and keep pairingStep < 6 so PairingPage reports
+      // failure instead of a false "配对成功" dialog.
+      if (this.isPairMode) {
+        this.savedCamera = null;
+      }
+    }
     // Pairing mode: BLE was disconnected for classic bonding. Set Idle — user must
     // reconnect manually from ConnectionPage.
     // Connection mode: BLE remains connected. Ready + GPS loop.
@@ -908,21 +925,9 @@ export class CameraSession {
     hilog.info(0x0001, TAG, `${this.slog()}onBonded()`);
     this.pairingStep = 6;
 
-    // Only save for PAIR mode (new cameras). Reconnects already have saved data.
-    if (this.isPairMode && this.currentStage1) {
-      const deviceId = this.bleClient.getDeviceId();
-      const camera = new PairedCamera(
-        this.cameraName || deviceId, deviceId, 1,
-        this.currentStage1.device, this.currentStage1.nonce,
-        this.controllerName
-      );
-      this.hub.prefs.saveCameraSync(camera);
-      hilog.info(0x0001, TAG,
-        `[CHECKPOINT] Paired camera saved: ${camera.name}`);
-    }
-
-    // RECONNECT mode: BLE is still connected, go Ready + GPS
-    // PAIR mode: handled by checkBondedAndFinish → classic bonding → finishBonding
+    // RECONNECT mode only — PAIR mode never reaches here (classic bonding is
+    // handled by checkBondedAndFinish → finishBonding, which persists the
+    // staged camera only on a real BONDED). Reconnects already have saved data.
     if (!this.isPairMode) {
       hilog.info(0x0001, TAG, `${this.slog()}[TIMING] elapsed=${this.timingElapsed()}ms cause=ready`);
       this.attemptStart = 0; // attempt concluded — next disconnect isn't a connect-phase event

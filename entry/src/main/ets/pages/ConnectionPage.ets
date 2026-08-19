@@ -9,10 +9,11 @@
  * MessagesCommonView pattern (requires HdsNavigation ancestor).
  */
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { bundleManager } from '@kit.AbilityKit';
+import { bundleManager, common } from '@kit.AbilityKit';
 import { cameraService, ConnectionState, CameraStateEvent } from '../service/CameraService';
 import { PairedCamera } from '../ble/protocol/NikonPairingEngine';
 import { HdsNavDestination, ScrollEffectType, hdsMaterial, HdsListItem } from '@kit.UIDesignKit';
+import { commentManager } from '@kit.AppGalleryKit';
 
 const TAG = 'HarmoNiLink-ConnectionPage';
 
@@ -29,6 +30,7 @@ export struct ConnectionPage {
   @State cameraStatuses: CameraStatus[] = [];
   @State logMessages: string[] = [];
   @State showLogs: boolean = false;
+  @State showAbout: boolean = false; // 关于 half-modal sheet
   // GPS data mirrored as @State so ArkUI detects changes
   @State gpsLat: string = '--';
   @State gpsLon: string = '--';
@@ -189,7 +191,7 @@ export struct ConnectionPage {
         cameraService.markConnectHintShown();
         this.getUIContext().getPromptAction().showDialog({
           title: '连接提示',
-          message: '为获得稳定连接，推荐：\n\n1. 在相机设置中开启「关闭时发送」——相机休眠/关机后仍保持连接，本 App 可自动重连。\n\n2. 保持设备的连接开关开启——断开后自动持续重连，直到相机恢复。',
+          message: '为获得稳定连接，推荐：\n\n1. 在相机设置中开启「关闭时发送」——相机休眠/关机后仍保持连接，本 App 可自动重连。\n\n2. 确保定位权限设为「始终允许」——应用在后台时才能持续下发 GPS。',
           buttons: [{ text: '继续连接', color: $r('app.color.brand') }]
         }).then(() => {
           // Re-check after the dialog too — it can stay up for a long time.
@@ -438,10 +440,28 @@ export struct ConnectionPage {
 
   @Builder logSection() {
     Column() {
+      // 关于 — settings-style row with chevron (half-modal sheet)
       Row() {
-        Text('日志').fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary')); Blank()
-        Text(this.showLogs ? '收起' : '展开').fontSize(13).fontColor($r('app.color.brand'))
-      }.width('100%').onClick(() => { this.showLogs = !this.showLogs; })
+        Text('关于').fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary')).layoutWeight(1)
+        SymbolGlyph($r('sys.symbol.chevron_right'))
+          .fontSize(18).fontColor([$r('app.color.text_secondary')])
+      }
+      .width('100%').padding({ left: 12, right: 12, top: 14, bottom: 14 })
+      .onClick(() => { this.showAbout = true; })
+
+      Divider().strokeWidth(0.5).color($r('app.color.divider')).margin({ left: 12, right: 12 })
+
+      // 日志 — collapsible, chevron rotates down when expanded
+      Row() {
+        Text('日志').fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary')).layoutWeight(1)
+        SymbolGlyph($r('sys.symbol.chevron_right'))
+          .fontSize(18).fontColor([$r('app.color.text_secondary')])
+          .rotate({ angle: this.showLogs ? 90 : 0 })
+          .animation({ duration: 200, curve: Curve.EaseOut })
+      }
+      .width('100%').padding({ left: 12, right: 12, top: 14, bottom: 14 })
+      .onClick(() => { this.showLogs = !this.showLogs; })
+
       if (this.showLogs) {
         Column() {
           if (this.logMessages.length > 0) {
@@ -449,18 +469,99 @@ export struct ConnectionPage {
               Text(msg).fontSize(10).fontColor($r('app.color.text_secondary')).width('100%').padding({ top: 1, bottom: 1 })
             })
           } else { Text('暂无日志').fontSize(12).fontColor($r('app.color.text_secondary')).padding({ top: 8 }) }
-          if (this.appVersion) {
-            Text(this.appVersion).fontSize(11).fontColor($r('app.color.text_secondary'))
-              .width('100%').textAlign(TextAlign.Center).padding({ top: 8 })
-          }
-        }.width('100%').margin({ top: 8 })
+        }.width('100%').padding({ left: 12, right: 12, bottom: 12 })
       }
     }
     .width('100%').alignItems(HorizontalAlign.Start)
-    .padding({ left: 16, right: 16, top: 12, bottom: 16 })
+    .padding({ top: 4, bottom: 4 })
     .borderRadius(16).backgroundColor($r('app.color.card_background'))
     .shadow({ radius: 12, color: '#0D000000', offsetY: 2 })
     .margin({ top: 12 })
+  }
+
+  /** 关于 half-modal (bindSheet) — app icon/name centered, settings-style rows. */
+  @Builder aboutSheet() {
+    Column() {
+      Image($r('app.media.app_icon')).width(72).height(72).borderRadius(18).margin({ top: 36 })
+      Text('NiLink').fontSize(22).fontWeight(FontWeight.Bold).margin({ top: 14 })
+      Text('HarmoNiLink').fontSize(13).fontColor($r('app.color.text_secondary')).margin({ top: 2 })
+
+      Column() {
+        Row() {
+          Text('应用版本').fontSize(16).fontColor($r('app.color.text_primary')).layoutWeight(1)
+          Text(this.appVersion).fontSize(14).fontColor($r('app.color.text_secondary'))
+        }.width('100%').padding({ left: 16, right: 12, top: 14, bottom: 14 })
+
+        Divider().strokeWidth(0.5).color($r('app.color.divider')).margin({ left: 16, right: 12 })
+
+        Row() {
+          Text('开源协议').fontSize(16).fontColor($r('app.color.text_primary')).layoutWeight(1)
+          Text('Mulan PSL v2').fontSize(14).fontColor($r('app.color.text_secondary')).margin({ right: 4 })
+          SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(18).fontColor([$r('app.color.text_secondary')])
+        }.width('100%').padding({ left: 16, right: 12, top: 14, bottom: 14 })
+        .onClick(() => { this.onAboutLicense(); })
+
+        Divider().strokeWidth(0.5).color($r('app.color.divider')).margin({ left: 16, right: 12 })
+
+        Row() {
+          Text('开源仓库').fontSize(16).fontColor($r('app.color.text_primary')).layoutWeight(1)
+          SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(18).fontColor([$r('app.color.text_secondary')])
+        }.width('100%').padding({ left: 16, right: 12, top: 14, bottom: 14 })
+        .onClick(() => { this.onAboutRepo(); })
+
+        Divider().strokeWidth(0.5).color($r('app.color.divider')).margin({ left: 16, right: 12 })
+
+        Row() {
+          Text('做个评价').fontSize(16).fontColor($r('app.color.text_primary')).layoutWeight(1)
+          SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(18).fontColor([$r('app.color.text_secondary')])
+        }.width('100%').padding({ left: 16, right: 12, top: 14, bottom: 14 })
+        .onClick(() => { this.onAboutComment(); })
+
+        Divider().strokeWidth(0.5).color($r('app.color.divider')).margin({ left: 16, right: 12 })
+
+        Row() {
+          Text('重置引导').fontSize(16).fontColor($r('app.color.text_primary')).layoutWeight(1)
+          SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(18).fontColor([$r('app.color.text_secondary')])
+        }.width('100%').padding({ left: 16, right: 12, top: 14, bottom: 14 })
+        .onClick(() => { this.onAboutReset(); })
+      }
+      .width('100%').borderRadius(16).backgroundColor($r('app.color.card_background'))
+      .margin({ top: 32, bottom: 24 })
+
+      Blank().layoutWeight(1)
+    }
+    .width('100%').height('100%').padding({ left: 16, right: 16 })
+  }
+
+  private openExternalLink(url: string): void {
+    const ctx = this.getUIContext().getHostContext() as common.UIAbilityContext;
+    ctx.openLink(url, { appLinkingOnly: false })
+      .then(() => {})
+      .catch((e: Error) => { hilog.warn(0x0001, TAG, `openLink fail: ${e.message}`); });
+  }
+
+  private onAboutLicense(): void {
+    this.openExternalLink('https://license.coscl.org.cn/MulanPSL2');
+  }
+
+  private onAboutRepo(): void {
+    this.openExternalLink('https://github.com/Octopustank/HarmoNiLink');
+  }
+
+  private onAboutComment(): void {
+    const ctx = this.getUIContext().getHostContext() as common.UIAbilityContext;
+    try {
+      commentManager.showCommentDialog(ctx).then(() => {}).catch((e: Error) => {
+        hilog.warn(0x0001, TAG, `showCommentDialog fail: ${e.message}`);
+      });
+    } catch (e) {
+      hilog.warn(0x0001, TAG, `showCommentDialog throw: ${JSON.stringify(e)}`);
+    }
+  }
+
+  private onAboutReset(): void {
+    cameraService.resetOnboarding();
+    this.getUIContext().getPromptAction().showToast({ message: '已重置引导提示，下次操作将重新显示', duration: 2500 });
   }
 
   build() {
@@ -472,7 +573,7 @@ export struct ConnectionPage {
           if (this.isPairingOwner()) { this.pairingNotice() }
           this.gpsCard()
 
-          Text('连接开关打开的相机将保持连接，断开后自动重连。\n左滑设备卡片可删除配对。\n需要后台下发数据，请在系统设置中允许始终定位。')
+          Text('连接开关打开的相机将保持连接，断开后自动重连。\n左滑设备卡片可删除配对；未配对的相机请先在「配对」页扫描添加。\n需要后台下发数据，请在系统设置中允许始终定位。')
             .fontSize(11).fontColor($r('app.color.text_secondary'))
             .width('100%').textAlign(TextAlign.Center).padding({ left: 4, right: 4 })
             .margin({ top: 12 })
@@ -506,6 +607,12 @@ export struct ConnectionPage {
       },
     })
     .hideBackButton(true)
+    .bindSheet($$this.showAbout, this.aboutSheet(), {
+      height: SheetSize.LARGE,
+      dragBar: true,
+      showClose: true,
+      backgroundColor: $r('app.color.page_background')
+    })
   }
 }
 
