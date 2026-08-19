@@ -887,6 +887,7 @@ export class CameraSession {
       this.hub.releaseOwnership(); // after setState so listener sees owner='pairing' for dialog
     } else {
       hilog.info(0x0001, TAG, `${this.slog()}[TIMING] elapsed=${this.timingElapsed()}ms cause=ready`);
+      this.attemptStart = 0; // attempt concluded — next disconnect isn't a connect-phase event
       this.setState(ConnectionState.Ready,
         '已连接');
       this.hub.refreshGps();
@@ -915,6 +916,7 @@ export class CameraSession {
     // PAIR mode: handled by checkBondedAndFinish → classic bonding → finishBonding
     if (!this.isPairMode) {
       hilog.info(0x0001, TAG, `${this.slog()}[TIMING] elapsed=${this.timingElapsed()}ms cause=ready`);
+      this.attemptStart = 0; // attempt concluded — next disconnect isn't a connect-phase event
       this.setState(ConnectionState.Ready, '已连接');
       this.hub.refreshGps();
       // Connection ops hold no Hub mutex — nothing to release here (P0-1).
