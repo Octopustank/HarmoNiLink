@@ -129,6 +129,10 @@ export class CameraService {
 
   // Background task state — one ContinuousTask per app.
   private backgroundTaskStarted: boolean = false;
+  // Generation guard for the async start()/sync stop() race: stop() bumps this
+  // so an in-flight start() (getWantAgent/startBackgroundRunning are awaited)
+  // can detect it landed after a stop request and immediately undo itself.
+  private bgGeneration: number = 0;
 
   // GPS ticker — one interval + alternating TIME/GEO, fanned out to Ready sessions.
   private gpsTimer: number | null = null;
@@ -688,6 +692,7 @@ export class CameraService {
     if (this.backgroundTaskStarted || !this.abilityContext) return;
 
     const ctx = this.abilityContext;
+    const gen = this.bgGeneration; // this request's generation
 
     let wantAgentInfo: wantAgent.WantAgentInfo = {
       wants: [
@@ -703,10 +708,18 @@ export class CameraService {
 
     try {
       const agent: WantAgent = await wantAgent.getWantAgent(wantAgentInfo);
+      if (gen !== this.bgGeneration) return; // a stop() raced in — abandon
       try {
         await backgroundTaskManager.startBackgroundRunning(ctx,
           backgroundTaskManager.BackgroundMode.BLUETOOTH_INTERACTION |
           backgroundTaskManager.BackgroundMode.LOCATION, agent);
+        if (gen !== this.bgGeneration) {
+          // Start landed after a stop request — immediately undo it, else the
+          // notification task hangs while every switch is off.
+          hilog.info(0x0001, TAG, '[BG] ContinuousTask started after stop — undoing');
+          try { backgroundTaskManager.stopBackgroundRunning(ctx); } catch (e) { /* best-effort */ }
+          return;
+        }
         this.backgroundTaskStarted = true;
         hilog.info(0x0001, TAG, '[BG] ContinuousTask started (BLUETOOTH + LOCATION)');
       } catch (err) {
@@ -720,6 +733,7 @@ export class CameraService {
   }
 
   stopBackgroundTask(): void {
+    this.bgGeneration++; // invalidate any in-flight start()
     if (!this.backgroundTaskStarted || !this.abilityContext) return;
 
     try {
