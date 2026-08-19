@@ -20,6 +20,9 @@ const TAG = 'HarmoNiLink-MainPage';
 @Component
 struct MainPage {
   @State currentIndex: number = 0;
+  // Ready gate: tabs render only after the persisted index is known, so a
+  // cold start never flashes the wrong tab (prefs.init is async).
+  @State tabReady: boolean = false;
   // Plain field (NOT @Provide): HdsNavigation mutates this NavPathStack during
   // render, and @Provide would make ArkUI treat that as an illegal state change
   // ("changed during render") — no child @Consumes it, so plain is safe.
@@ -32,10 +35,13 @@ struct MainPage {
     if (ctx) {
       cameraService.setContext(ctx as common.UIAbilityContext); // idempotent — prefs already init'd in onCreate
     }
-    // Tab persistence: reopen on the last-visited tab. prefs.init was started
-    // in EntryAbility.onCreate (well before this render), so this synchronous
-    // read is already settled — no deferred re-read / flash-of-wrong-tab.
-    this.currentIndex = cameraService.loadLastTabIndex();
+    // Tab persistence: wait for prefs readiness (synchronous barrier, not a
+    // deferred re-read) then render the last-visited tab directly.
+    cameraService.whenPrefsReady().then(() => {
+      const idx = cameraService.loadLastTabIndex();
+      this.currentIndex = Math.min(Math.max(idx, 0), 1); // clamp 0/1
+      this.tabReady = true;
+    });
   }
 
   @Builder tabBar(index: number, label: string, icon: Resource) {
@@ -56,48 +62,55 @@ struct MainPage {
   }
 
   build() {
-    HdsNavigation(this.pathStack) {
-      HdsTabs({ barPosition: BarPosition.End, controller: this.tabsController, index: this.currentIndex }) {        TabContent() {
-          PairingPage()
-        }
-        .tabBar(this.tabBar(0, '配对', $r('sys.symbol.camera')))
+    if (!this.tabReady) {
+      Column()
+        .width('100%').height('100%')
+        .backgroundColor($r('app.color.page_background'))
         .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
+    } else {
+      HdsNavigation(this.pathStack) {
+        HdsTabs({ barPosition: BarPosition.End, controller: this.tabsController, index: this.currentIndex }) {        TabContent() {
+            PairingPage()
+          }
+          .tabBar(this.tabBar(0, '配对', $r('sys.symbol.camera')))
+          .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
 
-        TabContent() {
-          ConnectionPage()
+          TabContent() {
+            ConnectionPage()
+          }
+          .tabBar(this.tabBar(1, '连接', $r('sys.symbol.person')))
+          .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
         }
-        .tabBar(this.tabBar(1, '连接', $r('sys.symbol.person')))
+        .barHeight(56)
+        .barOverlap(true)
+        .scrollable(false)
+        .barFloatingStyle({
+          barBottomMargin: 0,
+          systemMaterialEffect: {
+            materialType: hdsMaterial.MaterialType.IMMERSIVE,
+            materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE
+          }
+        })
+        .onChange((index: number) => {
+          this.currentIndex = index;
+          cameraService.saveLastTabIndex(index);
+        })
+        .width('100%')
+        .height('100%')
+        .backgroundColor($r('app.color.page_background'))
         .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
       }
-      .barHeight(56)
-      .barOverlap(true)
-      .scrollable(false)
-      .barFloatingStyle({
-        barBottomMargin: 0,
-        systemMaterialEffect: {
-          materialType: hdsMaterial.MaterialType.IMMERSIVE,
-          materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE
-        }
-      })
-      .onChange((index: number) => {
-        this.currentIndex = index;
-        cameraService.saveLastTabIndex(index);
-      })
-      .width('100%')
-      .height('100%')
-      .backgroundColor($r('app.color.page_background'))
+      .hideTitleBar(true)
+      .hideToolBar(true)
+      // Force stack mode: on wide windows (foldable expanded / tablet) HdsNavigation
+      // defaults to split (parallel view), pinning the tabs to a narrow left column
+      // with an empty right area. Stack makes the UI fill the whole window.
+      .mode(NavigationMode.Stack)
       .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
+      .systemBarStyle(
+        { statusBarContentColor: '#1A1A1A' },
+        { statusBarContentColor: '#FFFFFF' }
+      )
     }
-    .hideTitleBar(true)
-    .hideToolBar(true)
-    // Force stack mode: on wide windows (foldable expanded / tablet) HdsNavigation
-    // defaults to split (parallel view), pinning the tabs to a narrow left column
-    // with an empty right area. Stack makes the UI fill the whole window.
-    .mode(NavigationMode.Stack)
-    .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
-    .systemBarStyle(
-      { statusBarContentColor: '#1A1A1A' },
-      { statusBarContentColor: '#FFFFFF' }
-    )
   }
 }

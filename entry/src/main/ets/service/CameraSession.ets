@@ -123,6 +123,9 @@ export class CameraSession {
   getPairingStep(): number { return this.pairingStep; }
   getCameraSerial(): string { return this.cameraSerial; }
   getCameraName(): string { return this.cameraName; }
+  /** True while this session is a PAIRING-page operation (new camera), not a
+   * connection-page reconnect. Used to scope cancelPairing() to pairing only. */
+  isPairModeSession(): boolean { return this.isPairMode; }
   getControllerName(): string { return this.controllerName; }
   getState(): ConnectionState { return this.state; }
   getStatusMessage(): string { return this.statusMessage; }
@@ -194,20 +197,32 @@ export class CameraSession {
     // timer armed to fire at the NEW attempt (it would unwatch the fresh
     // watcher and connect to a stale address).
     this.clearScanFallbackTimer();
+    this.armScanFallback(camera);
+    return true;
+  }
+
+  /**
+   * Armed 10s after the reconnect scan starts: if no advertisement matched,
+   * poke the SAVED address (which may be stale) to wake the camera into
+   * re-advertising. Re-arms while the pairing tab owns the radio — dropping
+   * the timer here would strand the session in Scanning forever (the scan was
+   * already handed to the pairing callback and won't route back).
+   */
+  private armScanFallback(camera: PairedCamera): void {
     this.scanFallbackTimerId = setTimeout(() => {
       this.scanFallbackTimerId = null;
-      // Pairing-serial check only — a sibling session's Ready no longer
-      // gates this fallback (connection ops hold no shared owner).
-      if (this.state === ConnectionState.Scanning && !this.hub.isPairingActive()) {
-        this.hub.unwatchReconnect(camera.name);
-        hilog.info(0x0001, TAG, `${this.slog()}reconnect scan timeout, using saved address`);
-        // Saved-address POKE: wake the camera into re-advertising, not a real
-        // connect. A stale address hangs silently — give it only 30s, not the
-        // full devMatch 60s (its failure is expected, don't make the user wait).
-        this.connectToDevice(camera.address, 30000);
+      if (this.state !== ConnectionState.Scanning) return;
+      if (this.hub.isPairingActive()) {
+        this.armScanFallback(camera); // radio busy — retry shortly
+        return;
       }
+      this.hub.unwatchReconnect(camera.name);
+      hilog.info(0x0001, TAG, `${this.slog()}reconnect scan timeout, using saved address`);
+      // Saved-address POKE: wake the camera into re-advertising, not a real
+      // connect. A stale address hangs silently — give it only 30s, not the
+      // full devMatch 60s (its failure is expected, don't make the user wait).
+      this.connectToDevice(camera.address, 30000);
     }, 10000);
-    return true;
   }
 
   private clearScanFallbackTimer(): void {
@@ -695,7 +710,7 @@ export class CameraSession {
       hilog.info(0x0001, TAG, '[CHECKPOINT] Classic discovery started');
     } catch (err) {
       hilog.error(0x0001, TAG, `[CHECKPOINT] startBluetoothDiscovery FAILED: ${JSON.stringify(err)}`);
-      this.finishBonding(false);
+      this.finishBonding(false, '经典蓝牙发现启动失败');
       return;
     }
 
@@ -742,7 +757,7 @@ export class CameraSession {
           this.statusMessage = 'Pairing with camera... accept dialog if shown.';
         } catch (err) {
           hilog.error(0x0001, TAG, `[CHECKPOINT] pairDevice FAILED: ${JSON.stringify(err)}`);
-          this.finishBonding(false);
+          this.finishBonding(false, '配对请求失败');
           return;
         }
 
@@ -765,7 +780,7 @@ export class CameraSession {
             hilog.warn(0x0001, TAG, `[CHECKPOINT] Bond failed (state=${bondData.state}) — finishing`);
             this.bondingDiscoveryActive = false;
             try { connection.stopBluetoothDiscovery(); } catch (e) {}
-            this.finishBonding(false);
+            this.finishBonding(false, '配对被拒绝或失败');
           }
         };
         connection.on('bondStateChange', this.bondStateCb);
@@ -773,7 +788,7 @@ export class CameraSession {
         setTimeout(() => {
           if (this.state === ConnectionState.Bonding) {
             hilog.warn(0x0001, TAG, '[CHECKPOINT] Bonding response timeout (20s)');
-            this.finishBonding(false);
+            this.finishBonding(false, '绑定响应超时');
           }
         }, 20000);
         return;
@@ -786,7 +801,7 @@ export class CameraSession {
       if (!bondAttempted && this.state === ConnectionState.Bonding) {
         hilog.warn(0x0001, TAG, '[CHECKPOINT] Classic discovery timeout — proceeding without bond');
         try { connection.stopBluetoothDiscovery(); } catch (e) {}
-        this.finishBonding(false);
+        this.finishBonding(false, '未发现相机，配对超时');
       }
     }, 15000);
   }
@@ -883,7 +898,7 @@ export class CameraSession {
     if (this.bondStateCb) { try { connection.off('bondStateChange', this.bondStateCb); } catch (e) {} this.bondStateCb = null; }
   }
 
-  private finishBonding(bonded: boolean): void {
+  private finishBonding(bonded: boolean, failMessage: string = ''): void {
     this.bondingDiscoveryActive = false;
     this.pendingBondingDiscovery = false;
     this.unregisterBondListeners();
@@ -906,10 +921,11 @@ export class CameraSession {
       }
     }
     // Pairing mode: BLE was disconnected for classic bonding. Set Idle — user must
-    // reconnect manually from ConnectionPage.
+    // reconnect manually from ConnectionPage. Carry the failure reason so the
+    // Pairing page can tell timeout vs. user-decline instead of silent "准备就绪".
     // Connection mode: BLE remains connected. Ready + GPS loop.
     if (this.hub.getOwner() === 'pairing') {
-      this.setState(ConnectionState.Idle, '');
+      this.setState(ConnectionState.Idle, bonded ? '' : (failMessage !== '' ? failMessage : '配对失败'));
       this.hub.releaseOwnership(); // after setState so listener sees owner='pairing' for dialog
     } else {
       hilog.info(0x0001, TAG, `${this.slog()}[TIMING] elapsed=${this.timingElapsed()}ms cause=ready`);

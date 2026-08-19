@@ -45,6 +45,20 @@ export class PreferencesRepository {
   // e.g. reverting a fresh keepAlive=true to false and snapping the UI toggle
   // off while the link stayed up.
   private saveQueue: Promise<void> = Promise.resolve();
+  // Readiness barrier: init() is async, but MainPage needs the persisted tab
+  // index SYNCHRONOUSLY at first render (no flash of the wrong tab). Expose
+  // whenReady() so the page waits for the load to finish before reading.
+  private ready: boolean = false;
+  private readyResolvers: Array<() => void> = [];
+
+  /** True once init() has loaded the persisted values. */
+  isReady(): boolean { return this.ready; }
+
+  /** Resolves when init() finishes (immediately if already ready). */
+  whenReady(): Promise<void> {
+    if (this.ready) return Promise.resolve();
+    return new Promise<void>((resolve) => { this.readyResolvers.push(resolve); });
+  }
 
   async init(context: common.UIAbilityContext): Promise<void> {
     try {
@@ -80,8 +94,18 @@ export class PreferencesRepository {
         hilog.info(0x0001, TAG,
           `[CHECKPOINT]   saved: name='${c.name}' addr=${c.address} keepAlive=${c.keepAlive}`);
       }
+      // Signal readiness — MainPage may be waiting to read the persisted tab.
+      this.ready = true;
+      const resolvers = this.readyResolvers;
+      this.readyResolvers = [];
+      for (const r of resolvers) r();
     } catch (err) {
       hilog.error(0x0001, TAG, `[CHECKPOINT] PreferencesRepository init ERROR: ${JSON.stringify(err)}`);
+      // Even on failure, unblock waiters (they'll read the defaults).
+      this.ready = true;
+      const resolvers = this.readyResolvers;
+      this.readyResolvers = [];
+      for (const r of resolvers) r();
     }
   }
 
@@ -134,30 +158,42 @@ export class PreferencesRepository {
     hilog.info(0x0001, TAG, '[CHECKPOINT] onboarding flags reset');
   }
 
-  private async putNumber(key: string, value: number): Promise<void> {
-    if (!this.store) {
-      setTimeout(() => { this.putNumber(key, value); }, 1000);
-      return;
-    }
-    try {
-      await this.store.put(key, value);
-      await this.store.flush();
-    } catch (err) {
-      hilog.error(0x0001, TAG, `putNumber(${key}) ERROR: ${JSON.stringify(err)}`);
-    }
+  /** Serialize a scalar put through the saveQueue — otherwise rapid calls
+   * (e.g. fast tab switches) interleave put+flush and a stale value can land
+   * last. */
+  private enqueueScalarWrite(op: () => Promise<void>): void {
+    const run = (): Promise<void> => op();
+    this.saveQueue = this.saveQueue.then(run, run);
   }
 
-  private async putBool(key: string, value: boolean): Promise<void> {
-    if (!this.store) {
-      setTimeout(() => { this.putBool(key, value); }, 1000);
-      return;
-    }
-    try {
-      await this.store.put(key, value);
-      await this.store.flush();
-    } catch (err) {
-      hilog.error(0x0001, TAG, `putBool(${key}) ERROR: ${JSON.stringify(err)}`);
-    }
+  private putNumber(key: string, value: number): void {
+    this.enqueueScalarWrite(async (): Promise<void> => {
+      if (!this.store) {
+        setTimeout(() => { this.putNumber(key, value); }, 1000);
+        return;
+      }
+      try {
+        await this.store.put(key, value);
+        await this.store.flush();
+      } catch (err) {
+        hilog.error(0x0001, TAG, `putNumber(${key}) ERROR: ${JSON.stringify(err)}`);
+      }
+    });
+  }
+
+  private putBool(key: string, value: boolean): void {
+    this.enqueueScalarWrite(async (): Promise<void> => {
+      if (!this.store) {
+        setTimeout(() => { this.putBool(key, value); }, 1000);
+        return;
+      }
+      try {
+        await this.store.put(key, value);
+        await this.store.flush();
+      } catch (err) {
+        hilog.error(0x0001, TAG, `putBool(${key}) ERROR: ${JSON.stringify(err)}`);
+      }
+    });
   }
 
   /**

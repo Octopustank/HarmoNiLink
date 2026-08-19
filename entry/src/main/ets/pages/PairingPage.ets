@@ -39,10 +39,10 @@ export struct PairingPage {
 
   aboutToAppear(): void {
     hilog.info(0x0001, TAG, '[CHECKPOINT] PairingPage aboutToAppear');
-    // Re-enter (tab focus): refresh the device list + isPaired markers. A
-    // camera deleted from the Connection page must stop showing 已配对 here,
-    // and isPaired() is a live prefs read that only re-renders when the
-    // ForEach key changes — so bump listRefreshTick.
+    // Re-enter (tab focus): re-sync owner + scan-toggle + list from the service
+    // (the component instance may have been recreated, so @State mirrors reset).
+    this.owner = cameraService.getOwner();
+    this.scanToggleOn = cameraService.isPairScanning();
     this.discoveredCameras = cameraService.getDiscoveredCameras();
     this.listRefreshTick++;
     // A scan/pairing may still be in flight while this tab was hidden — resume
@@ -76,12 +76,12 @@ export struct PairingPage {
         } else if (s === ConnectionState.Discovering) {
           this.statusLabel = '正在发现服务…';
         } else if (s === ConnectionState.Pairing) {
-          this.statusLabel = `正在进行配对 (${Math.min(cameraService.getPairingStep(), 4)}/4)…`;
+          this.statusLabel = `正在进行配对 (${Math.min(cameraService.getPairingStepFor(this.pairingTarget), 4)}/4)…`;
         } else if (s === ConnectionState.Bonding) {
           this.statusLabel = '正在经典蓝牙绑定…';
         } else if (s === ConnectionState.Idle) {
           this.stopPolling();
-          if (this.pairingTarget && cameraService.getPairingStep() === 6) {
+          if (this.pairingTarget && cameraService.getPairingStepFor(this.pairingTarget) === 6) {
             // Genuine pairing completion (handshake finished) — show success
             const target = this.pairingTarget;
             this.pairingTarget = '';
@@ -95,9 +95,14 @@ export struct PairingPage {
               buttons: [{ text: '好的', color: $r('app.color.brand') }]
             }).catch(() => { /* dialog dismissed */ });
           } else {
-            // Cancel / failure / connection drop — clear the stuck target state
+            // A just-completed success is followed by releaseOwnership()'s
+            // global Idle (cameraName='') — don't clobber "配对完成" with
+            // "准备就绪".
+            if (this.statusLabel === '配对完成') return;
+            // Cancel / failure / connection drop — surface the failure reason
+            // carried in the event message (finishBonding(false, ...)).
             this.pairingTarget = '';
-            this.statusLabel = '准备就绪';
+            this.statusLabel = event.message !== '' ? event.message : '准备就绪';
           }
         } else if (s === ConnectionState.Error) {
           this.statusLabel = '配对出错，请重试'; this.pairingTarget = '';

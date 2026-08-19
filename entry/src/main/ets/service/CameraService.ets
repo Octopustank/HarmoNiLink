@@ -108,7 +108,11 @@ export class CameraService {
   // Reconnect pool: cameras waiting for their BLE address to be found by ONE
   // shared scan (routed by manufacturerDevice), instead of one scan each.
   private reconnectWatchers: ReconnectWatch[] = [];
-  private reconnectScanActive: boolean = false;
+  // True while the ONE shared BLE scan is running. The scanner is a SINGLE-
+  // listener model, so pairing scan and reconnect scan must NOT each call
+  // scanner.startScan() (the second would replace the first's listener and
+  // strand reconnect sessions). ensureScanRunning() is the sole caller.
+  private scanRunning: boolean = false;
 
   // Ownership — prevents cross-tab operation conflicts (Hub-level mutex).
   private owner: OperationOwner = 'none';
@@ -259,6 +263,13 @@ export class CameraService {
     return this.prefs.loadLastTabIndexSync();
   }
 
+  /** Resolves once prefs.init() has loaded persisted values — MainPage waits
+   * on this before reading the tab index, so the first render is correct
+   * (no flash of the wrong tab on slow disks / large camera lists). */
+  whenPrefsReady(): Promise<void> {
+    return this.prefs.whenReady();
+  }
+
   saveLastTabIndex(index: number): void {
     this.prefs.saveLastTabIndex(index);
   }
@@ -376,15 +387,18 @@ export class CameraService {
     this.discoveredList = [];
     this.pairScanActive = true;
     this.broadcastSessionState('', ConnectionState.Scanning, '正在扫描设备…');
-    this.scanner.startScan((cameras: DiscoveredCamera[]) => {
-      this.discoveredList = cameras;
-    }, false); // NO classic discovery — it starves connected cameras' GPS writes (P1-5);
-    // classic discovery only runs later, inside the short bonding window
+    this.ensureScanRunning();
     return true;
   }
 
   getDiscoveredCameras(): DiscoveredCamera[] {
     return this.discoveredList;
+  }
+
+  /** True while the pairing-page scan is actively running — lets PairingPage
+   * re-sync its 蓝牙扫描 toggle when its component instance is recreated. */
+  isPairScanning(): boolean {
+    return this.pairScanActive;
   }
 
   /**
@@ -396,10 +410,7 @@ export class CameraService {
   stopPairingScanOnly(): void {
     if (!this.pairScanActive) return;
     this.pairScanActive = false;
-    if (this.reconnectWatchers.length === 0) {
-      this.scanner.stopScan(); // nobody else needs the scan
-    }
-    // else: shared reconnect scan keeps running for the remaining watchers
+    this.ensureScanRunning();
   }
 
   stopPairingScan(): void {
@@ -411,9 +422,32 @@ export class CameraService {
     }
   }
 
+  /**
+   * Single scan-entry point. The BleScanner holds ONE listener, so a pairing
+   * scan must never replace a reconnect scan's listener (or reconnect sessions
+   * strand in Scanning forever). Start/stop the ONE scan based on whether ANY
+   * consumer (pairing page or reconnect watchers) needs it, and route every
+   * result to BOTH consumers.
+   */
+  private ensureScanRunning(): void {
+    const needed = this.pairScanActive || this.reconnectWatchers.length > 0;
+    if (needed && !this.scanRunning) {
+      this.scanRunning = true;
+      this.scanner.startScan((cameras: DiscoveredCamera[]) => {
+        this.discoveredList = cameras;
+        this.routeReconnect(cameras);
+      }, false); // NO classic discovery — it starves connected cameras' GPS writes (P1-5)
+    } else if (!needed && this.scanRunning) {
+      this.scanRunning = false;
+      this.scanner.stopScan();
+    }
+  }
+
   // ==================== Delegated per-camera operations ====================
 
-  /** Pairing progress of the in-flight pairing session (pairing is serial). */
+  /** Pairing progress of the in-flight pairing session (pairing is serial).
+   *  DEPRECATED for success detection — a previously-connected camera keeps
+   *  its step=6 and would pollute the max. Use getPairingStepFor(name). */
   getPairingStep(): number {
     let step = 0;
     this.sessions.forEach((s: CameraSession) => {
@@ -421,6 +455,14 @@ export class CameraService {
       if (ps > step) step = ps;
     });
     return step;
+  }
+
+  /** Pairing step of ONE camera's session (0 if none). Success detection must
+   * be per-session: a sibling camera's step=6 must not fake a success for a
+   * camera whose own bonding just failed. */
+  getPairingStepFor(name: string): number {
+    const s = this.sessions.get(name);
+    return s !== undefined ? s.getPairingStep() : 0;
   }
 
   /** True if a session for this camera exists and is connected. */
@@ -475,6 +517,10 @@ export class CameraService {
 
   cancelPairing(): void {
     this.sessions.forEach((s: CameraSession) => {
+      // Scope to PAIRING sessions only — a parallel connection-page connect
+      // (Connecting/Discovering/Pairing) must NOT be torn down by cancelling
+      // the pairing tab's operation.
+      if (!s.isPairModeSession()) return;
       const st = s.getState();
       if (st === ConnectionState.Connecting || st === ConnectionState.Discovering
         || st === ConnectionState.Pairing || st === ConnectionState.Bonding) {
@@ -809,22 +855,12 @@ export class CameraService {
   watchReconnect(camera: PairedCamera, session: CameraSession): void {
     this.unwatchReconnect(camera.name); // dedupe by name
     this.reconnectWatchers.push({ camera, session });
-    if (!this.reconnectScanActive) {
-      this.reconnectScanActive = true;
-      this.scanner.startScan((cameras: DiscoveredCamera[]) => {
-        this.routeReconnect(cameras);
-      }, false); // reconnect scan — never classic discovery (it starves GPS writes)
-    }
+    this.ensureScanRunning();
   }
 
   unwatchReconnect(name: string): void {
     this.reconnectWatchers = this.reconnectWatchers.filter((w) => w.camera.name !== name);
-    if (this.reconnectWatchers.length === 0 && this.reconnectScanActive) {
-      this.reconnectScanActive = false;
-      // The pairing tab's scan may be riding the same underlying scan —
-      // only stop the hardware scan when nobody needs it anymore.
-      if (!this.pairScanActive) this.scanner.stopScan();
-    }
+    this.ensureScanRunning();
   }
 
   /** Shared-scan callback: match each watcher by device ID (name fallback). */
