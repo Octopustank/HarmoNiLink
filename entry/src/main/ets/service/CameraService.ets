@@ -111,6 +111,9 @@ export class CameraService {
   // CameraSession) so the lifecycle survives session churn and can be flushed
   // on background/destroy independently of the BLE session.
   private slaTrackers: Map<string, SlaTracker> = new Map();
+  // In-flight persisted-SLA loads (per camera) — awaited by getSlaTimelineLoaded
+  // so the first info-sheet open never renders an empty bar due to async load.
+  private slaLoads: Map<string, Promise<void>> = new Map();
   // Reconnect pool: cameras waiting for their BLE address to be found by ONE
   // shared scan (routed by manufacturerDevice), instead of one scan each.
   private reconnectWatchers: ReconnectWatch[] = [];
@@ -800,9 +803,16 @@ export class CameraService {
     if (!t) {
       t = new SlaTracker((json: string): void => { this.prefs.saveSla(name, json); });
       this.slaTrackers.set(name, t);
-      this.prefs.loadSla(name).then((json: string | null): void => {
+      // Track the async persisted load so the first info-sheet open can await
+      // it (via getSlaTimelineLoaded) instead of rendering an empty bar because
+      // the disk read resolved a microtask later.
+      const pending: Promise<void> = this.prefs.loadSla(name).then((json: string | null): void => {
         const cur = this.slaTrackers.get(name);
         if (cur && json) cur.load(json);
+      });
+      this.slaLoads.set(name, pending);
+      pending.then((): void => {
+        if (this.slaLoads.get(name) === pending) this.slaLoads.delete(name);
       });
     }
     return t;
@@ -829,6 +839,26 @@ export class CameraService {
    * a @Builder: the state listener re-runs it and shifts the 2h window). */
   getSlaTimeline(name: string): SlaCell[] {
     return this.getOrCreateSlaTracker(name).materialize(Date.now());
+  }
+
+  /** Materialize AFTER the persisted load settles — the first info-sheet open
+   * renders the real history instead of an empty bar (async-load race). */
+  async getSlaTimelineLoaded(name: string): Promise<SlaCell[]> {
+    const t = this.getOrCreateSlaTracker(name);
+    const pending = this.slaLoads.get(name);
+    if (pending) {
+      try { await pending; } catch (e) { /* best-effort */ }
+    }
+    return t.materialize(Date.now());
+  }
+
+  /** Clear every camera's persisted health timeline + in-memory trackers
+   * (关于 → 删除连接健康度日志). Slots restart empty from the next signal. */
+  clearAllSla(): void {
+    this.slaTrackers.clear();
+    this.slaLoads.clear();
+    this.prefs.clearAllSla(); // per-key sweep incl. orphans, serialized
+    hilog.info(0x0001, TAG, '[SLA] cleared all health timelines');
   }
 
   /** Unconditional flush of every camera's SLA — last line of defense against

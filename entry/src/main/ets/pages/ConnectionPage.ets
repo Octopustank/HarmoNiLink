@@ -10,7 +10,7 @@
  */
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { bundleManager, common } from '@kit.AbilityKit';
-import { SymbolGlyphModifier } from '@kit.ArkUI';
+import { SymbolGlyphModifier, promptAction } from '@kit.ArkUI';
 import { cameraService, ConnectionState, CameraStateEvent } from '../service/CameraService';
 import { PairedCamera } from '../ble/protocol/NikonPairingEngine';
 import { SlaCell, SlaSev } from '../data/SlaTracker';
@@ -280,11 +280,21 @@ export struct ConnectionPage {
    * the state listener re-runs it and shifts the 2h window. */
   private onShowInfo(cam: PairedCamera): void {
     this.infoCameraName = cam.name;
+    // Synchronous first pass — if this tracker never loaded (first open after
+    // app start), this is empty; the await below re-materializes once the disk
+    // read settles and refreshes @State, so the FIRST open already shows data.
     this.slaCells = cameraService.getSlaTimeline(cam.name);
     this.slaTooltip = '';
     this.slaTooltipIndex = -1;
     this.sheetKind = 'info';
     this.showSheet = true;
+    const name = cam.name;
+    cameraService.getSlaTimelineLoaded(name).then((cells: SlaCell[]): void => {
+      // Guard: only refresh if this sheet is still open on the SAME camera.
+      if (this.sheetKind === 'info' && this.infoCameraName === name) {
+        this.slaCells = cells;
+      }
+    });
   }
 
   private openAboutSheet(): void {
@@ -617,11 +627,11 @@ export struct ConnectionPage {
       }.margin({ top: 4 })
       Row({ space: 6 }) {
         Circle({ width: 8, height: 8 }).fill($r('app.color.warning'))
-        Text('有问题（GPS 无定位 / 定位关闭）').fontSize(12).fontColor($r('app.color.text_secondary'))
+        Text('有下发但存在异常（瞬时掉线 / 写失败 / 无定位）').fontSize(12).fontColor($r('app.color.text_secondary'))
       }.margin({ top: 4 })
       Row({ space: 6 }) {
         Circle({ width: 8, height: 8 }).fill($r('app.color.danger'))
-        Text('连接中断').fontSize(12).fontColor($r('app.color.text_secondary'))
+        Text('完全无下发（连接中断）').fontSize(12).fontColor($r('app.color.text_secondary'))
       }.margin({ top: 4 })
       Row({ space: 6 }) {
         Circle({ width: 8, height: 8 }).fill($r('app.color.sla_grey'))
@@ -673,6 +683,14 @@ export struct ConnectionPage {
         Divider().strokeWidth(0.5).color($r('app.color.divider')).margin({ left: 16, right: 12 })
 
         Row() {
+          Text('删除连接健康度日志').fontSize(16).fontColor($r('app.color.text_primary')).layoutWeight(1)
+          SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(18).fontColor([$r('app.color.text_secondary')])
+        }.width('100%').padding({ left: 16, right: 12, top: 14, bottom: 14 })
+        .onClick(() => { this.onAboutClearSla(); })
+
+        Divider().strokeWidth(0.5).color($r('app.color.divider')).margin({ left: 16, right: 12 })
+
+        Row() {
           Text('重置引导').fontSize(16).fontColor($r('app.color.text_primary')).layoutWeight(1)
           SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(18).fontColor([$r('app.color.text_secondary')])
         }.width('100%').padding({ left: 16, right: 12, top: 14, bottom: 14 })
@@ -712,6 +730,29 @@ export struct ConnectionPage {
     }
   }
 
+  /** 关于 → 删除连接健康度日志: clears all persisted SLA timelines (2h 窗口
+   * 与各相机 tracker), destructive so it asks for confirmation. */
+  private onAboutClearSla(): void {
+    this.getUIContext().getPromptAction().showDialog({
+      title: '删除连接健康度日志',
+      message: '将清除所有相机的「过去 2 小时连接健康度」记录，且无法恢复。确定删除？',
+      buttons: [
+        { text: '取消', color: $r('app.color.text_secondary') },
+        { text: '删除', color: $r('app.color.danger') }
+      ]
+    }).then((result: promptAction.ShowDialogSuccessResponse) => {
+      if (result.index === 1) {
+        cameraService.clearAllSla();
+        // If the info sheet is open, it must not keep showing stale cells.
+        this.slaCells = [];
+        this.slaTooltip = '';
+        this.slaTooltipIndex = -1;
+        this.getUIContext().getPromptAction().showToast({ message: '已删除连接健康度日志', duration: 2000 });
+      }
+    }).catch((err: Error) => {
+      hilog.warn(0x0001, TAG, 'Clear SLA dialog err: ' + err.message);
+    });
+  }
   private onAboutReset(): void {
     cameraService.resetOnboarding();
     this.getUIContext().getPromptAction().showToast({ message: '已重置引导提示，下次操作将重新显示', duration: 2500 });

@@ -212,6 +212,32 @@ export class PreferencesRepository {
     });
   }
 
+  /** Delete EVERY persisted SLA timeline (关于 → 删除连接健康度日志). Walks the
+   * whole store and removes every sla_-prefixed key — including orphan keys of
+   * cameras already removed, which a per-name sweep would miss. Serialized. */
+  clearAllSla(): void {
+    this.enqueueScalarWrite(async (): Promise<void> => {
+      if (!this.store) {
+        setTimeout(() => { this.clearAllSla(); }, 1000);
+        return;
+      }
+      try {
+        const all = await this.store.getAll() as Record<string, Object>;
+        const keys: string[] = [];
+        for (const k of Object.keys(all)) {
+          if (k.startsWith('sla_')) keys.push(k);
+        }
+        for (const k of keys) {
+          await this.store.delete(k);
+        }
+        await this.store.flush();
+        hilog.info(0x0001, TAG, 'clearAllSla: removed ' + keys.length + ' key(s)');
+      } catch (err) {
+        hilog.error(0x0001, TAG, 'clearAllSla ERROR: ' + JSON.stringify(err));
+      }
+    });
+  }
+
   /** Serialize a scalar put through the saveQueue — otherwise rapid calls
    * (e.g. fast tab switches) interleave put+flush and a stale value can land
    * last. */
