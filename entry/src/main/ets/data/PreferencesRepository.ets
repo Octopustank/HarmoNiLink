@@ -19,6 +19,7 @@ const KEY_CONTROLLER_NAME = 'controller_name';
 const KEY_CONNECT_HINT_SHOWN = 'connect_hint_shown';
 const KEY_MULTI_CAM_WARNED = 'multi_cam_warned'; // beyond-N-cameras warning dismissed
 const KEY_LAST_TAB = 'last_tab_index'; // last selected tab (配对/连接), persisted
+const KEY_SLA_PREFIX = 'sla_'; // per-camera SLA timeline (连接健康看板), namespaced
 // Suffix alphabet — no 0/O/1/I to avoid confusion when reading the name on the camera
 const SUFFIX_CHARS: string = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
 
@@ -156,6 +157,59 @@ export class PreferencesRepository {
     this.putBool(KEY_CONNECT_HINT_SHOWN, false);
     this.putBool(KEY_MULTI_CAM_WARNED, false);
     hilog.info(0x0001, TAG, '[CHECKPOINT] onboarding flags reset');
+  }
+
+  // ==================== 连接健康看板 (SLA timeline) ====================
+
+  /** Per-camera SLA key — `sla_<cameraName>`; the camera name is a BLE broadcast
+   * name (ASCII), so the namespaced key is collision-free against the flat keys. */
+  private slaKey(name: string): string {
+    return KEY_SLA_PREFIX + name;
+  }
+
+  /** Persist a camera's SLA snapshot (serialized by SlaTracker) through the
+   * shared saveQueue so SLA writes interleave safely with camera writes. */
+  saveSla(name: string, json: string): void {
+    this.enqueueScalarWrite(async (): Promise<void> => {
+      if (!this.store) {
+        setTimeout(() => { this.saveSla(name, json); }, 1000);
+        return;
+      }
+      try {
+        await this.store.put(this.slaKey(name), json);
+        await this.store.flush();
+      } catch (err) {
+        hilog.error(0x0001, TAG, `saveSla(${name}) ERROR: ${JSON.stringify(err)}`);
+      }
+    });
+  }
+
+  /** Read a camera's persisted SLA snapshot (async — the store is async). */
+  async loadSla(name: string): Promise<string | null> {
+    if (!this.store) return null;
+    try {
+      const json = await this.store.get(this.slaKey(name), '') as string;
+      return json !== '' ? json : null;
+    } catch (err) {
+      hilog.error(0x0001, TAG, `loadSla(${name}) ERROR: ${JSON.stringify(err)}`);
+      return null;
+    }
+  }
+
+  /** Delete a camera's SLA timeline (on removeCamera). */
+  removeSla(name: string): void {
+    this.enqueueScalarWrite(async (): Promise<void> => {
+      if (!this.store) {
+        setTimeout(() => { this.removeSla(name); }, 1000);
+        return;
+      }
+      try {
+        await this.store.delete(this.slaKey(name));
+        await this.store.flush();
+      } catch (err) {
+        hilog.error(0x0001, TAG, `removeSla(${name}) ERROR: ${JSON.stringify(err)}`);
+      }
+    });
   }
 
   /** Serialize a scalar put through the saveQueue — otherwise rapid calls

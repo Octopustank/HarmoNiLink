@@ -10,8 +10,10 @@
  */
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { bundleManager, common } from '@kit.AbilityKit';
+import { SymbolGlyphModifier } from '@kit.ArkUI';
 import { cameraService, ConnectionState, CameraStateEvent } from '../service/CameraService';
 import { PairedCamera } from '../ble/protocol/NikonPairingEngine';
+import { SlaCell, SlaSev } from '../data/SlaTracker';
 import { HdsNavDestination, ScrollEffectType, hdsMaterial, HdsListItem } from '@kit.UIDesignKit';
 import { commentManager } from '@kit.AppGalleryKit';
 
@@ -30,7 +32,12 @@ export struct ConnectionPage {
   @State cameraStatuses: CameraStatus[] = [];
   @State logMessages: string[] = [];
   @State showLogs: boolean = false;
-  @State showAbout: boolean = false; // 关于 half-modal sheet
+  @State showSheet: boolean = false; // 半模态 sheet（关于 / 设备信息）— 单实例，避免两个 bindSheet 互相干扰
+  @State sheetKind: string = 'about'; // 'about' | 'info'
+  @State infoCameraName: string = ''; // the camera whose SLA is shown
+  @State slaCells: SlaCell[] = []; // materialized snapshot (frozen at open)
+  @State slaTooltip: string = ''; // tooltip text for the tapped cell
+  @State slaTooltipIndex: number = -1; // tapped cell index (-1 = none)
   // GPS data mirrored as @State so ArkUI detects changes
   @State gpsLat: string = '--';
   @State gpsLon: string = '--';
@@ -268,6 +275,56 @@ export struct ConnectionPage {
     });
   }
 
+  /** Open the SLA/device-info half-modal — freeze the materialized snapshot
+   * BEFORE flipping the sheet. Never read getSlaTimeline inside a @Builder:
+   * the state listener re-runs it and shifts the 2h window. */
+  private onShowInfo(cam: PairedCamera): void {
+    this.infoCameraName = cam.name;
+    this.slaCells = cameraService.getSlaTimeline(cam.name);
+    this.slaTooltip = '';
+    this.slaTooltipIndex = -1;
+    this.sheetKind = 'info';
+    this.showSheet = true;
+  }
+
+  private openAboutSheet(): void {
+    this.sheetKind = 'about';
+    this.showSheet = true;
+  }
+
+  private getInfoCamera(): PairedCamera | undefined {
+    return this.savedCameras.find((c) => c.name === this.infoCameraName);
+  }
+
+  private slaSevColor(sev: number): ResourceColor {
+    if (sev === SlaSev.GREEN) return $r('app.color.success');
+    if (sev === SlaSev.YELLOW) return $r('app.color.warning');
+    if (sev === SlaSev.RED) return $r('app.color.danger');
+    return $r('app.color.sla_grey');
+  }
+
+  private slaSevLabel(sev: number): string {
+    if (sev === SlaSev.GREEN) return '连接正常';
+    if (sev === SlaSev.YELLOW) return '有问题（连接仍在）';
+    if (sev === SlaSev.RED) return '连接中断';
+    return '无下发活动';
+  }
+
+  /** Format an epoch-ms timestamp as HH:MM. */
+  private slaTimeLabel(ts: number): string {
+    const d = new Date(ts);
+    const hh = d.getHours().toString().padStart(2, '0');
+    const mm = d.getMinutes().toString().padStart(2, '0');
+    return `${hh}:${mm}`;
+  }
+
+  private onSlaCellTap(index: number): void {
+    if (index < 0 || index >= this.slaCells.length) return;
+    const cell = this.slaCells[index];
+    this.slaTooltipIndex = index;
+    this.slaTooltip = `${this.slaTimeLabel(cell.startTs)}–${this.slaTimeLabel(cell.endTs)} · ${this.slaSevLabel(cell.sev)}`;
+  }
+
   private stateColor(state: ConnectionState): ResourceColor {
     if (state === ConnectionState.Ready) return $r('app.color.success');
     if (state === ConnectionState.Error) return $r('app.color.danger');
@@ -380,6 +437,14 @@ export struct ConnectionPage {
               HdsListItem({
                 customItemBuilder: (): void => { this.cameraRow(cam, i < this.savedCameras.length - 1); },
                 swipeActionOptions: {
+                  icons: [
+                    {
+                      icon: new SymbolGlyphModifier($r('sys.symbol.info_circle'))
+                        .fontColor([$r('app.color.card_background')]).fontSize(16),
+                      backgroundColor: $r('app.color.text_secondary'),
+                      onAction: () => { this.onShowInfo(cam); }
+                    }
+                  ],
                   deleteIconOptions: {
                     onAction: () => { this.onForget(cam); }
                   },
@@ -445,7 +510,7 @@ export struct ConnectionPage {
           .fontSize(18).fontColor([$r('app.color.text_secondary')])
       }
       .width('100%').padding({ left: 12, right: 12, top: 14, bottom: 14 })
-      .onClick(() => { this.showAbout = true; })
+      .onClick(() => { this.openAboutSheet(); })
 
       Divider().strokeWidth(0.5).color($r('app.color.divider')).margin({ left: 12, right: 12 })
 
@@ -474,6 +539,96 @@ export struct ConnectionPage {
     .padding({ top: 4, bottom: 4 })
     .borderRadius(16).backgroundColor($r('app.color.card_background'))
     .shadow({ radius: 12, color: '#0D000000', offsetY: 2 })
+    .margin({ top: 12 })
+  }
+
+  /** Single bindSheet content dispatcher — one sheet instance serving both the
+   * 关于 and 设备信息 sheets. Two chained bindSheet($$...) calls on one node
+   * fight over the same show state (点关于不弹、点信息弹关于的错乱). */
+  @Builder sheetContent() {
+    if (this.sheetKind === 'about') {
+      this.aboutSheet()
+    } else {
+      this.infoSheet()
+    }
+  }
+
+  /** 设备信息 + SLA 看板 half-modal (bindSheet). */
+  @Builder infoSheet() {
+    Column() {
+      Text('设备信息').fontSize(22).fontWeight(FontWeight.Bold).margin({ top: 36 })
+
+      Column() {
+        InfoRow({ label: '名称', value: this.getInfoCamera()?.name ?? this.infoCameraName })
+        Divider().strokeWidth(0.5).color($r('app.color.divider')).margin({ left: 16, right: 12 })
+        InfoRow({ label: 'BLE 地址', value: this.getInfoCamera()?.address ?? '--' })
+        Divider().strokeWidth(0.5).color($r('app.color.divider')).margin({ left: 16, right: 12 })
+        InfoRow({ label: '状态', value: this.stateLabel(this.getCameraStatus(this.infoCameraName)?.state ?? ConnectionState.Idle) })
+      }
+      .width('100%').borderRadius(16).backgroundColor($r('app.color.card_background'))
+      .margin({ top: 24 })
+
+      Column() {
+        Text('过去 2 小时连接健康度').fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
+        this.slaTimelineBar()
+        Row() {
+          Text('2 小时前').fontSize(11).fontColor($r('app.color.text_secondary'))
+          Blank()
+          Text('现在').fontSize(11).fontColor($r('app.color.text_secondary'))
+        }.width('100%').margin({ top: 4 })
+        if (this.slaTooltip !== '') {
+          Text(this.slaTooltip).fontSize(12).fontColor($r('app.color.text_primary')).margin({ top: 8 })
+        }
+        this.slaLegend()
+      }
+      .width('100%').alignItems(HorizontalAlign.Start)
+      .padding({ left: 16, right: 16, top: 12, bottom: 16 })
+      .borderRadius(16).backgroundColor($r('app.color.card_background'))
+      .margin({ top: 12 })
+
+      Blank().layoutWeight(1)
+    }
+    .width('100%').height('100%').padding({ left: 16, right: 16 })
+  }
+
+  /** 60-cell static timeline bar (2min per cell over [now-2h, now]). */
+  @Builder slaTimelineBar() {
+    Row() {
+      ForEach(this.slaCells, (cell: SlaCell, i: number) => {
+        Column()
+          .height(24)
+          .layoutWeight(1)
+          .backgroundColor(this.slaSevColor(cell.sev))
+          .borderRadius(1)
+          .margin({ left: 0.5, right: 0.5 })
+          .onClick(() => { this.onSlaCellTap(i); })
+      }, (cell: SlaCell) => `${cell.startTs}_${cell.sev}`)
+    }
+    .width('100%')
+    .margin({ top: 12 })
+  }
+
+  /** 涂色说明 legend. */
+  @Builder slaLegend() {
+    Column() {
+      Row({ space: 6 }) {
+        Circle({ width: 8, height: 8 }).fill($r('app.color.success'))
+        Text('连接正常').fontSize(12).fontColor($r('app.color.text_secondary'))
+      }.margin({ top: 4 })
+      Row({ space: 6 }) {
+        Circle({ width: 8, height: 8 }).fill($r('app.color.warning'))
+        Text('有问题（GPS 无定位 / 定位关闭）').fontSize(12).fontColor($r('app.color.text_secondary'))
+      }.margin({ top: 4 })
+      Row({ space: 6 }) {
+        Circle({ width: 8, height: 8 }).fill($r('app.color.danger'))
+        Text('连接中断').fontSize(12).fontColor($r('app.color.text_secondary'))
+      }.margin({ top: 4 })
+      Row({ space: 6 }) {
+        Circle({ width: 8, height: 8 }).fill($r('app.color.sla_grey'))
+        Text('无下发活动').fontSize(12).fontColor($r('app.color.text_secondary'))
+      }.margin({ top: 4 })
+    }
+    .alignItems(HorizontalAlign.Start)
     .margin({ top: 12 })
   }
 
@@ -605,11 +760,12 @@ export struct ConnectionPage {
       },
     })
     .hideBackButton(true)
-    .bindSheet($$this.showAbout, this.aboutSheet(), {
+    .bindSheet($$this.showSheet, this.sheetContent(), {
       height: SheetSize.LARGE,
       dragBar: true,
       showClose: true,
-      backgroundColor: $r('app.color.page_background')
+      backgroundColor: $r('app.color.page_background'),
+      enableOutsideInteractive: false // 半模态打开时禁止操作底下 UI
     })
   }
 }
@@ -623,5 +779,18 @@ struct GpsRow {
       Text(this.label).fontSize(13).fontColor($r('app.color.text_secondary')).width(64)
       Text(this.value).fontSize(13).fontColor($r('app.color.text_primary')).layoutWeight(1)
     }.width('100%').padding({ top: 2, bottom: 2 })
+  }
+}
+
+@Component
+struct InfoRow {
+  @Prop label: string = '';
+  @Prop value: string = '--';
+  build() {
+    Row() {
+      Text(this.label).fontSize(14).fontColor($r('app.color.text_secondary')).width(80)
+      Text(this.value).fontSize(14).fontColor($r('app.color.text_primary')).layoutWeight(1)
+        .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+    }.width('100%').padding({ left: 16, right: 12, top: 10, bottom: 10 })
   }
 }

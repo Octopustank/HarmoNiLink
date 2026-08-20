@@ -37,6 +37,7 @@ import {
   BlePairIndication, BleNot1Notification, BleWriteDone, BleError, BleEvent
 } from '../ble/BleEvent';
 import { CameraService, ConnectionState } from './CameraService';
+import { SlaSev } from '../data/SlaTracker';
 
 const TAG = 'HarmoNiLink-CameraService';
 const DEFAULT_CONTROLLER_NAME: string = 'HarmoNiLink';
@@ -389,6 +390,7 @@ export class CameraSession {
       // auto-reconnect keeps trying while the camera is unavailable. Settle
       // BEFORE disconnect() (which synchronously emits BleDisconnected and
       // would clobber the failure reason).
+      this.hub.slaOnSignal(this.cameraName, SlaSev.RED); // cannot-connect watchdog
       this.handleLinkLost('连接超时');
       this.bleClient.disconnect();
     }, connectTimeoutMs);
@@ -459,6 +461,9 @@ export class CameraSession {
         hilog.warn(0x0001, TAG, `${this.slog()}LINK LOST cause=disconnected`);
       }
       hilog.info(0x0001, TAG, `${this.slog()}[TIMING] elapsed=${this.timingElapsed()}ms cause=disconnected`);
+      // SLA RED: camera-side link loss (same-sev repeats are no-ops, so a
+      // nested teardown after a watchdog RED is harmless).
+      this.hub.slaOnSignal(this.cameraName, SlaSev.RED);
       this.handleLinkLost();
     } else if (event instanceof BleError) {
       hilog.error(0x0001, TAG, `${this.slog()}BLE Error: ${event.message}`);
@@ -495,6 +500,7 @@ export class CameraSession {
       // AFTER — disconnect() synchronously emits BleDisconnected, which would
       // re-enter handleBleEvent and overwrite the failure reason with the
       // generic 连接已断开 message.
+      this.hub.slaOnSignal(this.cameraName, SlaSev.RED); // write-fail/timeout/ble-error → link lost
       this.handleLinkLost(userReason);
       this.bleClient.disconnect();
     }
@@ -565,6 +571,8 @@ export class CameraSession {
       const stage3 = this.hub.pairingEngine.verifyStage2AndBuildStage3(stage1, msg);
       if (!stage3) {
         hilog.error(0x0001, TAG, '[CHECKPOINT] Salt verification FAILED — handshake aborted');
+        // SLA RED: handshake failure.
+        this.hub.slaOnSignal(this.cameraName, SlaSev.RED);
         // Release ownership + drop BLE before showing Error, otherwise the
         // pairing tab stays stuck owning a live link with no recovery path.
         this.hub.releaseOwnership();
@@ -650,6 +658,7 @@ export class CameraSession {
       `[CHECKPOINT] handleWriteDone: uuid=${uuid} step=${this.pairingStep}`);
 
     const idUuid = '00002002-3DD4-4255-8D62-6DC7B9BD5561';
+    const timeUuid = '00002006-3DD4-4255-8D62-6DC7B9BD5561';
     const geoUuid = '00002007-3DD4-4255-8D62-6DC7B9BD5561';
 
     if (uuid.toLowerCase() === idUuid.toLowerCase() && this.pairingStep === 4) {
@@ -658,6 +667,12 @@ export class CameraSession {
       this.checkBondedAndFinish();
     } else if (uuid.toLowerCase() === geoUuid.toLowerCase()) {
       hilog.info(0x0001, TAG, '[CHECKPOINT] GEO write confirmed');
+      // SLA GREEN: a confirmed GEO write = healthy downlink.
+      this.hub.slaOnDownlink(this.cameraName);
+    } else if (uuid.toLowerCase() === timeUuid.toLowerCase()) {
+      // SLA activity: a confirmed TIME write (fires regardless of GPS fix — it
+      // must NOT restore GREEN, or it would flicker against GEO no-fix).
+      this.hub.slaOnActivity(this.cameraName);
     }
   }
 

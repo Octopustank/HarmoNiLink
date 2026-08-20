@@ -32,6 +32,7 @@ export default class EntryAbility extends UIAbility {
 
   onDestroy(): void {
     hilog.info(0x0001, TAG, '[CHECKPOINT] EntryAbility.onDestroy()');
+    cameraService.flushSlaAll(); // last line of defense against app kill
   }
 
   onWindowStageCreate(windowStage: window.WindowStage): void {

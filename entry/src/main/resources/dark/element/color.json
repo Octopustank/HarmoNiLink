@@ -10,6 +10,7 @@
     { "name": "danger", "value": "#FF453A" },
     { "name": "success", "value": "#30D158" },
     { "name": "warning", "value": "#FF9F0A" },
+    { "name": "sla_grey", "value": "#3A3A3C" },
     { "name": "disabled_text", "value": "#FFFFFF" },
     { "name": "disabled_bg", "value": "#555555" }
   ]

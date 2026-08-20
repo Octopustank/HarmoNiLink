@@ -25,6 +25,7 @@ import { TimePayloadGenerator } from '../ble/protocol/TimePayloadGenerator';
 import { GpsData } from './GpsData';
 import { BleScanner, DiscoveredCamera } from '../ble/BleScanner';
 import { PreferencesRepository } from '../data/PreferencesRepository';
+import { SlaTracker, SlaCell, SlaSev } from '../data/SlaTracker';
 import { CameraSession } from './CameraSession';
 
 const TAG = 'HarmoNiLink-CameraService';
@@ -105,6 +106,11 @@ export class CameraService {
   private devicesChangedListeners: Array<() => void> = [];
   // Sessions keyed by camera name — multiple in Phase 1.
   private sessions: Map<string, CameraSession> = new Map();
+  // Per-camera SLA trackers (连接健康看板) — keyed by camera name, lazily
+  // created on first signal, dropped on removeCamera. Owned here (not in
+  // CameraSession) so the lifecycle survives session churn and can be flushed
+  // on background/destroy independently of the BLE session.
+  private slaTrackers: Map<string, SlaTracker> = new Map();
   // Reconnect pool: cameras waiting for their BLE address to be found by ONE
   // shared scan (routed by manufacturerDevice), instead of one scan each.
   private reconnectWatchers: ReconnectWatch[] = [];
@@ -626,6 +632,16 @@ export class CameraService {
     return ready;
   }
 
+  /** Fan a YELLOW SLA signal (GPS no-fix / location-off) out to the given
+   * sessions — GPS is a shared device source, so a no-fix degrades every
+   * connected camera at once. Same-sev repeats are no-ops in the tracker. */
+  private signalSlaYellow(sessions: CameraSession[]): void {
+    for (let i = 0; i < sessions.length; i++) {
+      const name = sessions[i].getCameraName();
+      if (name !== '') this.slaOnSignal(name, SlaSev.YELLOW);
+    }
+  }
+
   private sendGpsTick(): void {
     const ready = this.getReadySessions();
     if (ready.length === 0) {
@@ -646,6 +662,7 @@ export class CameraService {
         const locEnabled = geoLocationManager.isLocationEnabled?.() ?? true;
         if (!locEnabled) {
           hilog.warn(0x0001, TAG, '[GPS] Location service disabled, skip GEO');
+          this.signalSlaYellow(ready); // SLA YELLOW: location off
           return;
         }
       } catch (e) { /* proceed anyway */ }
@@ -680,9 +697,11 @@ export class CameraService {
           }
         }).catch(() => {
           hilog.debug(0x0001, TAG, '[GPS] GEO skip — no location');
+          this.signalSlaYellow(this.getReadySessions()); // SLA YELLOW: GPS no-fix
         });
       } catch (e) {
         hilog.debug(0x0001, TAG, '[GPS] GEO skip — exception');
+        this.signalSlaYellow(this.getReadySessions()); // SLA YELLOW: GPS no-fix (sync throw)
       }
     }
   }
@@ -762,9 +781,60 @@ export class CameraService {
     // Drop the session entirely: a re-pair of the same camera must start from
     // a fresh session, not inherit this one's leftovers.
     this.sessions.delete(name);
+    // Drop the SLA timeline too — a re-added camera must not inherit stale
+    // health history (and the 2h window won't linger on disk).
+    this.slaTrackers.delete(name);
+    this.prefs.removeSla(name);
     this.refreshGps();
     // Pairing page must drop the deleted camera's 已配对 marker.
     this.notifyDevicesChanged();
+  }
+
+  // ==================== SLA timeline (连接健康看板) ====================
+
+  /** Get-or-create a camera's SLA tracker. Lazily loads the persisted snapshot
+   * (SlaTracker.load is if-empty guarded, so a live signal racing the async
+   * read is never overwritten). */
+  private getOrCreateSlaTracker(name: string): SlaTracker {
+    let t = this.slaTrackers.get(name);
+    if (!t) {
+      t = new SlaTracker((json: string): void => { this.prefs.saveSla(name, json); });
+      this.slaTrackers.set(name, t);
+      this.prefs.loadSla(name).then((json: string | null): void => {
+        const cur = this.slaTrackers.get(name);
+        if (cur && json) cur.load(json);
+      });
+    }
+    return t;
+  }
+
+  /** GREEN signal — a GEO write was confirmed (full GPS downlink = has fix). */
+  slaOnDownlink(name: string): void {
+    this.getOrCreateSlaTracker(name).onDownlink(Date.now());
+  }
+
+  /** Activity marker — a TIME write was confirmed (fires regardless of fix;
+   * never changes sev, only advances lastActivityAt for the gap rule). */
+  slaOnActivity(name: string): void {
+    this.getOrCreateSlaTracker(name).onActivity(Date.now());
+  }
+
+  /** YELLOW/RED signal — an anomaly/transition for this camera. */
+  slaOnSignal(name: string, sev: number): void {
+    this.getOrCreateSlaTracker(name).onSignal(Date.now(), sev);
+  }
+
+  /** Materialize a camera's SLA timeline for the UI. Frozen snapshot — the
+   * caller copies it into @State BEFORE showing the sheet (do NOT call inside
+   * a @Builder: the state listener re-runs it and shifts the 2h window). */
+  getSlaTimeline(name: string): SlaCell[] {
+    return this.getOrCreateSlaTracker(name).materialize(Date.now());
+  }
+
+  /** Unconditional flush of every camera's SLA — last line of defense against
+   * an app kill (wired from onAppBackground + EntryAbility.onDestroy). */
+  flushSlaAll(): void {
+    this.slaTrackers.forEach((t: SlaTracker): void => { t.flush(); });
   }
 
   // ==================== Lifecycle (App Background/Foreground) ====================
@@ -772,6 +842,7 @@ export class CameraService {
   onAppBackground(): void {
     hilog.info(0x0001, TAG, '[LIFECYCLE] App → Background');
     this.isForeground = false;
+    this.flushSlaAll(); // persist SLA before the process may be suspended
     if (this.getReadySessions().length > 0) {
       this.stopGpsLoop();
       this.startGpsLoop(5000); // switch to slow background interval
