@@ -52,6 +52,16 @@ export class BleClient {
     this.discoveryRetries = 0;
     this.discoveryInFlight = false;
     clearTimeout(this.mtuTimeoutId);
+    // Single-client discipline: a link loss surfaces as a BLEStateChange/event
+    // (BleDisconnected) but NEVER tears down this BleClient — so connect() can
+    // be called again while the previous gattClient is still a live handle whose
+    // late callbacks would otherwise leak into the NEW connection (misrouted
+    // into the current handshake). close() stops further system callbacks and
+    // releases the radio, guaranteeing only ONE client is ever alive at a time.
+    if (this.gattClient) {
+      try { this.gattClient.close(); } catch (e) { /* best-effort */ }
+      this.gattClient = null;
+    }
     try {
       this.gattClient = ble.createGattClientDevice(deviceId);
       this.gattClient.on('BLEConnectionStateChange', (d: ble.BLEConnectionChangeState) => {
