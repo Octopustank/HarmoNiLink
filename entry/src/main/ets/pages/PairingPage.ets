@@ -21,7 +21,7 @@ export struct PairingPage {
   @State showOthers: boolean = false; // "其他设备" collapsed section
   @State pairingTarget: string = ''; // deviceName — event routing + status
   @State pairingTargetId: string = ''; // deviceId — per-row spinner (virtual-MAC dedupe)
-  @State statusLabel: string = '准备就绪';
+  @State statusLabel: string = '';
   @State owner: string = 'none'; // synced from cameraService — drives @State re-render
   @State state: ConnectionState = ConnectionState.Idle; // reactive mirror for button states
   @State scanToggleOn: boolean = false; // 蓝牙扫描开关 — reflects Scanning state
@@ -83,28 +83,30 @@ export struct PairingPage {
         } else if (s === ConnectionState.Idle) {
           this.stopPolling();
           if (this.pairingTarget && cameraService.getPairingStepFor(this.pairingTarget) === 6) {
-            // Genuine pairing completion (handshake finished) — show success
+            // Genuine pairing completion (handshake finished) — success dialog.
             const target = this.pairingTarget;
             this.pairingTarget = ''; this.pairingTargetId = '';
-            this.statusLabel = '配对完成';
-            // Force the ForEach to re-render so the just-paired camera flips to
-            // its 已配对 (blue) marker instead of staying 未配对.
             this.listRefreshTick++;
             this.getUIContext().getPromptAction().showDialog({
               title: '配对成功',
               message: `「${target}」已添加到已配对设备列表。\n请前往「连接」页面手动连接相机。`,
               buttons: [{ text: '好的', color: $r('app.color.brand') }]
             }).catch(() => { /* dialog dismissed */ });
-          } else {
-            // A just-completed success is followed by releaseOwnership()'s
-            // global Idle (cameraName='') — don't clobber "配对完成" with
-            // "准备就绪".
-            if (this.statusLabel === '配对完成') return;
-            // Cancel / failure / connection drop — surface the failure reason
-            // carried in the event message (finishBonding(false, ...)).
+          } else if (this.pairingTarget !== '') {
+            // Pairing failed (target set but handshake/bond didn't reach 6) —
+            // mirror the success dialog with the concrete failure reason.
+            const reason = event.message;
             this.pairingTarget = ''; this.pairingTargetId = '';
-            this.statusLabel = event.message !== '' ? event.message : '准备就绪';
+            this.listRefreshTick++;
+            this.getUIContext().getPromptAction().showDialog({
+              title: '配对失败',
+              message: reason !== '' ? reason : '连接已断开，请重新连接',
+              buttons: [{ text: '知道了', color: $r('app.color.brand') }]
+            }).catch(() => { /* dialog dismissed */ });
           }
+          // Idle: clear the title-bar status (success/failure/cancel) — don't
+          // show a standing "准备就绪" (the Connection page shows none either).
+          this.statusLabel = '';
         } else if (s === ConnectionState.Error) {
           this.statusLabel = '配对出错，请重试'; this.pairingTarget = ''; this.pairingTargetId = '';
           this.stopPolling();
@@ -113,7 +115,7 @@ export struct PairingPage {
         this.statusLabel = '连接页操作中'; this.stopPolling();
         this.pairingTarget = ''; this.pairingTargetId = '';
       } else {
-        this.statusLabel = s === ConnectionState.Error ? '配对出错，请重试' : '准备就绪';
+        this.statusLabel = s === ConnectionState.Error ? '配对出错，请重试' : '';
         this.pairingTarget = ''; this.pairingTargetId = ''; // safety net — never leave a stale target locked
         this.stopPolling();
       }
@@ -230,7 +232,7 @@ export struct PairingPage {
   private cancelCurrentPairing(): void {
     this.pairingTarget = ''; this.pairingTargetId = '';
     cameraService.cancelPairing();
-    this.statusLabel = '已取消';
+    this.statusLabel = ''; // idle — no standing status
   }
 
   onScanToggle(on: boolean): void {

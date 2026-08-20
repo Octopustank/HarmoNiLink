@@ -377,7 +377,6 @@ export class CameraSession {
       hilog.info(0x0001, TAG, `${this.slog()}[TIMING] elapsed=${this.timingElapsed()}ms cause=watchdog`);
       this.linkLostRootMarked = true;
       hilog.warn(0x0001, TAG, `${this.slog()}LINK LOST [ROOT] cause=watchdog`);
-      this.bleClient.disconnect();
       // Leave the shared reconnect scan for its other watchers; classic
       // discovery is only stopped when THIS session owns it (P0-2).
       this.hub.unwatchReconnect(this.cameraName);
@@ -385,8 +384,11 @@ export class CameraSession {
         try { connection.stopBluetoothDiscovery(); } catch (e) {}
       }
       // Route through the unified recovery path instead of dying on Error —
-      // auto-reconnect keeps trying while the camera is unavailable.
+      // auto-reconnect keeps trying while the camera is unavailable. Settle
+      // BEFORE disconnect() (which synchronously emits BleDisconnected and
+      // would clobber the failure reason).
       this.handleLinkLost('连接超时');
+      this.bleClient.disconnect();
     }, connectTimeoutMs);
 
     this.bleClient.connect(deviceId, (event: BleEvent) => {
@@ -483,14 +485,16 @@ export class CameraSession {
       }
       // Link-loss signal, not a terminal state: tear down and let
       // handleLinkLost decide between auto-reconnect and settling.
-      this.bleClient.disconnect();
-      // Leave the shared reconnect scan for its other watchers; classic
-      // discovery is only stopped when THIS session owns it (P0-2).
       this.hub.unwatchReconnect(this.cameraName);
       if (this.bondingDiscoveryActive || this.pendingBondingDiscovery) {
         try { connection.stopBluetoothDiscovery(); } catch (e) {}
       }
+      // handleLinkLost FIRST (settles with the concrete reason), disconnect
+      // AFTER — disconnect() synchronously emits BleDisconnected, which would
+      // re-enter handleBleEvent and overwrite the failure reason with the
+      // generic 连接已断开 message.
       this.handleLinkLost(userReason);
+      this.bleClient.disconnect();
     }
   }
 
