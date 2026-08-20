@@ -120,7 +120,11 @@ export class SlaTracker {
     try {
       const snap = JSON.parse(json) as SlaSnapshot;
       this.lastSeen = snap.lastSeen || 0;
-      const blks: SlaBlock[] = snap.blocks || [];
+      // Drop inverted blocks (endTs < startTs) — residue from a pre-fix
+      // closeOpen(lastActivityAt) bug that inverted the red block on a slow
+      // reconnect. They'd otherwise paint a spurious red cell.
+      const raw: SlaBlock[] = snap.blocks || [];
+      const blks: SlaBlock[] = raw.filter((b: SlaBlock): boolean => b.e >= b.s);
       if (blks.length > 0) {
         const last = blks[blks.length - 1];
         if (last.sev === SlaSev.GREEN && last.e === this.lastSeen) {
@@ -228,29 +232,42 @@ export class SlaTracker {
 
   // ==================== Materialization ====================
 
-  /** Materialize [now-2h, now] into CELL_COUNT cells. GREY = no block covers
-   * the cell's center timestamp. Pure read — no side effects. */
+  /** Materialize [now-2h, now] into CELL_COUNT cells. A cell's sev is the
+   * DOMINANT block — the one overlapping it for the longest time. A 2s drop
+   * inside a cell that is otherwise healthy stays green (it is not "no downlink
+   * at all"); a cell covered mostly by a red block paints red. Ties resolve to
+   * the more severe block. GREY only when no block overlaps at all.
+   * Deterministic — pure read, no side effects. */
   materialize(now: number): SlaCell[] {
     const winStart = now - WIN_MS;
     const cells: SlaCell[] = [];
     for (let i = 0; i < CELL_COUNT; i++) {
       cells.push({ startTs: winStart + i * CELL_MS, endTs: winStart + (i + 1) * CELL_MS, sev: SlaSev.GREY });
     }
-    // Collect all blocks (closed + open) for coverage lookup. Ordered by s.
+    // Collect all blocks (closed + open) for overlap lookup. Ordered by s.
     const all: SlaBlock[] = [];
     for (const b of this.blocks) all.push(b);
     if (this.openBlock !== null) {
       all.push({ s: this.openBlock.s, e: this.lastSeen, sev: this.openBlock.sev });
     }
     for (let i = 0; i < CELL_COUNT; i++) {
-      const center = cells[i].startTs + CELL_MS / 2;
+      const cellStart = cells[i].startTs;
+      const cellEnd = cells[i].endTs;
+      let bestSev = -1;
+      let bestDur = 0;
       for (let j = 0; j < all.length; j++) {
         const b = all[j];
-        if (b.s <= center && center < b.e) {
-          cells[i].sev = b.sev;
-          break;
+        if (b.e <= b.s) continue; // skip inverted blocks (historical bug residue)
+        const ovStart = b.s > cellStart ? b.s : cellStart;
+        const ovEnd = b.e < cellEnd ? b.e : cellEnd;
+        if (ovStart >= ovEnd) continue; // no overlap
+        const dur = ovEnd - ovStart;
+        if (dur > bestDur || (dur === bestDur && b.sev > bestSev)) {
+          bestDur = dur;
+          bestSev = b.sev;
         }
       }
+      if (bestSev >= 0) cells[i].sev = bestSev;
     }
     return cells;
   }
