@@ -63,10 +63,13 @@ const SIGNAL_STEP: number = 1024;
 
 export enum SlaSev {
   GREEN = 0,
+  /** 轻微：偶发断连但该时段仍成功下发（宏观连接稳定，视觉近绿） */
   YELLOW = 1,
-  RED = 2,
+  /** 数据问题 / 多问题并存（GPS 无定位、只发出单一数据、断连+无定位） */
+  ORANGE = 2,
+  RED = 3,
   /** Inferred at materialize — never persisted. */
-  GREY = 3,
+  GREY = 4,
 }
 
 /** One materialized timeline cell (2min, absolute-aligned). */
@@ -231,22 +234,29 @@ export class SlaTracker {
     return cells;
   }
 
-  /** Color decision — the SINGLE place the semantics live:
-   *   no downlink ∧ red          -> RED   (完全挂了)
-   *   no downlink ∧ no red       -> GREY  (未开启 / 被杀 / 无采样)
-   *   GEO ∧ TIME ∧ no red no yellow -> GREEN (完整配对健康)
-   *   any other downlink         -> YELLOW (只有一味 / 瞬时掉线 / GPS 降级) */
+  /** Color decision — the SINGLE place the semantics live, lightest→worst:
+   *   GREEN  : GEO ∧ TIME ∧ no red no yellow (完整配对健康)
+   *   YELLOW : has downlink ∧ red ∧ no yellow — 偶发断连但该时段成功下发，
+   *            宏观连接稳定（轻，视觉上接近绿色）
+   *   ORANGE : has downlink ∧ (yellow no red) — GPS 无定位等数据问题；
+   *            or red ∧ yellow — 断连与数据问题并存
+   *            or 只有单一数据（TIME-only / GEO-only）
+   *   RED    : no downlink ∧ red — 彻底断开，一次都没发出
+   *   GREY   : no downlink ∧ no red — 未开启 / 被杀 / 无采样 */
   private decideSev(flags: number): number {
     const hasGeo = (flags & F_GEO) !== 0;
     const hasTime = (flags & F_TIME) !== 0;
+    const hasRed = (flags & F_RED) !== 0;
+    const hasYellow = (flags & F_YELLOW) !== 0;
     const hasDown = hasGeo || hasTime;
     if (!hasDown) {
-      return (flags & F_RED) !== 0 ? SlaSev.RED : SlaSev.GREY;
+      return hasRed ? SlaSev.RED : SlaSev.GREY;
     }
-    if (hasGeo && hasTime && (flags & F_RED) === 0 && (flags & F_YELLOW) === 0) {
-      return SlaSev.GREEN;
-    }
-    return SlaSev.YELLOW;
+    if (hasRed && hasYellow) return SlaSev.ORANGE;   // 两个问题并存
+    if (hasRed) return SlaSev.YELLOW;                // 断连但成功下发
+    if (hasYellow) return SlaSev.ORANGE;             // GPS 数据问题
+    if (hasGeo && hasTime) return SlaSev.GREEN;      // 完整配对健康
+    return SlaSev.ORANGE;                            // 只有单一数据（数据不完整）
   }
 
   // ==================== Internals ====================

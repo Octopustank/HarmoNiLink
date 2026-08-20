@@ -12,6 +12,7 @@
     { "name": "success", "value": "#34C759" },
     { "name": "warning", "value": "#FF9500" },
     { "name": "sla_grey", "value": "#D1D1D6" },
+    { "name": "sla_light", "value": "#A8D845" },
     { "name": "disabled_text", "value": "#FFFFFF" },
     { "name": "disabled_bg", "value": "#C0C0C0" }
   ]

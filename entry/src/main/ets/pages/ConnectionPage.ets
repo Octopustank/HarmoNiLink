@@ -308,15 +308,17 @@ export struct ConnectionPage {
 
   private slaSevColor(sev: number): ResourceColor {
     if (sev === SlaSev.GREEN) return $r('app.color.success');
-    if (sev === SlaSev.YELLOW) return $r('app.color.warning');
+    if (sev === SlaSev.YELLOW) return $r('app.color.sla_light');
+    if (sev === SlaSev.ORANGE) return $r('app.color.warning');
     if (sev === SlaSev.RED) return $r('app.color.danger');
     return $r('app.color.sla_grey');
   }
 
   private slaSevLabel(sev: number): string {
     if (sev === SlaSev.GREEN) return '连接正常';
-    if (sev === SlaSev.YELLOW) return '有问题（连接仍在）';
-    if (sev === SlaSev.RED) return '连接中断';
+    if (sev === SlaSev.YELLOW) return '偶发断连，数据已送达';
+    if (sev === SlaSev.ORANGE) return '存在数据问题（无定位等）';
+    if (sev === SlaSev.RED) return '完全中断，无数据';
     return '无下发活动';
   }
 
@@ -626,12 +628,16 @@ export struct ConnectionPage {
         Text('连接正常').fontSize(12).fontColor($r('app.color.text_secondary'))
       }.margin({ top: 4 })
       Row({ space: 6 }) {
+        Circle({ width: 8, height: 8 }).fill($r('app.color.sla_light'))
+        Text('偶发断连，但数据已送达').fontSize(12).fontColor($r('app.color.text_secondary'))
+      }.margin({ top: 4 })
+      Row({ space: 6 }) {
         Circle({ width: 8, height: 8 }).fill($r('app.color.warning'))
-        Text('有下发但存在异常（瞬时掉线 / 写失败 / 无定位）').fontSize(12).fontColor($r('app.color.text_secondary'))
+        Text('存在数据问题（无定位等）').fontSize(12).fontColor($r('app.color.text_secondary'))
       }.margin({ top: 4 })
       Row({ space: 6 }) {
         Circle({ width: 8, height: 8 }).fill($r('app.color.danger'))
-        Text('完全无下发（连接中断）').fontSize(12).fontColor($r('app.color.text_secondary'))
+        Text('完全中断，无数据').fontSize(12).fontColor($r('app.color.text_secondary'))
       }.margin({ top: 4 })
       Row({ space: 6 }) {
         Circle({ width: 8, height: 8 }).fill($r('app.color.sla_grey'))
