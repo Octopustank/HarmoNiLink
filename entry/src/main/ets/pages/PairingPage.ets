@@ -145,7 +145,7 @@ export struct PairingPage {
         Row({ space: 6 }) {
           Text(cam.deviceName)
             .fontSize(16).fontWeight(500)
-            .fontColor(this.isPaired(cam) ? $r('app.color.brand') : $r('app.color.text_primary'))
+            .fontColor(this.isPaired(cam) ? $r('app.color.link') : $r('app.color.text_primary'))
             .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
           if (this.isPaired(cam)) {
             Text('已配对').fontSize(12).fontColor($r('app.color.text_secondary'))
@@ -325,16 +325,21 @@ export struct PairingPage {
           .width('100%').padding({ left: 16, right: 16, top: 12, bottom: 12 })
           .borderRadius(16).backgroundColor($r('app.color.card_background'))
           .shadow({ radius: 12, color: '#0D000000', offsetY: 2 })
-          .margin({ top: 12, bottom: 16 })
+          .margin({ top: 12, bottom: 6 })
+
+          Text('将相机置于配对模式，确保蓝牙已开启')
+            .fontSize(11).fontColor($r('app.color.text_secondary'))
+            .width('100%').textAlign(TextAlign.Start)
+            .margin({ left: 16, bottom: 8 })
 
           if (this.discoveredCameras.length > 0) {
             Text('已发现的设备').fontSize(14).fontColor($r('app.color.text_secondary'))
               .margin({ left: 12, bottom: 8, top: 28 }).alignSelf(ItemAlign.Start).fontWeight(500)
 
-            // 尼康相机置顶（UUID 0xDE00 或命名匹配）
+            // 尼康相机置顶（UUID 0xDE00 或命名匹配）— 标题始终显示（含 0）
+            Text(`尼康相机（${this.nikonCameras().length}）`).fontSize(13).fontColor($r('app.color.text_secondary'))
+              .margin({ left: 12, bottom: 6, top: 8 }).alignSelf(ItemAlign.Start)
             if (this.nikonCameras().length > 0) {
-              Text(`尼康相机（${this.nikonCameras().length}）`).fontSize(12).fontColor($r('app.color.brand'))
-                .margin({ left: 12, bottom: 6, top: 8 }).alignSelf(ItemAlign.Start)
               Column() {
                 ForEach(this.nikonCameras(), (cam: DiscoveredCamera) => { this.cameraRow(cam) },
                   (cam: DiscoveredCamera) => `${cam.deviceId}_${this.listRefreshTick}`)
@@ -367,10 +372,6 @@ export struct PairingPage {
                 .fontSize(13).fontColor($r('app.color.text_secondary')).textAlign(TextAlign.Center)
             }.width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
           }
-
-          Text('将相机置于配对模式，确保蓝牙已开启')
-            .fontSize(11).fontColor($r('app.color.text_secondary')).textAlign(TextAlign.Center).width('100%')
-            .padding({ top: 20 })
 
           Blank().layoutWeight(1)
         }

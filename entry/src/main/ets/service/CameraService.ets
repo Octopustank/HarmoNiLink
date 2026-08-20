@@ -379,6 +379,22 @@ export class CameraService {
     return this.owner === 'pairing';
   }
 
+  /**
+   * True while the pairing tab is in the classic-BONDING phase — the ONLY
+   * radio-exclusive window (classic BT discovery + pairDevice). The pairing
+   * SCAN (withClassic=false) and BLE handshake run fine in parallel with
+   * connection operations, so connection ops defer to BONDING, not to the
+   * whole pairing flow (otherwise a pairing scan would needlessly lock the
+   * Connection page).
+   */
+  isPairingBonding(): boolean {
+    if (this.owner !== 'pairing') return false;
+    for (const s of this.sessions.values()) {
+      if (s.isPairModeSession() && s.getState() === ConnectionState.Bonding) return true;
+    }
+    return false;
+  }
+
   // ==================== Scan (Pairing Page, shared) ====================
 
   startPairingScan(): boolean {

@@ -51,9 +51,6 @@ export struct ConnectionPage {
   private gpsTimer: number = -1;
   private offStateListener: (() => void) | null = null;
 
-  private isPairingOwner(): boolean { return this.owner === 'pairing'; }
-  private isConnectionOwner(): boolean { return this.owner === 'connection'; }
-
   aboutToAppear(): void {
     hilog.info(0x0001, TAG, '[CHECKPOINT] ConnectionPage aboutToAppear');
     this.loadAppVersion();
@@ -68,8 +65,8 @@ export struct ConnectionPage {
       this.logMessages = [...this.logMessages.slice(-49),
         `[${new Date().toLocaleTimeString()}] [${event.cameraName || '全局'}] ${event.state}: ${event.message}`];
       // Title bar subtitle — show progress only for our own operations
-      if (this.isPairingOwner()) {
-        this.titleSub = '配对页操作中';
+      if (cameraService.isPairingBonding()) {
+        this.titleSub = '正在经典蓝牙绑定';
       } else if (event.cameraName !== '' && (event.state === ConnectionState.Scanning
         || event.state === ConnectionState.Connecting || event.state === ConnectionState.Discovering
         || event.state === ConnectionState.Pairing || event.state === ConnectionState.Bonding)) {
@@ -119,9 +116,10 @@ export struct ConnectionPage {
    */
   private onConnectToggle(cam: PairedCamera, on: boolean): void {
     if (on) {
-      if (this.isPairingOwner()) {
-        // Starting a connect needs the radio — pairing owns it exclusively.
-        this.getUIContext().getPromptAction().showToast({ message: '配对进行中，请稍后再开启连接', duration: 2000 });
+      if (cameraService.isPairingBonding()) {
+        // Classic bonding holds the radio exclusively — defer a new connect.
+        // (A pairing scan/handshake runs in parallel, so only bonding blocks.)
+        this.getUIContext().getPromptAction().showToast({ message: '正在经典蓝牙绑定，请稍后再开启连接', duration: 2000 });
         this.revertToggle();
         return;
       }
@@ -222,7 +220,7 @@ export struct ConnectionPage {
    * connects at random-looking moments.
    */
   private reconcileConnections(): void {
-    if (this.isPairingOwner()) return;
+    if (cameraService.isPairingBonding()) return; // only classic bonding blocks
     for (const cam of this.savedCameras) {
       if (!cam.keepAlive) continue;
       if (cameraService.isCameraConnected(cam.name) || cameraService.isCameraBusy(cam.name)) continue;
@@ -308,7 +306,7 @@ export struct ConnectionPage {
     Column() {
       Row({ space: 8 }) {
         Circle({ width: 8, height: 8 }).fill($r('app.color.warning'))
-        Text('配对页正在进行设备配对，连接操作已暂停').fontSize(13).fontColor($r('app.color.warning'))
+        Text('正在经典蓝牙绑定，连接操作已暂停').fontSize(13).fontColor($r('app.color.warning'))
       }
     }
     .width('100%').alignItems(HorizontalAlign.Start)
@@ -570,7 +568,7 @@ export struct ConnectionPage {
         Column() {
           Blank().height(56)
 
-          if (this.isPairingOwner()) { this.pairingNotice() }
+          if (cameraService.isPairingBonding()) { this.pairingNotice() }
           this.gpsCard()
 
           Text('连接开关打开的相机将保持连接，断开后自动重连。\n左滑设备卡片可删除配对；未配对的相机请先在「配对」页扫描添加。\n需要后台下发数据，请在系统设置中允许始终定位。')

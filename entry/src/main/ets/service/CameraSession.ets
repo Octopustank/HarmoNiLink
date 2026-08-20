@@ -11,7 +11,8 @@
  * Ownership model (Phase 3): the Hub's single `owner` is a PAIRING-ONLY
  * mutex (classic bonding needs the radio exclusively). Connection/reconnect
  * operations run on many sessions in parallel and never take it — they only
- * defer to an active pairing via isPairingActive(). This replaces the old
+ * defer to the classic-BONDING phase via isPairingBonding() (a pairing scan /
+ * BLE handshake runs in parallel with a connect). This replaces the old
  * 'connection' owner that a sibling's early Ready could release, stranding a
  * straggler's 10s saved-address fallback (P0-1).
  *
@@ -161,9 +162,10 @@ export class CameraSession {
 
   startReconnect(camera: PairedCamera): boolean {
     // Connection ops don't take the Hub mutex (many may run in parallel) —
-    // they only defer to an active pairing (classic bonding needs the radio).
-    if (this.hub.isPairingActive()) {
-      hilog.warn(0x0001, TAG, `${this.slog()}startReconnect deferred — pairing in progress`);
+    // they only defer to the classic-BONDING phase (radio-exclusive). A pairing
+    // scan/handshake runs fine in parallel with a connect.
+    if (this.hub.isPairingBonding()) {
+      hilog.warn(0x0001, TAG, `${this.slog()}startReconnect deferred — bonding in progress`);
       return false;
     }
     // Re-entry guard: a double-tap would otherwise open two GATT clients and
@@ -212,8 +214,8 @@ export class CameraSession {
     this.scanFallbackTimerId = setTimeout(() => {
       this.scanFallbackTimerId = null;
       if (this.state !== ConnectionState.Scanning) return;
-      if (this.hub.isPairingActive()) {
-        this.armScanFallback(camera); // radio busy — retry shortly
+      if (this.hub.isPairingBonding()) {
+        this.armScanFallback(camera); // classic bonding holds the radio — retry shortly
         return;
       }
       this.hub.unwatchReconnect(camera.name);
@@ -866,12 +868,12 @@ export class CameraSession {
     const cam = this.savedCamera;
     this.reconnectTimerId = setTimeout(() => {
       this.reconnectTimerId = null;
-      // Reconnect unless the pairing tab owns the resource (pairing is serial;
-      // a Ready session's owner is already released so 'none' still reconnects).
-      if (cam && this.hub.isKeepAlive(cam.name) && this.hub.getOwner() !== 'pairing') {
+      // Reconnect unless classic BONDING holds the radio (a pairing scan or BLE
+      // handshake runs in parallel with a connect, so only bonding defers).
+      if (cam && this.hub.isKeepAlive(cam.name) && !this.hub.isPairingBonding()) {
         this.startReconnect(cam);
       } else if (cam && this.hub.isKeepAlive(cam.name)) {
-        // Pairing owns the radio right now — re-arm at the SAME backoff step
+        // Bonding holds the radio right now — re-arm at the SAME backoff step
         // (retries was already incremented by this firing; undo it so the
         // schedule below re-computes the same delay). Dropping the attempt
         // here would strand the camera until some unrelated event pokes it.

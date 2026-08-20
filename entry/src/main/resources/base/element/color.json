@@ -7,6 +7,7 @@
     { "name": "text_secondary", "value": "#99000000" },
     { "name": "divider", "value": "#1A000000" },
     { "name": "brand", "value": "#007DFF" },
+    { "name": "link", "value": "#0A59F7" },
     { "name": "danger", "value": "#FF3B30" },
     { "name": "success", "value": "#34C759" },
     { "name": "warning", "value": "#FF9500" },
