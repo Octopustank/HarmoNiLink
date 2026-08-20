@@ -386,7 +386,7 @@ export class CameraSession {
       }
       // Route through the unified recovery path instead of dying on Error —
       // auto-reconnect keeps trying while the camera is unavailable.
-      this.handleLinkLost();
+      this.handleLinkLost('连接超时');
     }, connectTimeoutMs);
 
     this.bleClient.connect(deviceId, (event: BleEvent) => {
@@ -463,12 +463,13 @@ export class CameraSession {
       // (35s -> 60s) may shift it from watchdog to write timeout (3 x 10s) —
       // this split makes that shift visible in logs.
       let cause: string;
+      let userReason: string;
       if (event.message.startsWith('Write timeout')) {
-        cause = 'write-timeout';
+        cause = 'write-timeout'; userReason = '写入超时';
       } else if (event.message.startsWith('Write ')) {
-        cause = 'write-error';
+        cause = 'write-error'; userReason = '写入失败';
       } else {
-        cause = 'ble-error';
+        cause = 'ble-error'; userReason = '蓝牙连接错误';
       }
       this.linkLostRootMarked = true;
       hilog.warn(0x0001, TAG, `${this.slog()}LINK LOST [ROOT] cause=${cause}`);
@@ -489,7 +490,7 @@ export class CameraSession {
       if (this.bondingDiscoveryActive || this.pendingBondingDiscovery) {
         try { connection.stopBluetoothDiscovery(); } catch (e) {}
       }
-      this.handleLinkLost();
+      this.handleLinkLost(userReason);
     }
   }
 
@@ -806,7 +807,7 @@ export class CameraSession {
     }, 15000);
   }
 
-  private handleLinkLost(): void {
+  private handleLinkLost(failReason: string = ''): void {
     if (this.state === ConnectionState.Ready) {
       if (this.savedCamera && this.hub.isKeepAlive(this.savedCamera.name)) {
         this.scheduleReconnect(); // sets Idle + refreshes GPS for remaining cameras
@@ -832,15 +833,14 @@ export class CameraSession {
     if (this.savedCamera && this.hub.isKeepAlive(this.savedCamera.name)) {
       this.scheduleReconnect();
     } else {
-      // Release the mutex ONLY if we are the pairing session — connection
-      // sessions never hold it (P0-1).
+      // setState BEFORE releaseOwnership (P0-A): PairingPage keys the failure
+      // message off isPairingTabOwner(), which is already false once the mutex
+      // is released — the message would fall through to "准备就绪".
+      this.setState(ConnectionState.Idle,
+        failReason !== '' ? failReason : '连接已断开，请重新连接');
       if (this.isPairMode && this.hub.getOwner() === 'pairing') {
         this.hub.releaseOwnership();
       }
-      // setState BEFORE clearing cameraName (P1-3); refreshGps() — NOT
-      // stopBackgroundTask() — so a sibling Ready camera's background task
-      // is never torn down by OUR failure (P1-4).
-      this.setState(ConnectionState.Idle, '连接已断开，请重新连接');
       this.cameraSerial = '';
       this.cameraName = '';
       this.hub.refreshGps();

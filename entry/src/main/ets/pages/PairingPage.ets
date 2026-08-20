@@ -19,7 +19,8 @@ const TAG = 'HarmoNiLink-PairingPage';
 export struct PairingPage {
   @State discoveredCameras: DiscoveredCamera[] = [];
   @State showOthers: boolean = false; // "其他设备" collapsed section
-  @State pairingTarget: string = '';
+  @State pairingTarget: string = ''; // deviceName — event routing + status
+  @State pairingTargetId: string = ''; // deviceId — per-row spinner (virtual-MAC dedupe)
   @State statusLabel: string = '准备就绪';
   @State owner: string = 'none'; // synced from cameraService — drives @State re-render
   @State state: ConnectionState = ConnectionState.Idle; // reactive mirror for button states
@@ -84,7 +85,7 @@ export struct PairingPage {
           if (this.pairingTarget && cameraService.getPairingStepFor(this.pairingTarget) === 6) {
             // Genuine pairing completion (handshake finished) — show success
             const target = this.pairingTarget;
-            this.pairingTarget = '';
+            this.pairingTarget = ''; this.pairingTargetId = '';
             this.statusLabel = '配对完成';
             // Force the ForEach to re-render so the just-paired camera flips to
             // its 已配对 (blue) marker instead of staying 未配对.
@@ -101,19 +102,19 @@ export struct PairingPage {
             if (this.statusLabel === '配对完成') return;
             // Cancel / failure / connection drop — surface the failure reason
             // carried in the event message (finishBonding(false, ...)).
-            this.pairingTarget = '';
+            this.pairingTarget = ''; this.pairingTargetId = '';
             this.statusLabel = event.message !== '' ? event.message : '准备就绪';
           }
         } else if (s === ConnectionState.Error) {
-          this.statusLabel = '配对出错，请重试'; this.pairingTarget = '';
+          this.statusLabel = '配对出错，请重试'; this.pairingTarget = ''; this.pairingTargetId = '';
           this.stopPolling();
         }
       } else if (this.isConnectionTabBusy()) {
         this.statusLabel = '连接页操作中'; this.stopPolling();
-        this.pairingTarget = '';
+        this.pairingTarget = ''; this.pairingTargetId = '';
       } else {
         this.statusLabel = s === ConnectionState.Error ? '配对出错，请重试' : '准备就绪';
-        this.pairingTarget = ''; // safety net — never leave a stale target locked
+        this.pairingTarget = ''; this.pairingTargetId = ''; // safety net — never leave a stale target locked
         this.stopPolling();
       }
     });
@@ -151,8 +152,10 @@ export struct PairingPage {
         Text(`RSSI: ${cam.rssi}`).fontSize(14).fontColor($r('app.color.text_secondary')).margin({ top: 2 })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
 
-      // 配对中 — 加载动画，点击行取消
-      if (this.pairingTarget === cam.deviceName) {
+      // 配对中 — 加载动画，点击行取消 (match by deviceId: virtual-MAC
+      // duplicates share a name but differ by address, so only the tapped row
+      // should spin)
+      if (this.pairingTargetId === cam.deviceId) {
         LoadingProgress()
           .width(22).height(22)
           .color($r('app.color.brand'))
@@ -175,7 +178,7 @@ export struct PairingPage {
       this.getUIContext().getPromptAction().showToast({ message: '该设备已配对，请在「连接」页管理', duration: 2000 });
       return;
     }
-    if (this.pairingTarget === cam.deviceName) {
+    if (this.pairingTargetId === cam.deviceId) {
       this.cancelCurrentPairing(); // 再点取消配对
       return;
     }
@@ -225,7 +228,7 @@ export struct PairingPage {
   }
 
   private cancelCurrentPairing(): void {
-    this.pairingTarget = '';
+    this.pairingTarget = ''; this.pairingTargetId = '';
     cameraService.cancelPairing();
     this.statusLabel = '已取消';
   }
@@ -272,7 +275,7 @@ export struct PairingPage {
     } else {
       // User is switching the toggle OFF — stop scanning if scanning.
       if (this.isPairingTabOwner() && this.state === ConnectionState.Scanning) {
-        this.pairingTarget = '';
+        this.pairingTarget = ''; this.pairingTargetId = '';
         cameraService.stopPairingScan();
         this.statusLabel = '扫描已停止';
       }
@@ -291,6 +294,7 @@ export struct PairingPage {
     }
     hilog.info(0x0001, TAG, `[CHECKPOINT] Pairing with ${cam.deviceName}`);
     this.pairingTarget = cam.deviceName;
+    this.pairingTargetId = cam.deviceId; // tap THIS address, not its name-twin
     this.stopPolling();
     this.statusLabel = `正在与 ${cam.deviceName} 配对…`;
     cameraService.selectDiscoveredCamera(cam);
