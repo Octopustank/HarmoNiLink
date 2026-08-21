@@ -829,7 +829,19 @@ export struct ConnectionPage {
       // page. The paired-device List can't self-scroll (it has no fixed
       // height, lives inside a card), so ArkUI's built-in "scroll = close
       // swipe" never fires here — trigger it on the page scroll instead.
-      .onScrollStart(() => { this.listScroller.closeAllSwipeActions(); })
+      .onScrollStart(() => {
+        // Only safe to call when the paired-device List actually exists and
+        // has bound this scroller (i.e. there is >=1 paired camera). With no
+        // devices the List is never created, the scroller stays unbound, and
+        // calling closeAllSwipeActions() throws BusinessError 100004 and
+        // crashes the app inside the framework scroll callback.
+        if (this.savedCameras.length === 0) return;
+        try {
+          this.listScroller.closeAllSwipeActions();
+        } catch (e) {
+          hilog.warn(0x0001, TAG, 'closeAllSwipeActions failed: ' + (e as Error).message);
+        }
+      })
       .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
     }
     .backgroundColor($r('app.color.page_background'))
