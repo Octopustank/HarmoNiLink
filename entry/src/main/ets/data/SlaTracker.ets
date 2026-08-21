@@ -161,12 +161,15 @@ export class SlaTracker {
   // ==================== Signal entry points ====================
 
   /** Set a signal bit into the slot owning the absolute bucket of `now`.
-   * Resets the slot first if it still holds an older bucket (ring rotation). */
+   * Resets the slot first if it still holds an older bucket (ring rotation),
+   * and ignores a stale signal aimed at an older bucket than the slot already
+   * holds (clock-backward — newer data must not be overwritten). */
   private mark(now: number, bit: number, fine: boolean): void {
     const bucket = this.bucketOf(now);
     const slot = this.slotFor(bucket);
     if (slot.bucket !== bucket) {
-      slot.bucket = bucket; // stale older data — drop it, start fresh
+      if (slot.bucket >= 0 && bucket < slot.bucket) return; // clock-backward — ignore stale
+      slot.bucket = bucket; // older bucket — drop it, start fresh
       slot.flags = 0;
     }
     slot.flags |= bit;
@@ -190,7 +193,10 @@ export class SlaTracker {
   }
 
   /** Low-freq anomaly/transition signal (sev = YELLOW | RED).
-   * GREEN is redirected to onDownlink for call-site compatibility. */
+   * GREEN is redirected to onDownlink for call-site compatibility.
+   * RED persists on the fine (~1s) bucket so a link failure survives a kill;
+   * YELLOW (a data issue like GPS no-fix, which can recur every tick) persists
+   * on the coarse (~32.8s) bucket to avoid flushing disk on every no-fix. */
   onSignal(now: number, sev: number): void {
     if (sev === SlaSev.GREEN) {
       this.onDownlink(now);
@@ -199,7 +205,7 @@ export class SlaTracker {
     if (sev === SlaSev.RED) {
       this.mark(now, F_RED, true);
     } else { // YELLOW
-      this.mark(now, F_YELLOW, true);
+      this.mark(now, F_YELLOW, false);
     }
   }
 
