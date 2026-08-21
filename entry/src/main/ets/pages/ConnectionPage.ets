@@ -479,7 +479,7 @@ export struct ConnectionPage {
                   deleteTriggerType: SwipeDeleteTriggerType.EASY_TRIGGER
                 }
               })
-            }, (cam: PairedCamera) => `${cam.name}_${this.revertTick}`)
+            }, (cam: PairedCamera) => `${cam.name}_${this.savedCameras.length}_${this.revertTick}`)
           }
           .width('100%')
           .scrollBar(BarState.Off)
