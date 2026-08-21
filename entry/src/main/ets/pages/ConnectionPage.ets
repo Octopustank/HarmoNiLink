@@ -739,12 +739,18 @@ export struct ConnectionPage {
     try {
       commentManager.showCommentDialog(ctx).then(() => {})
         .catch((e: BusinessError) => {
-          // showCommentDialog fails SILENTLY in common situations: user not signed
-          // in to HUAWEI ID (1021500006), already rated this version (1021500007),
-          // rated within a year (1021500009), or AppGallery unavailable. Surface a
-          // readable reason instead of swallowing it — "点了没反应" is a bug report.
+          // showCommentDialog fails in many situations. Two real-world groups:
+          //  (A) account/state gating the user can act on (not signed in,
+          //      already rated this version / within a year);
+          //  (B) the app is NOT published on AppGallery — the dialog is backed
+          //      by the market, which validates bundleName+versionCode; an
+          //      unsigned/unlisted debug build has no market record, so it is
+          //      rejected. That is a platform constraint, NOT a network error,
+          //      so the fallback must NOT claim "check your network".
+          // Surface a readable reason instead of swallowing it — "点了没反应"
+          // is a bug report.
           const code = e ? e.code : 0;
-          let msg = '暂时无法打开评价，请检查网络或稍后再试';
+          let msg = '无法打开评价：请确认应用已上架华为应用市场，并已登录华为账号';
           if (code === 1021500006) msg = '需要登录华为账号后才能评价';
           else if (code === 1021500007) msg = '你已对当前版本评价过了，感谢支持';
           else if (code === 1021500009) msg = '你一年内已评价过，感谢支持';
