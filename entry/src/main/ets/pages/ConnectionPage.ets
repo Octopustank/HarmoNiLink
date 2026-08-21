@@ -16,6 +16,8 @@ import { PairedCamera } from '../ble/protocol/NikonPairingEngine';
 import { SlaCell, SlaSev } from '../data/SlaTracker';
 import { HdsNavDestination, ScrollEffectType, hdsMaterial, HdsListItem } from '@kit.UIDesignKit';
 import { commentManager } from '@kit.AppGalleryKit';
+import { BusinessError } from '@kit.BasicServicesKit';
+import { SwipeDeleteTriggerType } from '@hms.hds.HdsStyle';
 
 const TAG = 'HarmoNiLink-ConnectionPage';
 
@@ -463,7 +465,9 @@ export struct ConnectionPage {
                   fullDeleteOptions: {
                     isFullDelete: true, // swipe through the card to delete
                     onFullDeleteAction: () => { this.onForget(cam); }
-                  }
+                  },
+                  // 轻滑即触发删除/展开，避免必须划到屏幕边缘才能删除（真机反馈阈值偏大）
+                  deleteTriggerType: SwipeDeleteTriggerType.EASY_TRIGGER
                 }
               })
             }, (cam: PairedCamera) => `${cam.name}_${this.revertTick}`)
@@ -728,11 +732,25 @@ export struct ConnectionPage {
   private onAboutComment(): void {
     const ctx = this.getUIContext().getHostContext() as common.UIAbilityContext;
     try {
-      commentManager.showCommentDialog(ctx).then(() => {}).catch((e: Error) => {
-        hilog.warn(0x0001, TAG, `showCommentDialog fail: ${e.message}`);
-      });
-    } catch (e) {
-      hilog.warn(0x0001, TAG, `showCommentDialog throw: ${JSON.stringify(e)}`);
+      commentManager.showCommentDialog(ctx).then(() => {})
+        .catch((e: BusinessError) => {
+          // showCommentDialog fails SILENTLY in common situations: user not signed
+          // in to HUAWEI ID (1021500006), already rated this version (1021500007),
+          // rated within a year (1021500009), or AppGallery unavailable. Surface a
+          // readable reason instead of swallowing it — "点了没反应" is a bug report.
+          const code = e ? e.code : 0;
+          let msg = '暂时无法打开评价，请检查网络或稍后再试';
+          if (code === 1021500006) msg = '需要登录华为账号后才能评价';
+          else if (code === 1021500007) msg = '你已对当前版本评价过了，感谢支持';
+          else if (code === 1021500009) msg = '你一年内已评价过，感谢支持';
+          else if (code === 1021500003) msg = '无法连接华为应用市场，请检查网络';
+          else if (code === 1021500005) msg = '应用上下文无效，请重启应用后重试';
+          this.getUIContext().getPromptAction().showToast({ message: msg, duration: 2500 });
+          hilog.warn(0x0001, TAG, 'showCommentDialog fail: code=' + code + ' msg=' + (e ? e.message : ''));
+        });
+    } catch (err) {
+      hilog.warn(0x0001, TAG, 'showCommentDialog throw: ' + JSON.stringify(err));
+      this.getUIContext().getPromptAction().showToast({ message: '暂时无法打开评价', duration: 2500 });
     }
   }
 
