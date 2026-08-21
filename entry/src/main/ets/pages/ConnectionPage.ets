@@ -116,9 +116,13 @@ export struct ConnectionPage {
 
   private syncGps(): void {
     const gps = cameraService.gpsData;
-    this.gpsLat = gps.latitude.toFixed(6);
-    this.gpsLon = gps.longitude.toFixed(6);
-    this.gpsAlt = `${gps.altitude.toFixed(1)} m`;
+    // Lat/lon/altitude default to 0 (not '--') in GpsData, so guard on the
+    // real "have we ever gotten a fix" flag. Without it, the row flashes
+    // 0.000000 on launch until the first location arrives.
+    const noFix = !gps.hasFix;
+    this.gpsLat = noFix ? '--' : gps.latitude.toFixed(6);
+    this.gpsLon = noFix ? '--' : gps.longitude.toFixed(6);
+    this.gpsAlt = noFix ? '--' : `${gps.altitude.toFixed(1)} m`;
     this.gpsSats = gps.satellites >= 0 ? `${gps.satellites}` : '--';
     this.gpsHasFix = gps.hasFix;
     this.gpsTime = gps.lastUpdateTime;
