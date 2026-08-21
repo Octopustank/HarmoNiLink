@@ -57,6 +57,11 @@ export struct ConnectionPage {
   // switch animation and can desync the visual from the persisted flag).
   @State revertTick: number = 0;
   private scroller: Scroller = new Scroller();
+  // Drives the inner paired-device List. Used to collapse an expanded
+  // swipe row (HdsListItem left-swipe menu) when the outer page Scroll moves
+  // — ArkUI's native "滚动即收起" only fires on the List's OWN scroll, and
+  // here the page scrolls via the outer Scroll, so we trigger it explicitly.
+  private listScroller: ListScroller = new ListScroller();
   private gpsTimer: number = -1;
   private offStateListener: (() => void) | null = null;
 
@@ -446,7 +451,7 @@ export struct ConnectionPage {
         // One table card: rows separated by dividers inside a single card
         // (swipe-to-delete is per row via HdsListItem).
         Column() {
-          List() {
+          List({ scroller: this.listScroller }) {
             ForEach(this.savedCameras, (cam: PairedCamera, i: number) => {
               HdsListItem({
                 customItemBuilder: (): void => { this.cameraRow(cam, i < this.savedCameras.length - 1); },
@@ -810,6 +815,11 @@ export struct ConnectionPage {
       .height('100%')
       .edgeEffect(EdgeEffect.Spring)
       .scrollBar(BarState.Off)
+      // Collapse any expanded swipe row when the user starts scrolling the
+      // page. The paired-device List can't self-scroll (it has no fixed
+      // height, lives inside a card), so ArkUI's built-in "scroll = close
+      // swipe" never fires here — trigger it on the page scroll instead.
+      .onScrollStart(() => { this.listScroller.closeAllSwipeActions(); })
       .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
     }
     .backgroundColor($r('app.color.page_background'))
