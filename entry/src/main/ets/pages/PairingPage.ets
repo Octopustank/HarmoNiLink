@@ -183,7 +183,11 @@ export struct PairingPage {
 
   private onCameraRowTap(cam: DiscoveredCamera): void {
     if (this.isPaired(cam)) {
-      this.getUIContext().getPromptAction().showToast({ message: '该设备已配对，请在「连接」页管理', duration: 2000 });
+      try {
+        this.getUIContext().getPromptAction().showToast({ message: '该设备已配对，请在「连接」页管理', duration: 2000 });
+      } catch (e) {
+        hilog.warn(0x0001, TAG, `paired toast err: ${(e as Error).message}`);
+      }
       return;
     }
     if (this.pairingTargetId === cam.deviceId) {

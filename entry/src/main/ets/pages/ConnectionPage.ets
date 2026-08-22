@@ -137,7 +137,11 @@ export struct ConnectionPage {
       if (cameraService.isPairingBonding()) {
         // Classic bonding holds the radio exclusively — defer a new connect.
         // (A pairing scan/handshake runs in parallel, so only bonding blocks.)
-        this.getUIContext().getPromptAction().showToast({ message: '正在经典蓝牙绑定，请稍后再开启连接', duration: 2000 });
+        try {
+          this.getUIContext().getPromptAction().showToast({ message: '正在经典蓝牙绑定，请稍后再开启连接', duration: 2000 });
+        } catch (e) {
+          hilog.warn(0x0001, TAG, `bonding toast err: ${(e as Error).message}`);
+        }
         this.revertToggle();
         return;
       }
@@ -147,9 +151,13 @@ export struct ConnectionPage {
         return;
       }
       if (!cameraService.canConnectMore()) {
-        this.getUIContext().getPromptAction().showToast({
-          message: `已达连接上限（${cameraService.getConnectedCount()} 台），请先关闭其他相机的连接开关`, duration: 2500
-        });
+        try {
+          this.getUIContext().getPromptAction().showToast({
+            message: `已达连接上限（${cameraService.getConnectedCount()} 台），请先关闭其他相机的连接开关`, duration: 2500
+          });
+        } catch (e) {
+          hilog.warn(0x0001, TAG, `limit toast err: ${(e as Error).message}`);
+        }
         this.revertToggle();
         return;
       }
@@ -811,7 +819,11 @@ export struct ConnectionPage {
         });
     } catch (err) {
       hilog.warn(0x0001, TAG, 'showCommentDialog throw: ' + JSON.stringify(err));
-      this.getUIContext().getPromptAction().showToast({ message: '暂时无法打开评价', duration: 2500 });
+      try {
+        this.getUIContext().getPromptAction().showToast({ message: '暂时无法打开评价', duration: 2500 });
+      } catch (e) {
+        hilog.warn(0x0001, TAG, `comment fallback toast err: ${(e as Error).message}`);
+      }
     }
   }
 
@@ -881,7 +893,11 @@ export struct ConnectionPage {
   }
   private onAboutReset(): void {
     cameraService.resetOnboarding();
-    this.getUIContext().getPromptAction().showToast({ message: '已重置引导提示，下次操作将重新显示', duration: 2500 });
+    try {
+      this.getUIContext().getPromptAction().showToast({ message: '已重置引导提示，下次操作将重新显示', duration: 2500 });
+    } catch (e) {
+      hilog.warn(0x0001, TAG, `reset toast err: ${(e as Error).message}`);
+    }
   }
 
   build() {
