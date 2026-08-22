@@ -134,9 +134,6 @@ export class CameraService {
   // Context (set from EntryAbility)
   private abilityContext: common.UIAbilityContext | null = null;
 
-  // Permission state
-  private permissionJustGranted: boolean = false;
-
   // Satellite subscription state — single location source (Hub-owned).
   private satelliteSubscribed: boolean = false;
   private satelliteStatusCb: ((status: geoLocationManager.SatelliteStatusInfo) => void) | null = null;
@@ -147,6 +144,10 @@ export class CameraService {
   // so an in-flight start() (getWantAgent/startBackgroundRunning are awaited)
   // can detect it landed after a stop request and immediately undo itself.
   private bgGeneration: number = 0;
+  // Set when the system cancels our ContinuousTask (continuousTaskCancel
+  // listener). Drives the "后台进程已被系统中断" status line on the UI; cleared
+  // when a camera reaches Ready again (link restored → "现已恢复").
+  private bgTaskCancelled: boolean = false;
 
   // GPS ticker — one interval + alternating TIME/GEO, fanned out to Ready sessions.
   private gpsTimer: number | null = null;
@@ -288,10 +289,37 @@ export class CameraService {
     this.prefs.resetOnboarding();
   }
 
+  // ==================== 评分弹窗 (rating dialog) ====================
+
+  /** True once a GEO write was acked — the hard-evidence gate for the rating
+   * prompt (only prompt after the pairing has actually delivered value). */
+  hasDownlink(): boolean {
+    return this.prefs.hasDownlinkSync();
+  }
+
+  /** True once the rating dialog has been shown (permanent — never re-shows). */
+  wasRatingShown(): boolean {
+    return this.prefs.wasRatingShownSync();
+  }
+
+  markRatingShown(): void {
+    this.prefs.saveRatingShown();
+  }
+
+  // ==================== 定位权限说明 (location "always allow" hint) ====================
+
+  /** True once the location "always allow" hint has been shown. */
+  wasPermissionHintShown(): boolean {
+    return this.prefs.wasPermissionHintShownSync();
+  }
+
+  markPermissionHintShown(): void {
+    this.prefs.savePermissionHintShown();
+  }
+
   // ==================== Permissions ====================
 
   async requestPermissionsIfNeeded(): Promise<boolean> {
-    this.permissionJustGranted = false;
     const ctx = this.abilityContext;
     if (!ctx) return false;
     try {
@@ -317,16 +345,11 @@ export class CameraService {
       }
       hilog.info(0x0001, TAG, `[PERM] batch result: ${authResults.join(', ')} allGranted=${allGranted}`);
 
-      this.permissionJustGranted = allGranted;
       return allGranted;
     } catch (err) {
       hilog.warn(0x0001, TAG, `[PERM] request failed: ${JSON.stringify(err)}`);
       return false;
     }
-  }
-
-  wasPermissionJustGranted(): boolean {
-    return this.permissionJustGranted;
   }
 
   isBackgroundLocationGranted(): boolean {
@@ -590,6 +613,13 @@ export class CameraService {
     return this.prefs.loadSavedCamerasSync().some((c: PairedCamera) => c.keepAlive);
   }
 
+  /** True if the system cancelled our ContinuousTask since the last Ready —
+   * the UI shows a "后台进程已被系统中断，现已恢复" line on keep-alive cameras
+   * that are still reconnecting (no Ready session) until the link is restored. */
+  wasBgCancelled(): boolean {
+    return this.bgTaskCancelled;
+  }
+
   /** Start/stop the ContinuousTask to match current connection intent:
    * keep it while any camera is Ready (GPS writing) OR has keep-alive intent
    * (reconnecting in the background); stop it only when neither holds. */
@@ -818,8 +848,11 @@ export class CameraService {
     return t;
   }
 
-  /** GREEN signal — a GEO write was confirmed (full GPS downlink = has fix). */
+  /** GREEN signal — a GEO write was confirmed (full GPS downlink = has fix).
+   * Also latches the global `hasDownlink` evidence flag (the rating-dialog
+   * gate): a confirmed GEO write proves the pairing really worked. */
   slaOnDownlink(name: string): void {
+    this.prefs.saveHasDownlink();
     this.getOrCreateSlaTracker(name).onDownlink(Date.now());
   }
 
@@ -957,6 +990,12 @@ export class CameraService {
   /** Broadcast a per-camera (or global, name='') state change to all listeners. */
   broadcastSessionState(cameraName: string, state: ConnectionState, message: string): void {
     hilog.info(0x0001, TAG, `[CHECKPOINT] STATE: [${cameraName || '(global)'}] ${state} — ${message}`);
+    // A camera reaching Ready means the link is restored — clear the
+    // "后台进程已被系统中断" notice (its tail reads "现已恢复").
+    if (state === ConnectionState.Ready && this.bgTaskCancelled) {
+      this.bgTaskCancelled = false;
+      hilog.info(0x0001, TAG, '[BG] camera Ready — cleared cancelled notice');
+    }
     for (let i = 0; i < this.stateListeners.length; i++) {
       this.stateListeners[i]({ cameraName, state, message });
     }

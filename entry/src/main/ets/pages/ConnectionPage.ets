@@ -450,7 +450,10 @@ export struct ConnectionPage {
   @Builder savedDevicesSection() {
     Column() {
       Text('已配对设备').fontSize(14).fontColor($r('app.color.text_secondary'))
-        .margin({ left: 12, bottom: 8, top: 28 }).alignSelf(ItemAlign.Start).fontWeight(500)
+        .margin({ left: 12, bottom: 2, top: 28 }).alignSelf(ItemAlign.Start).fontWeight(500)
+      Text('左滑菜单可以查看设备连接健康度和删除设备')
+        .fontSize(11).fontColor($r('app.color.text_secondary'))
+        .margin({ left: 12, bottom: 8 }).alignSelf(ItemAlign.Start)
       if (this.savedCameras.length > 0) {
         // One table card: rows separated by dividers inside a single card
         // (swipe-to-delete is per row via HdsListItem).
@@ -519,6 +522,14 @@ export struct ConnectionPage {
       .width('100%')
       .padding({ left: 12, right: 12, top: 10, bottom: 10 })
       .alignItems(VerticalAlign.Center)
+
+      if (cam.keepAlive
+        && (this.getCameraStatus(cam.name)?.state ?? ConnectionState.Idle) !== ConnectionState.Ready
+        && cameraService.wasBgCancelled()) {
+        Text('由于设备一直无法连接，后台进程已被系统中断，现已恢复')
+          .fontSize(11).fontColor($r('app.color.warning'))
+          .width('100%').alignSelf(ItemAlign.Start).padding({ left: 12, right: 12, bottom: 10 })
+      }
 
       if (withDivider) {
         Divider().strokeWidth(0.5).color($r('app.color.divider')).margin({ left: 12, right: 12 })
@@ -769,6 +780,47 @@ export struct ConnectionPage {
     }
   }
 
+  /** True when the current build is a debug (unsigned/unlisted) HAP — the
+   * rating prompt then only toasts (AppGallery can't validate a debug build). */
+  private isDebugBuild(): boolean {
+    try {
+      const info = bundleManager.getBundleInfoForSelfSync(bundleManager.BundleFlag.GET_BUNDLE_INFO_WITH_APPLICATION);
+      return info.appInfo.debug;
+    } catch (e) {
+      return false; // fail-safe: treat as release
+    }
+  }
+
+  /** Rating prompt — fired when the health half-modal closes IF a GEO write was
+   * ever acked (hasDownlink, hard evidence the pairing delivered value) and the
+   * dialog hasn't been shown yet. One-time, permanent (no snooze). debug → toast
+   * only; release → 2-button dialog. Whole thing is best-effort: any failure is
+   * silent (hilog only), never a misleading "network error" toast. */
+  private maybePromptRating(): void {
+    try {
+      if (cameraService.wasRatingShown() || !cameraService.hasDownlink()) return;
+      cameraService.markRatingShown(); // latch immediately — never re-show
+      if (this.isDebugBuild()) {
+        this.getUIContext().getPromptAction().showToast({ message: '评分弹窗触发（debug 验证）', duration: 2000 });
+        return;
+      }
+      this.getUIContext().getPromptAction().showDialog({
+        title: '给个评价吧',
+        message: '如果你觉得 HarmoNiLink 好用，欢迎到华为应用市场给个评价。',
+        buttons: [
+          { text: '谢绝', color: $r('app.color.text_secondary') },
+          { text: '去评分', color: $r('app.color.brand') }
+        ]
+      }).then((result: promptAction.ShowDialogSuccessResponse) => {
+        if (result.index === 1) {
+          this.onAboutComment(); // 去评分 → existing flow (self try/catch + code map)
+        }
+      }).catch(() => { /* dismissed — ratingShown already latched */ });
+    } catch (err) {
+      hilog.warn(0x0001, TAG, 'rating prompt failed: ' + JSON.stringify(err));
+    }
+  }
+
   /** 关于 → 删除连接健康度日志: clears all persisted SLA timelines (2h 窗口
    * 与各相机 tracker), destructive so it asks for confirmation. */
   private onAboutClearSla(): void {
@@ -806,7 +858,7 @@ export struct ConnectionPage {
           if (cameraService.isPairingBonding()) { this.pairingNotice() }
           this.gpsCard()
 
-          Text('连接开关打开的相机将保持连接，断开后自动重连。\n左滑设备卡片可删除配对；未配对的相机请先在「配对」页扫描添加。\n需要后台下发数据，请在系统设置中允许始终定位。')
+          Text('连接开关打开的相机将保持连接，断开后自动重连。\n未配对的相机请先在「配对」页扫描添加。\n需要后台下发数据，请在系统设置中允许始终定位。')
             .fontSize(11).fontColor($r('app.color.text_secondary'))
             .width('100%').textAlign(TextAlign.Center).padding({ left: 4, right: 4 })
             .margin({ top: 12 })

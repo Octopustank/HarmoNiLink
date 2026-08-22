@@ -251,9 +251,13 @@ export struct PairingPage {
           this.getUIContext().getPromptAction().showToast({ message: '需要蓝牙和位置权限才能扫描', duration: 2500 });
           return;
         }
-        // One-time prompt after first grant: explain precise location, and that
-        // background GPS requires "always allow" in system settings (optional).
-        if (cameraService.wasPermissionJustGranted() && !cameraService.isBackgroundLocationGranted()) {
+        // One-time prompt (persistent flag + live state, NOT the "just granted"
+        // event): explain precise location, and that background GPS requires
+        // "always allow" in system settings (optional). Latches the flag the
+        // moment it pops (either button = shown), so a reset (关于 → 重置引导)
+        // is the only way to replay it — re-scanning alone never re-asks.
+        if (!cameraService.wasPermissionHintShown() && !cameraService.isBackgroundLocationGranted()) {
+          cameraService.markPermissionHintShown();
           this.getUIContext().getPromptAction().showDialog({
             title: '定位权限说明',
             message: '已授予位置权限。\n\n请确保授予「精确位置」，相机才能收到准确的 GPS 坐标。\n\n如需相机休眠或应用在后台时持续下发 GPS，请在系统设置中将定位权限设为「始终允许」（会略微增加耗电）。',

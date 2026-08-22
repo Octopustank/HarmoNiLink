@@ -20,6 +20,9 @@ const KEY_CONNECT_HINT_SHOWN = 'connect_hint_shown';
 const KEY_MULTI_CAM_WARNED = 'multi_cam_warned'; // beyond-N-cameras warning dismissed
 const KEY_LAST_TAB = 'last_tab_index'; // last selected tab (配对/连接), persisted
 const KEY_SLA_PREFIX = 'sla_'; // per-camera SLA timeline (连接健康看板), namespaced
+const KEY_RATING_SHOWN = 'rating_shown'; // rating dialog shown (one-time)
+const KEY_HAS_DOWNLINK = 'has_downlink'; // a GEO write was acked at least once (rating gate)
+const KEY_PERMISSION_HINT_SHOWN = 'permission_hint_shown'; // location "always allow" hint shown (one-time)
 // Suffix alphabet — no 0/O/1/I to avoid confusion when reading the name on the camera
 const SUFFIX_CHARS: string = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
 
@@ -39,6 +42,9 @@ export class PreferencesRepository {
   private connectHintShownCache: boolean = false; // one-time first-connect hint shown
   private multiCamWarnedCache: boolean = false; // beyond-N-cameras warning "don't show again"
   private lastTabIndexCache: number = 0; // last selected tab
+  private ratingShownCache: boolean = false; // rating dialog shown (one-time, never again)
+  private hasDownlinkCache: boolean = false; // a GEO write was acked at least once
+  private permissionHintShownCache: boolean = false; // location "always allow" hint shown
   // Serialized disk writes. The CACHE is the single source of truth: it is
   // updated synchronously on every mutation, and queued tasks merely snapshot
   // it to disk. This kills the old read-disk-modify-write race where a slow
@@ -90,6 +96,9 @@ export class PreferencesRepository {
       this.connectHintShownCache = await this.store.get(KEY_CONNECT_HINT_SHOWN, false) as boolean;
       this.multiCamWarnedCache = await this.store.get(KEY_MULTI_CAM_WARNED, false) as boolean;
       this.lastTabIndexCache = await this.store.get(KEY_LAST_TAB, 0) as number;
+      this.ratingShownCache = await this.store.get(KEY_RATING_SHOWN, false) as boolean;
+      this.hasDownlinkCache = await this.store.get(KEY_HAS_DOWNLINK, false) as boolean;
+      this.permissionHintShownCache = await this.store.get(KEY_PERMISSION_HINT_SHOWN, false) as boolean;
       hilog.info(0x0001, TAG, `[CHECKPOINT] PreferencesRepository initialized (${this.cache.length} cameras)`);
       for (const c of this.cache) {
         hilog.info(0x0001, TAG,
@@ -136,6 +145,41 @@ export class PreferencesRepository {
     this.putBool(KEY_MULTI_CAM_WARNED, true);
   }
 
+  // ==================== 评分弹窗 (rating dialog, one-time) ====================
+
+  /** True once the rating dialog has been shown (permanent — never re-shows). */
+  wasRatingShownSync(): boolean {
+    return this.ratingShownCache;
+  }
+
+  saveRatingShown(): void {
+    this.ratingShownCache = true;
+    this.putBool(KEY_RATING_SHOWN, true);
+  }
+
+  /** True once any GEO write was acked (hard evidence the pairing worked). */
+  hasDownlinkSync(): boolean {
+    return this.hasDownlinkCache;
+  }
+
+  saveHasDownlink(): void {
+    if (this.hasDownlinkCache) return; // latch — never write again
+    this.hasDownlinkCache = true;
+    this.putBool(KEY_HAS_DOWNLINK, true);
+  }
+
+  // ==================== 定位权限说明 (location "always allow" hint) ====================
+
+  /** True once the location "always allow" hint has been shown. */
+  wasPermissionHintShownSync(): boolean {
+    return this.permissionHintShownCache;
+  }
+
+  savePermissionHintShown(): void {
+    this.permissionHintShownCache = true;
+    this.putBool(KEY_PERMISSION_HINT_SHOWN, true);
+  }
+
   // ==================== Tab 持久化 ====================
 
   loadLastTabIndexSync(): number {
@@ -150,12 +194,18 @@ export class PreferencesRepository {
   // ==================== 重置引导 (re-show one-time content) ====================
 
   /** Reset all "show once" flags so the first-connect hint, the multi-camera
-   * warning, etc. are shown again. Invoked from the 关于 sheet. */
+   * warning, the rating dialog and the location "always allow" hint are shown
+   * again. Invoked from the 关于 sheet. `hasDownlink` is deliberately NOT reset
+   * — it is evidence (a GEO write was acked), not a hint. */
   resetOnboarding(): void {
     this.connectHintShownCache = false;
     this.multiCamWarnedCache = false;
+    this.ratingShownCache = false;
+    this.permissionHintShownCache = false;
     this.putBool(KEY_CONNECT_HINT_SHOWN, false);
     this.putBool(KEY_MULTI_CAM_WARNED, false);
+    this.putBool(KEY_RATING_SHOWN, false);
+    this.putBool(KEY_PERMISSION_HINT_SHOWN, false);
     hilog.info(0x0001, TAG, '[CHECKPOINT] onboarding flags reset');
   }
 
