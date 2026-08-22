@@ -19,6 +19,7 @@ import { geoLocationManager } from '@kit.LocationKit';
 import { backgroundTaskManager } from '@kit.BackgroundTasksKit';
 import { common, wantAgent, WantAgent, abilityAccessCtrl } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
+import { window } from '@kit.ArkUI';
 import { PairedCamera, NikonPairingEngine } from '../ble/protocol/NikonPairingEngine';
 import { GeoPayloadGenerator, GpsPosition } from '../ble/protocol/GeoPayloadGenerator';
 import { TimePayloadGenerator } from '../ble/protocol/TimePayloadGenerator';
@@ -144,14 +145,29 @@ export class CameraService {
   // so an in-flight start() (getWantAgent/startBackgroundRunning are awaited)
   // can detect it landed after a stop request and immediately undo itself.
   private bgGeneration: number = 0;
-  // Set when the system cancels our ContinuousTask (continuousTaskCancel
-  // listener). Drives the "后台进程已被系统中断" status line on the UI; cleared
-  // when a camera reaches Ready again (link restored → "现已恢复").
+  // Set when the system cancels OR suspends our ContinuousTask, or when a
+  // warm return-to-foreground finds it gone without our own stop() (frozen
+  // process → callbacks may never run). Drives the "后台进程已被系统中断"
+  // status line on the UI; cleared when a camera reaches Ready again (link
+  // restored → "现已恢复").
   private bgTaskCancelled: boolean = false;
   // Background modes currently held by the running ContinuousTask (string[] —
   // the single-value BackgroundMode overload accepts ONE mode only, and the
   // old `BLUETOOTH_INTERACTION | LOCATION` = 7 is not a valid enum value).
   private bgModes: string[] = [];
+  // bgGeneration value at the last USER-driven stop (toggle off / no intent).
+  // Distinguishes "task absent because we stopped it" from "task absent
+  // because the system silently revoked it" in inferSilentRevocation().
+  private userStopGeneration: number = -1;
+  // Guards startBackgroundTask() against concurrent async double-fire:
+  // startGpsLoop() and reconcileBackgroundTask() can both call it in the same
+  // tick; backgroundTaskStarted only flips true after getWantAgent+start
+  // resolve, so without this gate both pass the guard and one hits 9800005.
+  private bgStartInFlight: boolean = false;
+  // Set whenever bgTaskCancelled is latched (any of the three paths); consumed
+  // by the delayed foreground prompt — one dialog per interruption event.
+  private pendingInterruptNotice: boolean = false;
+  private interruptNoticeTimer: number = -1;
 
   // GPS ticker — one interval + alternating TIME/GEO, fanned out to Ready sessions.
   private gpsTimer: number | null = null;
@@ -232,6 +248,7 @@ export class CameraService {
           this.backgroundTaskStarted = false;
           this.bgModes = [];
           this.bgTaskCancelled = true;
+          this.pendingInterruptNotice = true;
         });
     } catch (e) {
       hilog.warn(0x0001, TAG, `[BG] continuousTaskCancel on() fail: ${JSON.stringify(e)}`);
@@ -239,9 +256,26 @@ export class CameraService {
     try {
       backgroundTaskManager.on('continuousTaskSuspend',
         (info: backgroundTaskManager.ContinuousTaskSuspendInfo): void => {
-          // Suspend ≠ cancel: the task is paused (system load), not revoked.
-          // Log the reason for diagnosis only — backgroundTaskStarted stays.
+          // Suspend ≠ cancel for the SYSTEM (task paused, revivable on
+          // foreground), but it IS equivalent for the USER: a suspended task
+          // means the process gets frozen in the background — the reconnect
+          // dies and health sampling goes dark. Per official docs (API 20+),
+          // registering this listener makes suspend (not cancel) the system's
+          // FIRST response to "task not doing its business", so without this
+          // flag the interruption was never surfaced. Mark it; Ready clears.
           hilog.warn(0x0001, TAG, `[BG] ContinuousTask suspended — reason=${info.suspendReason}`);
+          if (!info.suspendState) {
+            // System re-activated the task (auto on foreground return): it is
+            // running again with modes we didn't pick. Mark started with an
+            // empty mode cache so the next reconcileBackgroundTask() aligns
+            // modes via updateBackgroundRunning() instead of a duplicate start.
+            this.backgroundTaskStarted = true;
+            this.bgModes = [];
+            return;
+          }
+          this.backgroundTaskStarted = false;
+          this.bgTaskCancelled = true;
+          this.pendingInterruptNotice = true;
         });
     } catch (e) {
       hilog.warn(0x0001, TAG, `[BG] continuousTaskSuspend on() fail: ${JSON.stringify(e)}`);
@@ -262,6 +296,12 @@ export class CameraService {
   setKeepAlive(name: string, on: boolean): void {
     this.prefs.setKeepAliveRuntime(name, on);
     hilog.info(0x0001, TAG, `[RECONNECT] keep-alive ${on ? 'on' : 'off'} for '${name}'`);
+    if (on) {
+      // Toggle ON = a fresh user attempt: re-arm the "camera waiting for
+      // another device" hint for this round (retries within the round stay silent).
+      const s = this.sessions.get(name);
+      if (s) s.resetPairTargetHint();
+    }
     if (!on) {
       const s = this.sessions.get(name);
       if (s) s.onKeepAliveDisabled();
@@ -967,14 +1007,58 @@ export class CameraService {
       this.stopGpsLoop();
       this.startGpsLoop(); // restore default 1500ms interval
     }
+    this.inferSilentRevocation();
     this.reconcileBackgroundTask();
+    this.scheduleInterruptNotice();
+  }
+
+  /** Foreground-return notice for a background interruption. Fires ~4s after
+   * returning so the reconnect (which usually lands in 2–5s) settles first —
+   * one dialog per interruption event, fixed copy that covers both outcomes
+   * ("现已尝试恢复"). Skipped entirely if the user left before the delay. */
+  private scheduleInterruptNotice(): void {
+    if (!this.pendingInterruptNotice) return;
+    this.pendingInterruptNotice = false; // consume: never re-prompt this event
+    if (this.interruptNoticeTimer !== -1) clearTimeout(this.interruptNoticeTimer);
+    const ctx = this.abilityContext;
+    this.interruptNoticeTimer = setTimeout(() => {
+      this.interruptNoticeTimer = -1;
+      if (!this.isForeground || !ctx) return; // user already left again
+      window.getLastWindow(ctx).then((win) => {
+        win.getUIContext().getPromptAction().showDialog({
+          title: '连接提醒',
+          message: '因长时间未成功连接到设备，后台进程被系统中断。现已尝试恢复。',
+          buttons: [{ text: '知道了', color: '#0A59F7' }]
+        }).catch((e: BusinessError) => {
+          hilog.warn(0x0001, TAG, `[BG] interrupt-notice dialog fail: ${e.message}`);
+        });
+      }).catch((e: BusinessError) => {
+        hilog.warn(0x0001, TAG, `[BG] interrupt-notice getLastWindow fail: ${e.message}`);
+      });
+    }, 4000);
+  }
+
+  /** Fallback for revocations whose callbacks never ran: while frozen in the
+   * background the process can't execute cancel/suspend handlers, and a
+   * cold-ish thaw may deliver neither. On warm foreground, keep-alive intent +
+   * no Ready session + task not running (and we didn't stop it ourselves —
+   * userStopGeneration guards that path) means the system silently revoked it.
+   * Mark bgTaskCancelled so the status line still explains the gap. */
+  private inferSilentRevocation(): void {
+    if (this.bgTaskCancelled || !this.hasKeepAliveIntent()) return;
+    if (this.getReadySessions().length > 0) return;
+    if (this.backgroundTaskStarted) return;
+    if (this.userStopGeneration === this.bgGeneration) return;
+    hilog.warn(0x0001, TAG, '[BG] task gone without our stop() at foreground — inferring silent system revocation');
+    this.bgTaskCancelled = true;
+    this.pendingInterruptNotice = true;
   }
 
   // ==================== Background Task ====================
 
   private async startBackgroundTask(): Promise<void> {
-    if (this.backgroundTaskStarted || !this.abilityContext) return;
-
+    if (this.backgroundTaskStarted || this.bgStartInFlight || !this.abilityContext) return;
+    this.bgStartInFlight = true; // concurrent callers (startGpsLoop + reconcile) must not double-fire
     const ctx = this.abilityContext;
     const gen = this.bgGeneration; // this request's generation
     // Multi-mode MUST use the string[] overload: the single-value BackgroundMode
@@ -1004,18 +1088,38 @@ export class CameraService {
           // notification task hangs while every switch is off.
           hilog.info(0x0001, TAG, '[BG] ContinuousTask started after stop — undoing');
           try { backgroundTaskManager.stopBackgroundRunning(ctx); } catch (e) { /* best-effort */ }
+          this.backgroundTaskStarted = false;
           return;
         }
         this.backgroundTaskStarted = true;
         this.bgModes = modes;
+        this.userStopGeneration = -1; // fresh start — clear any stale user-stop mark
         hilog.info(0x0001, TAG, `[BG] ContinuousTask started (${modes.join('+')})`);
       } catch (err) {
-        hilog.warn(0x0001, TAG,
-          `[BG] startBackgroundRunning fail: ${(err as BusinessError).code} ${(err as BusinessError).message}`);
+        const be = err as BusinessError;
+        if (be.code === 9800005) {
+          // "Continuous task verification failed — already applied": the system
+          // still holds our task (e.g. suspended-but-registered, auto-resumed
+          // on foreground). Treat as running; empty mode cache makes the next
+          // reconcileBackgroundTask() align modes via updateBackgroundRunning.
+          hilog.info(0x0001, TAG, '[BG] start hit 9800005 — task already registered, syncing state');
+          this.backgroundTaskStarted = true;
+          this.bgModes = [];
+        } else {
+          hilog.warn(0x0001, TAG,
+            `[BG] startBackgroundRunning fail: ${be.code} ${be.message}`);
+        }
+      }
+      if (gen !== this.bgGeneration && this.backgroundTaskStarted) {
+        // A stop() raced in while we were starting — undo, same as above.
+        try { backgroundTaskManager.stopBackgroundRunning(ctx); } catch (e) { /* best-effort */ }
+        this.backgroundTaskStarted = false;
       }
     } catch (err) {
       hilog.warn(0x0001, TAG,
         `[BG] getWantAgent fail: ${(err as BusinessError).code} ${(err as BusinessError).message}`);
+    } finally {
+      this.bgStartInFlight = false; // single cleanup point — early returns above can't strand the gate
     }
   }
 
@@ -1060,6 +1164,7 @@ export class CameraService {
       backgroundTaskManager.stopBackgroundRunning(this.abilityContext);
       this.backgroundTaskStarted = false;
       this.bgModes = [];
+      this.userStopGeneration = this.bgGeneration; // we did this — not the system
       hilog.info(0x0001, TAG, '[BG] ContinuousTask stopped');
     } catch (err) {
       hilog.warn(0x0001, TAG,
@@ -1077,6 +1182,12 @@ export class CameraService {
     if (state === ConnectionState.Ready && this.bgTaskCancelled) {
       this.bgTaskCancelled = false;
       hilog.info(0x0001, TAG, '[BG] camera Ready — cleared cancelled notice');
+    }
+    // Ready also settles the interrupt-notice event itself: if the link came
+    // back while the user was watching in-app, don't let a stale flag pop the
+    // dialog on some much-later foreground return.
+    if (state === ConnectionState.Ready) {
+      this.pendingInterruptNotice = false;
     }
     for (let i = 0; i < this.stateListeners.length; i++) {
       this.stateListeners[i]({ cameraName, state, message });

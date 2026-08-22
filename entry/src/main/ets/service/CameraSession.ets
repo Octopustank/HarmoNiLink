@@ -102,8 +102,10 @@ export class CameraSession {
   // that the teardown disconnect() emits right after the root cause.
   private linkLostRootMarked: boolean = false;
 
-  // "Camera is waiting for another paired device" hint throttle timestamp.
-  private lastPairTargetHintAt: number = 0;
+  // "Camera is waiting for another paired device" hint — one dialog per
+  // failure episode (latched; setState(Ready) re-arms it). Replaces the old
+  // 60s timestamp throttle, which still let dialogs stack every minute.
+  private pairTargetHintLatched: boolean = false;
 
   constructor(hub: CameraService) {
     this.hub = hub;
@@ -506,14 +508,25 @@ export class CameraSession {
     }
   }
 
+  /** Re-arm the pair-target hint (toggle ON = a fresh user attempt round). */
+  resetPairTargetHint(): void {
+    this.pairTargetHintLatched = false;
+  }
+
   /**
-   * "Camera is waiting for another paired device" hint. Shown at most once
-   * per 60s — the reconnect loop fails every ~10s, so without throttling the
-   * dialog would spam.
+   * "Camera is waiting for another paired device" hint. Foreground only, and
+   * at most once per failure episode: the reconnect loop fails every ~10s and
+   * promptAction dialogs stack when dismissed-by-nobody. The latch re-arms on
+   * Ready (link restored) or toggle-ON (fresh user attempt) — retries within
+   * one attempt stay silent.
    */
   private maybeShowPairTargetHint(): void {
-    if (Date.now() - this.lastPairTargetHintAt < 60000) return;
-    this.lastPairTargetHintAt = Date.now();
+    if (this.pairTargetHintLatched) return;
+    this.pairTargetHintLatched = true; // one dialog per episode — Ready resets
+    if (!this.hub.isForeground) {
+      hilog.info(0x0001, TAG, '[CHECKPOINT] pair-target hint suppressed (background)');
+      return;
+    }
     hilog.warn(0x0001, TAG, '[CHECKPOINT] Camera may be waiting for another device — showing hint');
     const ctx = this.hub.getAbilityContext();
     if (!ctx) return;
@@ -979,6 +992,9 @@ export class CameraSession {
   private setState(state: ConnectionState, message: string): void {
     this.state = state;
     this.statusMessage = message;
+    // Reaching Ready ends a "camera waiting for another device" episode —
+    // re-arm the pair-target hint so the NEXT switch-away can inform again.
+    if (state === ConnectionState.Ready) this.pairTargetHintLatched = false;
     // Terminal states end the connect watchdog (owned by this session)
     if (state === ConnectionState.Ready || state === ConnectionState.Idle
       || state === ConnectionState.Error || state === ConnectionState.Bonding) {
