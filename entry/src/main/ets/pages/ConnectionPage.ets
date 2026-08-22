@@ -977,7 +977,13 @@ struct GpsRow {
   build() {
     Row() {
       Text(this.label).fontSize(13).fontColor($r('app.color.text_secondary')).width(64)
-      Text(this.value).fontSize(13).fontColor($r('app.color.text_primary')).layoutWeight(1)
+      // NOTE: no layoutWeight(1) here on purpose — a layoutWeight'd Text owns the
+      // whole remaining row width, so its a11y/检测 bounding box is ~98% empty
+      // background. Pixel-based contrast auditors then average background with a
+      // few white pixels and report a bogus ratio (1.52) even though the real
+      // glyph contrast is ~12–14:1 (white #E6FFFFFF on card #2A2A2A). Content-
+      // sized bounds keep the measured box on the glyphs themselves.
+      Text(this.value).fontSize(13).fontColor($r('app.color.text_primary'))
     }.width('100%').padding({ top: 2, bottom: 2 })
   }
 }
@@ -989,7 +995,12 @@ struct InfoRow {
   build() {
     Row() {
       Text(this.label).fontSize(14).fontColor($r('app.color.text_secondary')).width(80)
-      Text(this.value).fontSize(14).fontColor($r('app.color.text_primary')).layoutWeight(1)
+      // Same tight-bounds rationale as GpsRow: layoutWeight(1) would make the
+      // a11y/检测 box span the whole row (~98% empty) and skew pixel-based
+      // contrast audits. constraintSize keeps content sizing for short values
+      // while still capping long ones so maxLines+ellipsis works.
+      Text(this.value).fontSize(14).fontColor($r('app.color.text_primary'))
+        .constraintSize({ maxWidth: '100%' })
         .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
     }.width('100%').padding({ left: 16, right: 12, top: 10, bottom: 10 })
   }
