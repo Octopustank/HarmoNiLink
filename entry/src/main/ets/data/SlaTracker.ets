@@ -43,9 +43,10 @@
  * newest-inclusive; a kill gap shows as "no slot for that bucket" -> GREY.
  *
  * Lifecycle:
- *   - load() restores lastSeen + slots; if-empty guarded so a live signal
- *     racing the async disk read is never overwritten. The (lastSeen, now]
- *     gap is left grey by bucket absence — the kill-resistance mechanism.
+ *   - load() MERGES the persisted snapshot with any live signal that already
+ *     landed while the async disk read was in flight: the live slot wins, every
+ *     older slot restores from disk. The (lastSeen, now] gap is left grey by
+ *     bucket absence — the kill-resistance mechanism.
  *   - flush() is the unconditional last-line-of-defense persist for
  *     onAppBackground / onDestroy.
  */
@@ -127,31 +128,25 @@ export class SlaTracker {
 
   // ==================== Restore ====================
 
-  /** Load a persisted snapshot. if-empty guarded: a live signal that already
-   * opened slots must not be overwritten by (possibly stale) disk data. A kill
-   * gap is NOT written — absent buckets render grey at materialize. */
+  /** Load a persisted snapshot, MERGED with any live signal that already landed
+   * while the async disk read was in flight. A live signal touches the newest
+   * bucket's slot first; that slot is kept, every older slot restores from disk.
+   * (The old "if lastSeen>0 return" guard dropped the ENTIRE 2h history whenever
+   * a cold start's first signal beat the disk read — reconnect-before-view.) */
   load(json: string | null): void {
-    if (this.lastSeen > 0) return; // live activity already arrived — newer truth
-    this.lastSeen = 0;
-    this.lastDownlinkBucket = -1;
-    this.lastSignalBucket = -1;
-    for (let i = 0; i < CELL_COUNT; i++) {
-      this.slots[i].bucket = -1;
-      this.slots[i].flags = 0;
-    }
     if (!json) return;
     try {
       const snap = JSON.parse(json) as SlaSnapshot;
-      this.lastSeen = snap.lastSeen || 0;
+      this.lastSeen = Math.max(this.lastSeen, snap.lastSeen || 0);
       const raw = Array.isArray(snap.slots) ? snap.slots : [];
       for (let i = 0; i < raw.length && i < CELL_COUNT; i++) {
         const r = raw[i];
-        if (r && typeof r.bucket === 'number' && r.bucket >= 0) {
-          const b = Math.floor(r.bucket);
-          const slot = this.slotFor(b);
-          slot.bucket = b;
-          slot.flags = r.flags;
-        }
+        if (!r || typeof r.bucket !== 'number' || r.bucket < 0) continue;
+        const b = Math.floor(r.bucket);
+        const slot = this.slotFor(b);
+        if (slot.bucket >= 0) continue; // live already opened this slot — keep live
+        slot.bucket = b;
+        slot.flags = r.flags;
       }
     } catch (err) {
       hilog.warn(0x0001, TAG, 'load parse error: ' + JSON.stringify(err));
