@@ -107,10 +107,6 @@ struct MainPage {
       // with an empty right area. Stack makes the UI fill the whole window.
       .mode(NavigationMode.Stack)
       .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
-      .systemBarStyle(
-        { statusBarContentColor: '#1A1A1A' },
-        { statusBarContentColor: '#FFFFFF' }
-      )
     }
   }
 }
