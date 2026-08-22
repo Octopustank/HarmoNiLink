@@ -546,6 +546,11 @@ export struct ConnectionPage {
           .fontSize(18).fontColor([$r('app.color.text_secondary')])
       }
       .width('100%').padding({ left: 12, right: 12, top: 14, bottom: 14 })
+      .borderRadius(16)
+      .stateStyles({
+        pressed: { .backgroundColor($r('app.color.press_feedback')) },
+        normal: { .backgroundColor(Color.Transparent) }
+      })
       .onClick(() => { this.openAboutSheet(); })
 
       Divider().strokeWidth(0.5).color($r('app.color.divider')).margin({ left: 12, right: 12 })
@@ -559,6 +564,11 @@ export struct ConnectionPage {
           .animation({ duration: 200, curve: Curve.EaseOut })
       }
       .width('100%').padding({ left: 12, right: 12, top: 14, bottom: 14 })
+      .borderRadius(16)
+      .stateStyles({
+        pressed: { .backgroundColor($r('app.color.press_feedback')) },
+        normal: { .backgroundColor(Color.Transparent) }
+      })
       .onClick(() => { this.showLogs = !this.showLogs; })
 
       if (this.showLogs) {
@@ -692,6 +702,11 @@ export struct ConnectionPage {
           Text('Mulan PSL v2').fontSize(14).fontColor($r('app.color.text_secondary')).margin({ right: 4 })
           SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(18).fontColor([$r('app.color.text_secondary')])
         }.width('100%').padding({ left: 16, right: 12, top: 14, bottom: 14 })
+        .borderRadius(16)
+        .stateStyles({
+          pressed: { .backgroundColor($r('app.color.press_feedback')) },
+          normal: { .backgroundColor(Color.Transparent) }
+        })
         .onClick(() => { this.onAboutLicense(); })
 
         Divider().strokeWidth(0.5).color($r('app.color.divider')).margin({ left: 16, right: 12 })
@@ -700,6 +715,11 @@ export struct ConnectionPage {
           Text('开源仓库').fontSize(16).fontColor($r('app.color.text_primary')).layoutWeight(1)
           SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(18).fontColor([$r('app.color.text_secondary')])
         }.width('100%').padding({ left: 16, right: 12, top: 14, bottom: 14 })
+        .borderRadius(16)
+        .stateStyles({
+          pressed: { .backgroundColor($r('app.color.press_feedback')) },
+          normal: { .backgroundColor(Color.Transparent) }
+        })
         .onClick(() => { this.onAboutRepo(); })
 
         Divider().strokeWidth(0.5).color($r('app.color.divider')).margin({ left: 16, right: 12 })
@@ -708,6 +728,11 @@ export struct ConnectionPage {
           Text('做个评价').fontSize(16).fontColor($r('app.color.text_primary')).layoutWeight(1)
           SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(18).fontColor([$r('app.color.text_secondary')])
         }.width('100%').padding({ left: 16, right: 12, top: 14, bottom: 14 })
+        .borderRadius(16)
+        .stateStyles({
+          pressed: { .backgroundColor($r('app.color.press_feedback')) },
+          normal: { .backgroundColor(Color.Transparent) }
+        })
         .onClick(() => { this.onAboutComment(); })
 
         Divider().strokeWidth(0.5).color($r('app.color.divider')).margin({ left: 16, right: 12 })
@@ -716,6 +741,11 @@ export struct ConnectionPage {
           Text('删除连接健康度日志').fontSize(16).fontColor($r('app.color.text_primary')).layoutWeight(1)
           SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(18).fontColor([$r('app.color.text_secondary')])
         }.width('100%').padding({ left: 16, right: 12, top: 14, bottom: 14 })
+        .borderRadius(16)
+        .stateStyles({
+          pressed: { .backgroundColor($r('app.color.press_feedback')) },
+          normal: { .backgroundColor(Color.Transparent) }
+        })
         .onClick(() => { this.onAboutClearSla(); })
 
         Divider().strokeWidth(0.5).color($r('app.color.divider')).margin({ left: 16, right: 12 })
@@ -724,6 +754,11 @@ export struct ConnectionPage {
           Text('重置引导').fontSize(16).fontColor($r('app.color.text_primary')).layoutWeight(1)
           SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(18).fontColor([$r('app.color.text_secondary')])
         }.width('100%').padding({ left: 16, right: 12, top: 14, bottom: 14 })
+        .borderRadius(16)
+        .stateStyles({
+          pressed: { .backgroundColor($r('app.color.press_feedback')) },
+          normal: { .backgroundColor(Color.Transparent) }
+        })
         .onClick(() => { this.onAboutReset(); })
       }
       .width('100%').borderRadius(16).backgroundColor($r('app.color.card_background'))

@@ -9,6 +9,7 @@
     { "name": "link", "value": "#5CA8FF" },
     { "name": "danger", "value": "#FF453A" },
     { "name": "success", "value": "#30D158" },
+    { "name": "press_feedback", "value": "#194C9FFF" },
     { "name": "warning", "value": "#FF9F0A" },
     { "name": "sla_grey", "value": "#3A3A3C" },
     { "name": "sla_light", "value": "#9CCC3C" },

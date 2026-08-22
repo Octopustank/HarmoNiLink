@@ -172,6 +172,12 @@ export struct PairingPage {
         .onClick(() => { this.onInfo(cam); })
     }
     .width('100%').height(48).padding({ left: 8, right: 8 })
+    .margin({ top: 4, bottom: 4 })
+    .borderRadius(16)
+    .stateStyles({
+      pressed: { .backgroundColor($r('app.color.press_feedback')) },
+      normal: { .backgroundColor(Color.Transparent) }
+    })
     .onClick(() => { this.onCameraRowTap(cam); })
   }
 
@@ -345,14 +351,21 @@ export struct PairingPage {
               .margin({ left: 12, bottom: 6, top: 8 }).alignSelf(ItemAlign.Start)
             if (this.nikonCameras().length > 0) {
               Column() {
-                ForEach(this.nikonCameras(), (cam: DiscoveredCamera) => { this.cameraRow(cam) },
+                ForEach(this.nikonCameras(), (cam: DiscoveredCamera, index: number) => {
+                  this.cameraRow(cam)
+                  if (index < this.nikonCameras().length - 1) {
+                    Divider().strokeWidth(0.5).color($r('app.color.divider'))
+                      .margin({ left: 8, right: 8 })
+                  }
+                },
                   (cam: DiscoveredCamera) => `${cam.deviceId}_${this.listRefreshTick}`)
               }
               .width('100%').backgroundColor($r('app.color.card_background')).borderRadius(16).padding(4)
               .shadow({ radius: 12, color: '#0D000000', offsetY: 2 })
             }
 
-            // 其他设备（默认折叠）
+            // 其他设备（默认折叠）— 纯展开/收起控制，无按压高亮（点击即切换，
+            // 瞬时高亮无意义还会闪）
             Row() {
               Text(`其他设备（${this.otherCameras().length}）`).fontSize(13).fontColor($r('app.color.text_secondary'))
               Blank()
@@ -362,7 +375,13 @@ export struct PairingPage {
             .onClick(() => { this.showOthers = !this.showOthers; })
             if (this.showOthers) {
               Column() {
-                ForEach(this.otherCameras(), (cam: DiscoveredCamera) => { this.cameraRow(cam) },
+                ForEach(this.otherCameras(), (cam: DiscoveredCamera, index: number) => {
+                  this.cameraRow(cam)
+                  if (index < this.otherCameras().length - 1) {
+                    Divider().strokeWidth(0.5).color($r('app.color.divider'))
+                      .margin({ left: 8, right: 8 })
+                  }
+                },
                   (cam: DiscoveredCamera) => `${cam.deviceId}_${this.listRefreshTick}`)
               }
               .width('100%').backgroundColor($r('app.color.card_background')).borderRadius(16).padding(4)
