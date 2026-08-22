@@ -148,6 +148,10 @@ export class CameraService {
   // listener). Drives the "后台进程已被系统中断" status line on the UI; cleared
   // when a camera reaches Ready again (link restored → "现已恢复").
   private bgTaskCancelled: boolean = false;
+  // Background modes currently held by the running ContinuousTask (string[] —
+  // the single-value BackgroundMode overload accepts ONE mode only, and the
+  // old `BLUETOOTH_INTERACTION | LOCATION` = 7 is not a valid enum value).
+  private bgModes: string[] = [];
 
   // GPS ticker — one interval + alternating TIME/GEO, fanned out to Ready sessions.
   private gpsTimer: number | null = null;
@@ -207,7 +211,41 @@ export class CameraService {
     // satellite count is a device-level reading that must NOT reset to "--"
     // when all cameras drop. Subscribe once at startup, keep it alive.
     this.subscribeSatelliteStatus();
+    // ContinuousTask cancel/suspend listeners — once at startup. Without them,
+    // a silent system cancel leaves backgroundTaskStarted=true forever and the
+    // guard in startBackgroundTask() early-returns on every retry (deadlock).
+    this.registerBgTaskListeners();
     this.prefs.init(ctx); // async init — loadSavedCamerasSync will return cache once ready
+  }
+
+  /** Register the ContinuousTask cancel/suspend listeners (once). On cancel,
+   * the system silently revokes the task and the notification; we must reset
+   * backgroundTaskStarted so a warm return-to-foreground re-applies it, and set
+   * bgTaskCancelled to drive the "后台进程已被系统中断" status line. No re-apply
+   * here — the cancel callback window may freeze the process, and the next
+   * reconcileBackgroundTask / onAppForeground re-applies naturally. */
+  private registerBgTaskListeners(): void {
+    try {
+      backgroundTaskManager.on('continuousTaskCancel',
+        (info: backgroundTaskManager.ContinuousTaskCancelInfo): void => {
+          hilog.warn(0x0001, TAG, `[BG] ContinuousTask cancelled — reason=${info.reason} id=${info.id}`);
+          this.backgroundTaskStarted = false;
+          this.bgModes = [];
+          this.bgTaskCancelled = true;
+        });
+    } catch (e) {
+      hilog.warn(0x0001, TAG, `[BG] continuousTaskCancel on() fail: ${JSON.stringify(e)}`);
+    }
+    try {
+      backgroundTaskManager.on('continuousTaskSuspend',
+        (info: backgroundTaskManager.ContinuousTaskSuspendInfo): void => {
+          // Suspend ≠ cancel: the task is paused (system load), not revoked.
+          // Log the reason for diagnosis only — backgroundTaskStarted stays.
+          hilog.warn(0x0001, TAG, `[BG] ContinuousTask suspended — reason=${info.suspendReason}`);
+        });
+    } catch (e) {
+      hilog.warn(0x0001, TAG, `[BG] continuousTaskSuspend on() fail: ${JSON.stringify(e)}`);
+    }
   }
 
   // ==================== 保持连接 (per-camera auto-reconnect, Phase 3) ====================
@@ -622,11 +660,18 @@ export class CameraService {
 
   /** Start/stop the ContinuousTask to match current connection intent:
    * keep it while any camera is Ready (GPS writing) OR has keep-alive intent
-   * (reconnecting in the background); stop it only when neither holds. */
+   * (reconnecting in the background); stop it only when neither holds. When it
+   * is already running, the held MODES track the Ready set in place — a camera
+   * going Ready adds location, all dropping reverts to bluetooth-only. */
   private reconcileBackgroundTask(): void {
     const need = this.getReadySessions().length > 0 || this.hasKeepAliveIntent();
     if (need) {
-      this.startBackgroundTask();
+      if (this.backgroundTaskStarted) {
+        const want = this.currentBgModes();
+        if (!this.sameModes(want)) this.updateBackgroundTask(want);
+      } else {
+        this.startBackgroundTask();
+      }
     } else {
       this.stopBackgroundTask();
     }
@@ -932,6 +977,10 @@ export class CameraService {
 
     const ctx = this.abilityContext;
     const gen = this.bgGeneration; // this request's generation
+    // Multi-mode MUST use the string[] overload: the single-value BackgroundMode
+    // overload accepts ONE mode, and `BLUETOOTH_INTERACTION | LOCATION` = 7 is
+    // not a valid enum value (the enum skips 7). Legal multi-mode is a string[].
+    const modes = this.currentBgModes();
 
     let wantAgentInfo: wantAgent.WantAgentInfo = {
       wants: [
@@ -949,9 +998,7 @@ export class CameraService {
       const agent: WantAgent = await wantAgent.getWantAgent(wantAgentInfo);
       if (gen !== this.bgGeneration) return; // a stop() raced in — abandon
       try {
-        await backgroundTaskManager.startBackgroundRunning(ctx,
-          backgroundTaskManager.BackgroundMode.BLUETOOTH_INTERACTION |
-          backgroundTaskManager.BackgroundMode.LOCATION, agent);
+        await backgroundTaskManager.startBackgroundRunning(ctx, modes, agent);
         if (gen !== this.bgGeneration) {
           // Start landed after a stop request — immediately undo it, else the
           // notification task hangs while every switch is off.
@@ -960,7 +1007,8 @@ export class CameraService {
           return;
         }
         this.backgroundTaskStarted = true;
-        hilog.info(0x0001, TAG, '[BG] ContinuousTask started (BLUETOOTH + LOCATION)');
+        this.bgModes = modes;
+        hilog.info(0x0001, TAG, `[BG] ContinuousTask started (${modes.join('+')})`);
       } catch (err) {
         hilog.warn(0x0001, TAG,
           `[BG] startBackgroundRunning fail: ${(err as BusinessError).code} ${(err as BusinessError).message}`);
@@ -971,6 +1019,39 @@ export class CameraService {
     }
   }
 
+  /** Dynamic single/multi-mode: while any camera is Ready (GPS writing) hold
+   * bluetooth + location; during pure reconnect (no Ready session) hold only
+   * bluetooth. Every held mode must have real business backing it — otherwise
+   * the system may cancel the task as "unused" (SYSTEM_CANCEL_NOT_USE_LOCATION
+   * when LOCATION is held but GPS isn't writing). */
+  private currentBgModes(): string[] {
+    return this.getReadySessions().length > 0
+      ? ['bluetoothInteraction', 'location']
+      : ['bluetoothInteraction'];
+  }
+
+  private sameModes(modes: string[]): boolean {
+    if (modes.length !== this.bgModes.length) return false;
+    for (let i = 0; i < modes.length; i++) {
+      if (modes[i] !== this.bgModes[i]) return false;
+    }
+    return true;
+  }
+
+  /** Switch the running ContinuousTask's background modes in place (add/remove
+   * location as cameras enter/leave Ready). */
+  private updateBackgroundTask(modes: string[]): void {
+    const ctx = this.abilityContext;
+    if (!ctx) return;
+    backgroundTaskManager.updateBackgroundRunning(ctx, modes).then(() => {
+      this.bgModes = modes;
+      hilog.info(0x0001, TAG, `[BG] ContinuousTask modes → ${modes.join('+')}`);
+    }).catch((err: BusinessError) => {
+      hilog.warn(0x0001, TAG,
+        `[BG] updateBackgroundRunning fail: ${err.code} ${err.message}`);
+    });
+  }
+
   stopBackgroundTask(): void {
     this.bgGeneration++; // invalidate any in-flight start()
     if (!this.backgroundTaskStarted || !this.abilityContext) return;
@@ -978,6 +1059,7 @@ export class CameraService {
     try {
       backgroundTaskManager.stopBackgroundRunning(this.abilityContext);
       this.backgroundTaskStarted = false;
+      this.bgModes = [];
       hilog.info(0x0001, TAG, '[BG] ContinuousTask stopped');
     } catch (err) {
       hilog.warn(0x0001, TAG,

@@ -914,7 +914,15 @@ export struct ConnectionPage {
       dragBar: true,
       showClose: true,
       backgroundColor: $r('app.color.page_background'),
-      enableOutsideInteractive: false // 半模态打开时禁止操作底下 UI
+      enableOutsideInteractive: false, // 半模态打开时禁止操作底下 UI
+      onWillDismiss: (action: DismissSheetAction) => {
+        action.dismiss(); // allow the sheet to close
+        // Rating prompt fires on HEALTH-sheet close (the act of closing proves
+        // the user opened it) — after dismissal, so it never covers the sheet.
+        if (this.sheetKind === 'info') {
+          this.maybePromptRating();
+        }
+      }
     })
   }
 }
