@@ -522,11 +522,15 @@ export class CameraSession {
    */
   private maybeShowPairTargetHint(): void {
     if (this.pairTargetHintLatched) return;
-    this.pairTargetHintLatched = true; // one dialog per episode — Ready resets
+    // Foreground FIRST, then latch: a background failure must NOT consume the
+    // latch, or the first failure after returning to foreground would stay
+    // silent (the camera never reaches Ready in this scenario, so only a
+    // toggle re-arms it).
     if (!this.hub.isForeground) {
       hilog.info(0x0001, TAG, '[CHECKPOINT] pair-target hint suppressed (background)');
       return;
     }
+    this.pairTargetHintLatched = true; // one dialog per episode — Ready resets
     hilog.warn(0x0001, TAG, '[CHECKPOINT] Camera may be waiting for another device — showing hint');
     const ctx = this.hub.getAbilityContext();
     if (!ctx) return;

@@ -147,9 +147,9 @@ export class CameraService {
   private bgGeneration: number = 0;
   // Set when the system cancels OR suspends our ContinuousTask, or when a
   // warm return-to-foreground finds it gone without our own stop() (frozen
-  // process → callbacks may never run). Drives the "后台进程已被系统中断"
-  // status line on the UI; cleared when a camera reaches Ready again (link
-  // restored → "现已恢复").
+  // process → callbacks may never run). Latches the interrupt event so
+  // inferSilentRevocation() won't re-infer it every foreground return; cleared
+  // when a camera reaches Ready again (link restored → "现已恢复").
   private bgTaskCancelled: boolean = false;
   // Background modes currently held by the running ContinuousTask (string[] —
   // the single-value BackgroundMode overload accepts ONE mode only, and the
@@ -237,9 +237,9 @@ export class CameraService {
   /** Register the ContinuousTask cancel/suspend listeners (once). On cancel,
    * the system silently revokes the task and the notification; we must reset
    * backgroundTaskStarted so a warm return-to-foreground re-applies it, and set
-   * bgTaskCancelled to drive the "后台进程已被系统中断" status line. No re-apply
-   * here — the cancel callback window may freeze the process, and the next
-   * reconcileBackgroundTask / onAppForeground re-applies naturally. */
+   * bgTaskCancelled to latch the interrupt event (drives the interrupt notice).
+   * No re-apply here — the cancel callback window may freeze the process, and
+   * the next reconcileBackgroundTask / onAppForeground re-applies naturally. */
   private registerBgTaskListeners(): void {
     try {
       backgroundTaskManager.on('continuousTaskCancel',
@@ -691,13 +691,6 @@ export class CameraService {
     return this.prefs.loadSavedCamerasSync().some((c: PairedCamera) => c.keepAlive);
   }
 
-  /** True if the system cancelled our ContinuousTask since the last Ready —
-   * the UI shows a "后台进程已被系统中断，现已恢复" line on keep-alive cameras
-   * that are still reconnecting (no Ready session) until the link is restored. */
-  wasBgCancelled(): boolean {
-    return this.bgTaskCancelled;
-  }
-
   /** Start/stop the ContinuousTask to match current connection intent:
    * keep it while any camera is Ready (GPS writing) OR has keep-alive intent
    * (reconnecting in the background); stop it only when neither holds. When it
@@ -1043,11 +1036,12 @@ export class CameraService {
    * cold-ish thaw may deliver neither. On warm foreground, keep-alive intent +
    * no Ready session + task not running (and we didn't stop it ourselves —
    * userStopGeneration guards that path) means the system silently revoked it.
-   * Mark bgTaskCancelled so the status line still explains the gap. */
+   * Mark bgTaskCancelled so the interrupt notice explains the gap. */
   private inferSilentRevocation(): void {
     if (this.bgTaskCancelled || !this.hasKeepAliveIntent()) return;
     if (this.getReadySessions().length > 0) return;
     if (this.backgroundTaskStarted) return;
+    if (this.bgStartInFlight) return; // a start is still in flight — not "gone"
     if (this.userStopGeneration === this.bgGeneration) return;
     hilog.warn(0x0001, TAG, '[BG] task gone without our stop() at foreground — inferring silent system revocation');
     this.bgTaskCancelled = true;
@@ -1177,11 +1171,11 @@ export class CameraService {
   /** Broadcast a per-camera (or global, name='') state change to all listeners. */
   broadcastSessionState(cameraName: string, state: ConnectionState, message: string): void {
     hilog.info(0x0001, TAG, `[CHECKPOINT] STATE: [${cameraName || '(global)'}] ${state} — ${message}`);
-    // A camera reaching Ready means the link is restored — clear the
-    // "后台进程已被系统中断" notice (its tail reads "现已恢复").
+    // A camera reaching Ready means the link is restored — clear the interrupt
+    // latch so the NEXT revocation can re-notify.
     if (state === ConnectionState.Ready && this.bgTaskCancelled) {
       this.bgTaskCancelled = false;
-      hilog.info(0x0001, TAG, '[BG] camera Ready — cleared cancelled notice');
+      hilog.info(0x0001, TAG, '[BG] camera Ready — cleared interrupt latch');
     }
     // Ready also settles the interrupt-notice event itself: if the link came
     // back while the user was watching in-app, don't let a stale flag pop the

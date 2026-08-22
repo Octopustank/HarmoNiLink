@@ -531,14 +531,6 @@ export struct ConnectionPage {
       .padding({ left: 12, right: 12, top: 10, bottom: 10 })
       .alignItems(VerticalAlign.Center)
 
-      if (cam.keepAlive
-        && (this.getCameraStatus(cam.name)?.state ?? ConnectionState.Idle) !== ConnectionState.Ready
-        && cameraService.wasBgCancelled()) {
-        Text('由于设备一直无法连接，后台进程已被系统中断，现已恢复')
-          .fontSize(11).fontColor($r('app.color.warning'))
-          .width('100%').alignSelf(ItemAlign.Start).padding({ left: 12, right: 12, bottom: 10 })
-      }
-
       if (withDivider) {
         Divider().strokeWidth(0.5).color($r('app.color.divider')).margin({ left: 12, right: 12 })
       }
