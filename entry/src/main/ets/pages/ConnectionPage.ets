@@ -847,7 +847,7 @@ export struct ConnectionPage {
    * rating_shown (permanent — market already rate-limits 1/year). debug → toast
    * + per-gate hilog; release → 2-button dialog. Best-effort: any failure is
    * silent (hilog), never a misleading toast. */
-  private maybePromptRating(): void {
+  private async maybePromptRating(): Promise<void> {
     try {
       const now = Date.now();
       const debug = this.isDebugBuild();
@@ -865,7 +865,7 @@ export struct ConnectionPage {
         if (debug) hilog.info(0x0001, TAG, `[RATING] G3 not met — age=${firstTs > 0 ? now - firstTs : -1}ms`);
         return;
       }
-      const redCells = this.countRedCells();
+      const redCells = await this.countRedCells();
       if (redCells > RATING_MAX_RED_CELLS) {
         if (debug) hilog.info(0x0001, TAG, `[RATING] G4 not met — red=${redCells}`);
         return;
@@ -906,9 +906,12 @@ export struct ConnectionPage {
     }
   }
 
-  /** G4 input: count RED-only cells (完全断连) in the current camera's 2h window. */
-  private countRedCells(): number {
-    const cells = cameraService.getSlaTimeline(this.infoCameraName);
+  /** G4 input: count RED-only cells (完全断连) in the current camera's 2h
+   * window. Awaits the persisted load so a cold-start open-then-close can't
+   * under-count RED while the disk merge is still in flight (which would make
+   * G4 pass on a not-yet-loaded, all-grey timeline). */
+  private async countRedCells(): Promise<number> {
+    const cells = await cameraService.getSlaTimelineLoaded(this.infoCameraName);
     let red = 0;
     for (const c of cells) {
       if (c.sev === SlaSev.RED) red++;
