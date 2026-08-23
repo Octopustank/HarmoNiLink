@@ -21,6 +21,11 @@ import { SwipeDeleteTriggerType } from '@hms.hds.HdsStyle';
 
 const TAG = 'HarmoNiLink-ConnectionPage';
 
+// Rating-prompt gates — tuned constants in one place (see maybePromptRating).
+const RATING_MIN_AGE_MS = 48 * 3600 * 1000;              // G3: first downlink ≥ 48h ago
+const RATING_DECLINE_COOLDOWN_MS = 7 * 24 * 3600 * 1000; // G5: 谢绝冷却 7 天
+const RATING_MAX_RED_CELLS = 3;                          // G4: 2h 窗口 RED-only 桶 ≤ 3
+
 /** Per-camera live state, updated from CameraStateEvent. */
 interface CameraStatus {
   name: string;
@@ -830,19 +835,55 @@ export struct ConnectionPage {
     }
   }
 
-  /** Rating prompt — fired when the health half-modal closes IF a GEO write was
-   * ever acked (hasDownlink, hard evidence the pairing delivered value) and the
-   * dialog hasn't been shown yet. One-time, permanent (no snooze). debug → toast
-   * only; release → 2-button dialog. Whole thing is best-effort: any failure is
-   * silent (hilog only), never a misleading "network error" toast. */
+  /** Rating prompt — fired on health-sheet close. Prompts only after the app
+   * has been TIME-TESTED and the CURRENT moment is healthy (gates G1–G5; any
+   * miss returns silently, writing nothing):
+   *   G1 not already tapped 去评分 (permanent)
+   *   G2 a GEO write was ever acked
+   *   G3 first ack ≥ 48h ago (absolute, not calendar days)
+   *   G4 ≤ 3 RED-only cells in the 2h window (~≤6min total outage)
+   *   G5 never declined, or declined ≥ 7 days ago (cooldown, not permanent)
+   * 谢绝/dismiss writes declined_at (re-prompt after cooldown); 去评分 writes
+   * rating_shown (permanent — market already rate-limits 1/year). debug → toast
+   * + per-gate hilog; release → 2-button dialog. Best-effort: any failure is
+   * silent (hilog), never a misleading toast. */
   private maybePromptRating(): void {
     try {
-      if (cameraService.wasRatingShown() || !cameraService.hasDownlink()) return;
-      cameraService.markRatingShown(); // latch immediately — never re-show
-      if (this.isDebugBuild()) {
+      const now = Date.now();
+      const debug = this.isDebugBuild();
+
+      if (cameraService.wasRatingShown()) {
+        if (debug) hilog.info(0x0001, TAG, '[RATING] G1 not met — already tapped 去评分');
+        return;
+      }
+      if (!cameraService.hasDownlink()) {
+        if (debug) hilog.info(0x0001, TAG, '[RATING] G2 not met — no downlink yet');
+        return;
+      }
+      const firstTs = cameraService.getFirstDownlinkTs();
+      if (firstTs <= 0 || now - firstTs < RATING_MIN_AGE_MS) {
+        if (debug) hilog.info(0x0001, TAG, `[RATING] G3 not met — age=${firstTs > 0 ? now - firstTs : -1}ms`);
+        return;
+      }
+      const redCells = this.countRedCells();
+      if (redCells > RATING_MAX_RED_CELLS) {
+        if (debug) hilog.info(0x0001, TAG, `[RATING] G4 not met — red=${redCells}`);
+        return;
+      }
+      const declinedAt = cameraService.getDeclinedAt();
+      if (declinedAt > 0 && now - declinedAt < RATING_DECLINE_COOLDOWN_MS) {
+        if (debug) hilog.info(0x0001, TAG, `[RATING] G5 not met — declined ${now - declinedAt}ms ago`);
+        return;
+      }
+
+      if (debug) {
+        // Debug: toast only (AppGallery can't validate an unsigned build); log
+        // the inputs so each gate can be verified on-device.
+        hilog.info(0x0001, TAG, `[RATING] all gates passed — firstTs=${firstTs} red=${redCells}`);
         this.getUIContext().getPromptAction().showToast({ message: '评分弹窗触发（debug 验证）', duration: 2000 });
         return;
       }
+
       this.getUIContext().getPromptAction().showDialog({
         title: '给个评价吧',
         message: '如果你觉得 HarmoNiLink 好用，欢迎到华为应用市场给个评价。',
@@ -852,12 +893,27 @@ export struct ConnectionPage {
         ]
       }).then((result: promptAction.ShowDialogSuccessResponse) => {
         if (result.index === 1) {
-          this.onAboutComment(); // 去评分 → existing flow (self try/catch + code map)
+          cameraService.markRatingShown(); // 去评分 → permanent
+          this.onAboutComment(); // existing flow (self try/catch + code map)
+        } else {
+          cameraService.markDeclined(); // 谢绝 → cooldown
         }
-      }).catch(() => { /* dismissed — ratingShown already latched */ });
+      }).catch(() => {
+        cameraService.markDeclined(); // dismissed/back → treat as declined (cooldown)
+      });
     } catch (err) {
       hilog.warn(0x0001, TAG, 'rating prompt failed: ' + JSON.stringify(err));
     }
+  }
+
+  /** G4 input: count RED-only cells (完全断连) in the current camera's 2h window. */
+  private countRedCells(): number {
+    const cells = cameraService.getSlaTimeline(this.infoCameraName);
+    let red = 0;
+    for (const c of cells) {
+      if (c.sev === SlaSev.RED) red++;
+    }
+    return red;
   }
 
   /** 关于 → 删除连接健康度日志: clears all persisted SLA timelines (2h 窗口

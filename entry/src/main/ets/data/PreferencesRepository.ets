@@ -20,8 +20,10 @@ const KEY_CONNECT_HINT_SHOWN = 'connect_hint_shown';
 const KEY_MULTI_CAM_WARNED = 'multi_cam_warned'; // beyond-N-cameras warning dismissed
 const KEY_LAST_TAB = 'last_tab_index'; // last selected tab (配对/连接), persisted
 const KEY_SLA_PREFIX = 'sla_'; // per-camera SLA timeline (连接健康看板), namespaced
-const KEY_RATING_SHOWN = 'rating_shown'; // rating dialog shown (one-time)
+const KEY_RATING_SHOWN = 'rating_shown'; // user tapped 去评分 (permanent — never re-prompt)
 const KEY_HAS_DOWNLINK = 'has_downlink'; // a GEO write was acked at least once (rating gate)
+const KEY_FIRST_DOWNLINK_TS = 'first_downlink_ts'; // first GEO-ack epoch-ms (48h age gate)
+const KEY_DECLINED_AT = 'declined_at'; // last 谢绝/dismiss epoch-ms (7-day cooldown gate)
 const KEY_PERMISSION_HINT_SHOWN = 'permission_hint_shown'; // location "always allow" hint shown (one-time)
 // Suffix alphabet — no 0/O/1/I to avoid confusion when reading the name on the camera
 const SUFFIX_CHARS: string = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
@@ -42,8 +44,10 @@ export class PreferencesRepository {
   private connectHintShownCache: boolean = false; // one-time first-connect hint shown
   private multiCamWarnedCache: boolean = false; // beyond-N-cameras warning "don't show again"
   private lastTabIndexCache: number = 0; // last selected tab
-  private ratingShownCache: boolean = false; // rating dialog shown (one-time, never again)
+  private ratingShownCache: boolean = false; // user tapped 去评分 (permanent)
   private hasDownlinkCache: boolean = false; // a GEO write was acked at least once
+  private firstDownlinkTsCache: number = 0; // first GEO-ack epoch-ms (0 = never)
+  private declinedAtCache: number = 0; // last 谢绝/dismiss epoch-ms (0 = never)
   private permissionHintShownCache: boolean = false; // location "always allow" hint shown
   // Serialized disk writes. The CACHE is the single source of truth: it is
   // updated synchronously on every mutation, and queued tasks merely snapshot
@@ -98,6 +102,8 @@ export class PreferencesRepository {
       this.lastTabIndexCache = await this.store.get(KEY_LAST_TAB, 0) as number;
       this.ratingShownCache = await this.store.get(KEY_RATING_SHOWN, false) as boolean;
       this.hasDownlinkCache = await this.store.get(KEY_HAS_DOWNLINK, false) as boolean;
+      this.firstDownlinkTsCache = await this.store.get(KEY_FIRST_DOWNLINK_TS, 0) as number;
+      this.declinedAtCache = await this.store.get(KEY_DECLINED_AT, 0) as number;
       this.permissionHintShownCache = await this.store.get(KEY_PERMISSION_HINT_SHOWN, false) as boolean;
       hilog.info(0x0001, TAG, `[CHECKPOINT] PreferencesRepository initialized (${this.cache.length} cameras)`);
       for (const c of this.cache) {
@@ -145,9 +151,11 @@ export class PreferencesRepository {
     this.putBool(KEY_MULTI_CAM_WARNED, true);
   }
 
-  // ==================== 评分弹窗 (rating dialog, one-time) ====================
+  // ==================== 评分弹窗 (rating prompt) ====================
 
-  /** True once the rating dialog has been shown (permanent — never re-shows). */
+  /** True once the user tapped 去评分 — permanent, never re-prompt (the market
+   * enforces its own 1-year rate limit via error 1021500009, so no local
+   * throttle beyond this "already went" flag is needed). */
   wasRatingShownSync(): boolean {
     return this.ratingShownCache;
   }
@@ -166,6 +174,27 @@ export class PreferencesRepository {
     if (this.hasDownlinkCache) return; // latch — never write again
     this.hasDownlinkCache = true;
     this.putBool(KEY_HAS_DOWNLINK, true);
+  }
+
+  /** First GEO-ack timestamp, 0 until the first confirmed downlink. */
+  getFirstDownlinkTsSync(): number {
+    return this.firstDownlinkTsCache;
+  }
+
+  saveFirstDownlinkTsIfZero(now: number): void {
+    if (this.firstDownlinkTsCache !== 0) return; // first wins — latch
+    this.firstDownlinkTsCache = now;
+    this.putNumber(KEY_FIRST_DOWNLINK_TS, now);
+  }
+
+  /** Last 谢绝/dismiss timestamp, 0 if the user never declined. */
+  getDeclinedAtSync(): number {
+    return this.declinedAtCache;
+  }
+
+  saveDeclinedAt(now: number): void {
+    this.declinedAtCache = now;
+    this.putNumber(KEY_DECLINED_AT, now);
   }
 
   // ==================== 定位权限说明 (location "always allow" hint) ====================
@@ -194,17 +223,18 @@ export class PreferencesRepository {
   // ==================== 重置引导 (re-show one-time content) ====================
 
   /** Reset all "show once" flags so the first-connect hint, the multi-camera
-   * warning, the rating dialog and the location "always allow" hint are shown
-   * again. Invoked from the 关于 sheet. `hasDownlink` is deliberately NOT reset
-   * — it is evidence (a GEO write was acked), not a hint. */
+   * warning, the rating decline cooldown and the location "always allow" hint
+   * are shown again. Invoked from the 关于 sheet. Deliberately NOT reset:
+   * `hasDownlink`/`first_downlink_ts` (evidence, not hints) and `rating_shown`
+   * (the user already tapped 去评分 — permanent). */
   resetOnboarding(): void {
     this.connectHintShownCache = false;
     this.multiCamWarnedCache = false;
-    this.ratingShownCache = false;
+    this.declinedAtCache = 0;
     this.permissionHintShownCache = false;
     this.putBool(KEY_CONNECT_HINT_SHOWN, false);
     this.putBool(KEY_MULTI_CAM_WARNED, false);
-    this.putBool(KEY_RATING_SHOWN, false);
+    this.putNumber(KEY_DECLINED_AT, 0);
     this.putBool(KEY_PERMISSION_HINT_SHOWN, false);
     hilog.info(0x0001, TAG, '[CHECKPOINT] onboarding flags reset');
   }

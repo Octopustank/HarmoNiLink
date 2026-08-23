@@ -367,7 +367,7 @@ export class CameraService {
     this.prefs.resetOnboarding();
   }
 
-  // ==================== 评分弹窗 (rating dialog) ====================
+  // ==================== 评分弹窗 (rating prompt) ====================
 
   /** True once a GEO write was acked — the hard-evidence gate for the rating
    * prompt (only prompt after the pairing has actually delivered value). */
@@ -375,13 +375,28 @@ export class CameraService {
     return this.prefs.hasDownlinkSync();
   }
 
-  /** True once the rating dialog has been shown (permanent — never re-shows). */
+  /** True once the user tapped 去评分 — permanent (the market enforces its own
+   * 1-year rate limit via 1021500009, so "already went" is all we need). */
   wasRatingShown(): boolean {
     return this.prefs.wasRatingShownSync();
   }
 
   markRatingShown(): void {
     this.prefs.saveRatingShown();
+  }
+
+  /** First GEO-ack epoch-ms, 0 until the first confirmed downlink. */
+  getFirstDownlinkTs(): number {
+    return this.prefs.getFirstDownlinkTsSync();
+  }
+
+  /** Last 谢绝/dismiss epoch-ms, 0 if the user never declined. */
+  getDeclinedAt(): number {
+    return this.prefs.getDeclinedAtSync();
+  }
+
+  markDeclined(): void {
+    this.prefs.saveDeclinedAt(Date.now());
   }
 
   // ==================== 定位权限说明 (location "always allow" hint) ====================
@@ -927,11 +942,14 @@ export class CameraService {
   }
 
   /** GREEN signal — a GEO write was confirmed (full GPS downlink = has fix).
-   * Also latches the global `hasDownlink` evidence flag (the rating-dialog
-   * gate): a confirmed GEO write proves the pairing really worked. */
+   * Latches the global `hasDownlink` evidence flag + `first_downlink_ts` (the
+   * rating-prompt gates): a confirmed GEO write proves the pairing worked, and
+   * the first-ack timestamp anchors the "used it long enough" 48h gate. */
   slaOnDownlink(name: string): void {
+    const now = Date.now();
     this.prefs.saveHasDownlink();
-    this.getOrCreateSlaTracker(name).onDownlink(Date.now());
+    this.prefs.saveFirstDownlinkTsIfZero(now);
+    this.getOrCreateSlaTracker(name).onDownlink(now);
   }
 
   /** Activity marker — a TIME write was confirmed (fires regardless of fix;
