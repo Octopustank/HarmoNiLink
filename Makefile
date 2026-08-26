@@ -1,30 +1,11 @@
 # HarmoNiLink Makefile — GNU/Linux + DevEco CLI only
 #
-# ── Environment layout (what lives where, and why) ──────────────────────────
-# This project targets HarmonyOS 6.1.1 / API 24 (see build-profile.json5), so
-# every build must use an API-24 *Release* toolchain. DevEco Command-Line
-# Tools (CLT) bundles are self-contained: each ships its own hvigor, node,
-# ohpm AND a single-ApiLevel SDK under command-line-tools/sdk/default.
-#
-#   ~/.local/share/harmonyos/
-#   ├── cli-tools-26.0.0.621/   API 26 Beta2 preview line (~/.current → here;
-#   │                           what `devecocli` on PATH resolves to)
-#   └── cli-tools-6.1.1-api24/  API 24 Release line — THIS project's toolchain
-#
-# The two lines are NOT interchangeable: the API-26 bundle has no API-24 SDK
-# components, so builds fail, and its Beta2 sign tool must never sign release
-# artifacts. Hence below we auto-discover the right bundle by SDK metadata
-# instead of trusting $OHOS_CLI_HOME from the interactive shell.
-#
-# Prerequisites (checked at the bottom of this header):
-#   1. a CLT bundle with an API-24 SDK under ~/.local/share/harmonyos/
-#   2. `@ohos:registry=https://repo.harmonyos.com/npm/` in ~/.npmrc —
-#      hvigor pulls @ohos/* packages (e.g. @ohos/hvigor-ohos-plugin) from
-#      Huawei's scoped registry; without that line pnpm hits npmjs.org,
-#      which does not host them (404).
-#
-# Override any of this only if you know why: OHOS_CLI_HOME=/path make hap
-# ─────────────────────────────────────────────────────────────────────────────
+# Targets API 24 (build-profile.json5); CLT bundles are single-SDK, so the
+# toolchain is auto-discovered below by SDK metadata — NOT taken from
+# $OHOS_CLI_HOME (the shell may export the API-26 preview line, which cannot
+# build or sign this project). Requires an apiVersion-24 bundle under
+# ~/.local/share/harmonyos/cli-tools-* and `@ohos:registry=...` in ~/.npmrc;
+# both are enforced with clear errors.
 
 OS := $(shell uname -s)
 ifeq ($(OS),Linux)
