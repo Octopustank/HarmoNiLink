@@ -529,17 +529,18 @@ export struct ConnectionPage {
   }
 
   @Builder logSection() {
+    // Horizontal inset for the pressed highlights comes from the card's own
+    // padding — margin on a width('100%') child is unreliable (observed: the
+    // highlight shifted right / stuck to an edge). Vertical rhythm is per-row.
     Column() {
-      // 关于 — settings-style row with chevron (half-modal sheet).
-      // 4px inset margin on every side keeps the pressed highlight off the
-      // card edges (matches the pairing page's row treatment).
+      // 关于 — settings-style row with chevron (half-modal sheet)
       Row() {
         Text('关于').fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary')).layoutWeight(1)
         SymbolGlyph($r('sys.symbol.chevron_right'))
           .fontSize(18).fontColor([$r('app.color.text_secondary')])
       }
       .width('100%').padding({ left: 8, right: 8, top: 14, bottom: 14 })
-      .margin({ left: 4, right: 4, top: 4, bottom: 4 })
+      .margin({ top: 4, bottom: 4 })
       .borderRadius(16)
       .stateStyles({
         pressed: { .backgroundColor($r('app.color.press_feedback')) },
@@ -547,7 +548,7 @@ export struct ConnectionPage {
       })
       .onClick(() => { this.openAboutSheet(); })
 
-      Divider().strokeWidth(0.5).color($r('app.color.divider')).margin({ left: 12, right: 12 })
+      Divider().strokeWidth(0.5).color($r('app.color.divider')).margin({ left: 8, right: 8 })
 
       // 日志 — collapsible, chevron rotates down when expanded
       Row() {
@@ -558,7 +559,7 @@ export struct ConnectionPage {
           .animation({ duration: 200, curve: Curve.EaseOut })
       }
       .width('100%').padding({ left: 8, right: 8, top: 14, bottom: 14 })
-      .margin({ left: 4, right: 4, top: 4, bottom: 4 })
+      .margin({ top: 4, bottom: 4 })
       .borderRadius(16)
       .stateStyles({
         pressed: { .backgroundColor($r('app.color.press_feedback')) },
@@ -575,10 +576,11 @@ export struct ConnectionPage {
           } else { Text('暂无日志').fontSize(12).fontColor($r('app.color.text_secondary')).padding({ top: 8 }) }
         }
         .width('100%').padding({ left: 8, right: 8, bottom: 8 })
-        .margin({ left: 4, right: 4, bottom: 4 })
+        .margin({ bottom: 4 })
       }
     }
     .width('100%').alignItems(HorizontalAlign.Start)
+    .padding({ left: 4, right: 4 })
     .borderRadius(16).backgroundColor($r('app.color.card_background'))
     .shadow({ radius: 12, color: '#0D000000', offsetY: 2 })
     .margin({ top: 12 })

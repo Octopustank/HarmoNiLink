@@ -24,11 +24,12 @@ function AboutActionRow(label: string, onTap: () => void) {
     Text(label).fontSize(16).fontColor($r('app.color.text_primary')).layoutWeight(1)
     SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(18).fontColor([$r('app.color.text_secondary')])
   }
-  // 4px inset on every side keeps the pressed highlight off the card edges
-  // (matches the pairing page's row treatment); inner padding compensates so
-  // the label stays aligned with the non-pressable 应用版本 row above.
+  // Horizontal inset comes from the card's padding (margin on a width('100%')
+  // child is unreliable — observed stuck-to-edge highlights); the 4px top/
+  // bottom margin keeps the pressed highlight off the dividers. Inner padding
+  // aligns the label x with the 应用版本 row, which carries the same rhythm.
   .width('100%').padding({ left: 12, right: 8, top: 14, bottom: 14 })
-  .margin({ left: 4, right: 4, top: 4, bottom: 4 })
+  .margin({ top: 4, bottom: 4 })
   .borderRadius(16)
   .stateStyles({
     pressed: { .backgroundColor($r('app.color.press_feedback')) },
@@ -39,7 +40,7 @@ function AboutActionRow(label: string, onTap: () => void) {
 
 @Builder
 function AboutRowDivider() {
-  Divider().strokeWidth(0.5).color($r('app.color.divider')).margin({ left: 16, right: 12 })
+  Divider().strokeWidth(0.5).color($r('app.color.divider')).margin({ left: 12, right: 8 })
 }
 
 @Builder
@@ -53,7 +54,10 @@ export function AboutSheet(params: AboutSheetParams) {
       Row() {
         Text('应用版本').fontSize(16).fontColor($r('app.color.text_primary')).layoutWeight(1)
         Text(params.appVersion).fontSize(14).fontColor($r('app.color.text_secondary'))
-      }.width('100%').padding({ left: 16, right: 12, top: 14, bottom: 14 })
+      }
+      // Same rhythm as the action rows below so all rows read equal-height.
+      .width('100%').padding({ left: 12, right: 8, top: 14, bottom: 14 })
+      .margin({ top: 4, bottom: 4 })
 
       AboutRowDivider()
       AboutActionRow('开源协议', params.onLicense)
@@ -66,7 +70,11 @@ export function AboutSheet(params: AboutSheetParams) {
       AboutRowDivider()
       AboutActionRow('重置引导', params.onReset)
     }
-    .width('100%').borderRadius(16).backgroundColor($r('app.color.card_background'))
+    // Horizontal inset for the pressed highlights comes from the card's own
+    // padding — margin on a width('100%') child is unreliable (observed: the
+    // highlight stuck to the card edge).
+    .width('100%').padding({ left: 4, right: 4 })
+    .borderRadius(16).backgroundColor($r('app.color.card_background'))
     .margin({ top: 32, bottom: 24 })
 
     Blank().layoutWeight(1)
