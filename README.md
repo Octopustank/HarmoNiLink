@@ -86,10 +86,23 @@ entry/src/main/ets/
 │   ├── MainPage.ets                   — 标签页容器
 │   ├── PairingPage.ets                — 扫描 & 配对
 │   └── ConnectionPage.ets             — 连接状态 & 设备管理
+├── components/
+│   ├── GpsCard.ets                    — GPS 信息卡片
+│   ├── DeviceHealthSheet.ets          — 设备信息 & 连接健康度看板
+│   ├── AboutSheet.ets                 — 关于面板
+│   └── CommentDialog.ets              — 应用市场评价弹窗
 ├── service/
-│   └── CameraService.ets              — 配对/连接/重连状态机 · 按需权限申请
+│   ├── CameraService.ets              — 多相机连接 Hub（会话/共享扫描/互斥/状态广播）
+│   ├── CameraSession.ets              — 单相机会话：连接/握手/重连退避
+│   ├── ClassicBonding.ets             — 经典蓝牙绑定协调器
+│   ├── GpsDispatcher.ets              — GPS 单时钟分发（TIME/GEO 轮写）
+│   ├── BackgroundTaskKeeper.ets       — 长时任务生命周期 & 中断提醒
+│   ├── PermissionsGateway.ets         — 按需权限申请
+│   ├── SlaHub.ets                     — 连接健康度追踪注册表
+│   └── RatingPrompt.ets               — 评分弹窗门槛
 ├── data/
-│   └── PreferencesRepository.ets      — 已配对设备 & 控制器名称持久化
+│   ├── PreferencesRepository.ets      — 已配对设备 & 控制器名称持久化
+│   └── SlaTracker.ets                 — 健康度时间轴（2h 环形槽）
 └── entryability/
     └── EntryAbility.ets               — 入口 & 生命周期
 ```
