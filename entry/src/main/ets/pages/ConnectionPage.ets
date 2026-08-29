@@ -6,26 +6,28 @@
  * buttons and the global keep-alive toggle. Deleting a camera is a standard
  * HDS swipe-left action (trash icon / swipe-through).
  *
+ * Layout pieces live in components/: GpsCard (GPS info card), DeviceHealthSheet
+ * (设备信息 + SLA 看板), AboutSheet (关于). This page owns the live state
+ * mirrors, the toggle flow, the device list, and the shared half-modal.
+ *
  * MessagesCommonView pattern (requires HdsNavigation ancestor).
  */
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { bundleManager, common } from '@kit.AbilityKit';
-import { SymbolGlyphModifier, promptAction } from '@kit.ArkUI';
+import { SymbolGlyphModifier } from '@kit.ArkUI';
 import { cameraService } from '../service/CameraService';
 import { ConnectionState, CameraStateEvent } from '../service/ConnectionTypes';
+import { RatingPrompt } from '../service/RatingPrompt';
 import { PairedCamera } from '../ble/protocol/NikonPairingEngine';
-import { SlaCell, SlaSev } from '../data/SlaTracker';
+import { SlaCell } from '../data/SlaTracker';
 import { HdsNavDestination, ScrollEffectType, hdsMaterial, HdsListItem } from '@kit.UIDesignKit';
-import { commentManager } from '@kit.AppGalleryKit';
-import { BusinessError } from '@kit.BasicServicesKit';
 import { SwipeDeleteTriggerType } from '@hms.hds.HdsStyle';
+import { GpsCard, GpsLightState } from '../components/GpsCard';
+import { DeviceHealthSheet } from '../components/DeviceHealthSheet';
+import { AboutSheet } from '../components/AboutSheet';
+import { CommentDialog } from '../components/CommentDialog';
 
 const TAG = 'HarmoNiLink-ConnectionPage';
-
-// Rating-prompt gates — tuned constants in one place (see maybePromptRating).
-const RATING_MIN_AGE_MS = 48 * 3600 * 1000;              // G3: first downlink ≥ 48h ago
-const RATING_DECLINE_COOLDOWN_MS = 7 * 24 * 3600 * 1000; // G5: 谢绝冷却 7 天
-const RATING_MAX_RED_CELLS = 3;                          // G4: 2h 窗口 RED-only 桶 ≤ 3
 
 /** Per-camera live state, updated from CameraStateEvent. */
 interface CameraStatus {
@@ -44,8 +46,6 @@ export struct ConnectionPage {
   @State sheetKind: string = 'about'; // 'about' | 'info'
   @State infoCameraName: string = ''; // the camera whose SLA is shown
   @State slaCells: SlaCell[] = []; // materialized snapshot (frozen at open)
-  @State slaTooltip: string = ''; // tooltip text for the tapped cell
-  @State slaTooltipIndex: number = -1; // tapped cell index (-1 = none)
   // GPS data mirrored as @State so ArkUI detects changes
   @State gpsLat: string = '--';
   @State gpsLon: string = '--';
@@ -309,8 +309,6 @@ export struct ConnectionPage {
     // app start), this is empty; the await below re-materializes once the disk
     // read settles and refreshes @State, so the FIRST open already shows data.
     this.slaCells = cameraService.getSlaTimeline(cam.name);
-    this.slaTooltip = '';
-    this.slaTooltipIndex = -1;
     this.sheetKind = 'info';
     this.showSheet = true;
     const name = cam.name;
@@ -327,39 +325,61 @@ export struct ConnectionPage {
     this.showSheet = true;
   }
 
+  // ==== 关于 sheet actions (own the page's UIContext for dialogs/toasts) ====
+
+  private openExternalLink(url: string): void {
+    const ctx = this.getUIContext().getHostContext() as common.UIAbilityContext;
+    ctx.openLink(url, { appLinkingOnly: false })
+      .then(() => {})
+      .catch((e: Error) => { hilog.warn(0x0001, TAG, `openLink fail: ${e.message}`); });
+  }
+
+  private onAboutLicense(): void {
+    this.openExternalLink('https://license.coscl.org.cn/MulanPSL2');
+  }
+
+  private onAboutRepo(): void {
+    this.openExternalLink('https://github.com/Octopustank/HarmoNiLink');
+  }
+
+  private onAboutComment(): void {
+    CommentDialog.show(this.getUIContext());
+  }
+
+  /** 关于 → 删除连接健康度日志: clears all persisted SLA timelines (2h 窗口
+   * 与各相机 tracker), destructive so it asks for confirmation. */
+  private onAboutClearSla(): void {
+    this.getUIContext().getPromptAction().showDialog({
+      title: '删除连接健康度日志',
+      message: '将清除所有相机的「过去 2 小时连接健康度」记录，且无法恢复。确定删除？',
+      buttons: [
+        { text: '取消', color: $r('app.color.text_secondary') },
+        { text: '删除', color: $r('app.color.danger') }
+      ]
+    }).then((result) => {
+      if (result.index === 1) {
+        cameraService.clearAllSla();
+        // Drop the frozen snapshot too — a later health-sheet open must not
+        // show stale cells.
+        this.slaCells = [];
+        this.getUIContext().getPromptAction().showToast({ message: '已删除连接健康度日志', duration: 2000 });
+      }
+    }).catch((err: Error) => {
+      hilog.warn(0x0001, TAG, 'Clear SLA dialog err: ' + err.message);
+    });
+  }
+
+  private onAboutReset(): void {
+    cameraService.resetOnboarding();
+    try {
+      this.getUIContext().getPromptAction().showToast({ message: '已重置引导提示，下次操作将重新显示', duration: 2500 });
+    } catch (e) {
+      hilog.warn(0x0001, TAG, `reset toast err: ${(e as Error).message}`);
+    }
+  }
+
   private getInfoCamera(): PairedCamera | undefined {
     return this.savedCameras.find((c) => c.name === this.infoCameraName);
-  }
-
-  private slaSevColor(sev: number): ResourceColor {
-    if (sev === SlaSev.GREEN) return $r('app.color.success');
-    if (sev === SlaSev.YELLOW) return $r('app.color.sla_light');
-    if (sev === SlaSev.ORANGE) return $r('app.color.warning');
-    if (sev === SlaSev.RED) return $r('app.color.danger');
-    return $r('app.color.sla_grey');
-  }
-
-  private slaSevLabel(sev: number): string {
-    if (sev === SlaSev.GREEN) return '连接正常';
-    if (sev === SlaSev.YELLOW) return '偶发断连，数据已送达';
-    if (sev === SlaSev.ORANGE) return '存在数据问题（无定位等）';
-    if (sev === SlaSev.RED) return '完全中断，无数据';
-    return '无下发活动';
-  }
-
-  /** Format an epoch-ms timestamp as HH:MM. */
-  private slaTimeLabel(ts: number): string {
-    const d = new Date(ts);
-    const hh = d.getHours().toString().padStart(2, '0');
-    const mm = d.getMinutes().toString().padStart(2, '0');
-    return `${hh}:${mm}`;
-  }
-
-  private onSlaCellTap(index: number): void {
-    if (index < 0 || index >= this.slaCells.length) return;
-    const cell = this.slaCells[index];
-    this.slaTooltipIndex = index;
-    this.slaTooltip = `${this.slaTimeLabel(cell.startTs)}–${this.slaTimeLabel(cell.endTs)} · ${this.slaSevLabel(cell.sev)}`;
   }
 
   private stateColor(state: ConnectionState): ResourceColor {
@@ -396,6 +416,22 @@ export struct ConnectionPage {
     return this.stateLabel(st);
   }
 
+  private anyCameraReady(): boolean {
+    return this.cameraStatuses.some((c) => c.state === ConnectionState.Ready);
+  }
+
+  private anyCameraBusy(): boolean {
+    return this.cameraStatuses.some((c) => c.state !== ConnectionState.Ready && c.state !== ConnectionState.Idle);
+  }
+
+  private gpsLightState(): number {
+    if (this.anyCameraReady()) {
+      return this.gpsHasFix ? GpsLightState.DOWNLINK : GpsLightState.ACQUIRING;
+    }
+    if (this.anyCameraBusy()) return GpsLightState.BUSY; // connecting / acquiring
+    return GpsLightState.OFF; // nothing connected — grey
+  }
+
   @Builder pairingNotice() {
     Column() {
       Row({ space: 8 }) {
@@ -408,57 +444,6 @@ export struct ConnectionPage {
     .borderRadius(16).backgroundColor($r('app.color.card_background'))
     .shadow({ radius: 12, color: '#0D000000', offsetY: 2 })
     .margin({ bottom: 12 })
-  }
-
-  /** Always-present GPS card — stable layout, no jump on connect/disconnect.
-   * The status light is ALWAYS visible (grey = nothing connected, yellow =
-   * acquiring / connecting, green = heartbeat running with a fix) and
-   * replaces the old 定位 row. */
-  @Builder gpsCard() {
-    Column() {
-      Row() {
-        Text('GPS 信息').fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
-        Blank()
-        Circle({ width: 8, height: 8 }).fill(this.gpsLightColor())
-        Text(this.gpsLightLabel()).fontSize(11).fontColor(this.gpsLightColor()).margin({ left: 6 })
-      }.width('100%').margin({ bottom: 10 })
-      GpsRow({ label: '配对名称', value: this.controllerName })
-      Divider().strokeWidth(0.5).color($r('app.color.divider')).margin({ top: 4, bottom: 6 })
-      GpsRow({ label: '纬度', value: this.gpsLat })
-      GpsRow({ label: '经度', value: this.gpsLon })
-      GpsRow({ label: '海拔', value: this.gpsAlt })
-      GpsRow({ label: '卫星数', value: this.gpsSats })
-      GpsRow({ label: '更新时间', value: this.gpsTime })
-    }
-    .width('100%').alignItems(HorizontalAlign.Start)
-    .padding({ left: 16, right: 16, top: 12, bottom: 16 })
-    .borderRadius(16).backgroundColor($r('app.color.card_background'))
-    .shadow({ radius: 12, color: '#0D000000', offsetY: 2 })
-    .margin({ top: 12 })
-  }
-
-  private anyCameraReady(): boolean {
-    return this.cameraStatuses.some((c) => c.state === ConnectionState.Ready);
-  }
-
-  private anyCameraBusy(): boolean {
-    return this.cameraStatuses.some((c) => c.state !== ConnectionState.Ready && c.state !== ConnectionState.Idle);
-  }
-
-  private gpsLightColor(): ResourceColor {
-    if (this.anyCameraReady()) {
-      return this.gpsHasFix ? $r('app.color.success') : $r('app.color.warning');
-    }
-    if (this.anyCameraBusy()) return $r('app.color.warning'); // connecting / acquiring
-    return $r('app.color.text_secondary'); // nothing connected — grey
-  }
-
-  private gpsLightLabel(): string {
-    if (this.anyCameraReady()) {
-      return this.gpsHasFix ? '定位下发中' : '正在获取';
-    }
-    if (this.anyCameraBusy()) return '正在连接';
-    return '未连接';
   }
 
   @Builder savedDevicesSection() {
@@ -580,9 +565,9 @@ export struct ConnectionPage {
       if (this.showLogs) {
         Column() {
           if (this.logMessages.length > 0) {
-            ForEach(this.logMessages.slice(-20), (msg: string) => {
+            ForEach(this.logMessages.slice(-20), (msg: string, i: number) => {
               Text(msg).fontSize(10).fontColor($r('app.color.text_secondary')).width('100%').padding({ top: 1, bottom: 1 })
-            })
+            }, (msg: string, i: number) => `${i}_${msg}`)
           } else { Text('暂无日志').fontSize(12).fontColor($r('app.color.text_secondary')).padding({ top: 8 }) }
         }.width('100%').padding({ left: 12, right: 12, bottom: 12 })
       }
@@ -599,356 +584,21 @@ export struct ConnectionPage {
    * fight over the same show state (点关于不弹、点信息弹关于的错乱). */
   @Builder sheetContent() {
     if (this.sheetKind === 'about') {
-      this.aboutSheet()
+      AboutSheet({
+        appVersion: this.appVersion,
+        onLicense: (): void => { this.onAboutLicense(); },
+        onRepo: (): void => { this.onAboutRepo(); },
+        onComment: (): void => { this.onAboutComment(); },
+        onClearSla: (): void => { this.onAboutClearSla(); },
+        onReset: (): void => { this.onAboutReset(); }
+      })
     } else {
-      this.infoSheet()
-    }
-  }
-
-  /** 设备信息 + SLA 看板 half-modal (bindSheet). */
-  @Builder infoSheet() {
-    Column() {
-      Text('设备信息').fontSize(22).fontWeight(FontWeight.Bold).margin({ top: 36 })
-
-      Column() {
-        InfoRow({ label: '名称', value: this.getInfoCamera()?.name ?? this.infoCameraName })
-        Divider().strokeWidth(0.5).color($r('app.color.divider')).margin({ left: 16, right: 12 })
-        InfoRow({ label: 'BLE 地址', value: this.getInfoCamera()?.address ?? '--' })
-        Divider().strokeWidth(0.5).color($r('app.color.divider')).margin({ left: 16, right: 12 })
-        InfoRow({ label: '状态', value: this.stateLabel(this.getCameraStatus(this.infoCameraName)?.state ?? ConnectionState.Idle) })
-      }
-      .width('100%').borderRadius(16).backgroundColor($r('app.color.card_background'))
-      .margin({ top: 24 })
-
-      Column() {
-        Text('过去 2 小时连接健康度').fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
-        this.slaTimelineBar()
-        Row() {
-          Text('2 小时前').fontSize(11).fontColor($r('app.color.text_secondary'))
-          Blank()
-          Text('现在').fontSize(11).fontColor($r('app.color.text_secondary'))
-        }.width('100%').margin({ top: 4 })
-        if (this.slaTooltip !== '') {
-          Text(this.slaTooltip).fontSize(12).fontColor($r('app.color.text_primary')).margin({ top: 8 })
-        }
-        this.slaLegend()
-      }
-      .width('100%').alignItems(HorizontalAlign.Start)
-      .padding({ left: 16, right: 16, top: 12, bottom: 16 })
-      .borderRadius(16).backgroundColor($r('app.color.card_background'))
-      .margin({ top: 12 })
-
-      Blank().layoutWeight(1)
-    }
-    .width('100%').height('100%').padding({ left: 16, right: 16 })
-  }
-
-  /** 60-cell static timeline bar (2min per cell over [now-2h, now]). */
-  @Builder slaTimelineBar() {
-    Row() {
-      ForEach(this.slaCells, (cell: SlaCell, i: number) => {
-        Column()
-          .height(24)
-          .layoutWeight(1)
-          .backgroundColor(this.slaSevColor(cell.sev))
-          .borderRadius(1)
-          .margin({ left: 0.5, right: 0.5 })
-          .onClick(() => { this.onSlaCellTap(i); })
-      }, (cell: SlaCell) => `${cell.startTs}_${cell.sev}`)
-    }
-    .width('100%')
-    .margin({ top: 12 })
-  }
-
-  /** 涂色说明 legend. */
-  @Builder slaLegend() {
-    Column() {
-      Row({ space: 6 }) {
-        Circle({ width: 8, height: 8 }).fill($r('app.color.success'))
-        Text('连接正常').fontSize(12).fontColor($r('app.color.text_secondary'))
-      }.margin({ top: 4 })
-      Row({ space: 6 }) {
-        Circle({ width: 8, height: 8 }).fill($r('app.color.sla_light'))
-        Text('偶发断连，但数据已送达').fontSize(12).fontColor($r('app.color.text_secondary'))
-      }.margin({ top: 4 })
-      Row({ space: 6 }) {
-        Circle({ width: 8, height: 8 }).fill($r('app.color.warning'))
-        Text('存在数据问题（无定位等）').fontSize(12).fontColor($r('app.color.text_secondary'))
-      }.margin({ top: 4 })
-      Row({ space: 6 }) {
-        Circle({ width: 8, height: 8 }).fill($r('app.color.danger'))
-        Text('完全中断，无数据').fontSize(12).fontColor($r('app.color.text_secondary'))
-      }.margin({ top: 4 })
-      Row({ space: 6 }) {
-        Circle({ width: 8, height: 8 }).fill($r('app.color.sla_grey'))
-        Text('无下发活动').fontSize(12).fontColor($r('app.color.text_secondary'))
-      }.margin({ top: 4 })
-    }
-    .alignItems(HorizontalAlign.Start)
-    .margin({ top: 12 })
-  }
-
-  /** 关于 half-modal (bindSheet) — app icon/name centered, settings-style rows. */
-  @Builder aboutSheet() {
-    Column() {
-      Image($r('app.media.app_icon')).width(72).height(72).borderRadius(18).margin({ top: 36 })
-      Text('NiLink').fontSize(22).fontWeight(FontWeight.Bold).margin({ top: 14 })
-      Text('HarmoNiLink').fontSize(13).fontColor($r('app.color.text_secondary')).margin({ top: 2 })
-
-      Column() {
-        Row() {
-          Text('应用版本').fontSize(16).fontColor($r('app.color.text_primary')).layoutWeight(1)
-          Text(this.appVersion).fontSize(14).fontColor($r('app.color.text_secondary'))
-        }.width('100%').padding({ left: 16, right: 12, top: 14, bottom: 14 })
-
-        Divider().strokeWidth(0.5).color($r('app.color.divider')).margin({ left: 16, right: 12 })
-
-        Row() {
-          Text('开源协议').fontSize(16).fontColor($r('app.color.text_primary')).layoutWeight(1)
-          Text('Mulan PSL v2').fontSize(14).fontColor($r('app.color.text_secondary')).margin({ right: 4 })
-          SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(18).fontColor([$r('app.color.text_secondary')])
-        }.width('100%').padding({ left: 16, right: 12, top: 14, bottom: 14 })
-        .borderRadius(16)
-        .stateStyles({
-          pressed: { .backgroundColor($r('app.color.press_feedback')) },
-          normal: { .backgroundColor(Color.Transparent) }
-        })
-        .onClick(() => { this.onAboutLicense(); })
-
-        Divider().strokeWidth(0.5).color($r('app.color.divider')).margin({ left: 16, right: 12 })
-
-        Row() {
-          Text('开源仓库').fontSize(16).fontColor($r('app.color.text_primary')).layoutWeight(1)
-          SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(18).fontColor([$r('app.color.text_secondary')])
-        }.width('100%').padding({ left: 16, right: 12, top: 14, bottom: 14 })
-        .borderRadius(16)
-        .stateStyles({
-          pressed: { .backgroundColor($r('app.color.press_feedback')) },
-          normal: { .backgroundColor(Color.Transparent) }
-        })
-        .onClick(() => { this.onAboutRepo(); })
-
-        Divider().strokeWidth(0.5).color($r('app.color.divider')).margin({ left: 16, right: 12 })
-
-        Row() {
-          Text('做个评价').fontSize(16).fontColor($r('app.color.text_primary')).layoutWeight(1)
-          SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(18).fontColor([$r('app.color.text_secondary')])
-        }.width('100%').padding({ left: 16, right: 12, top: 14, bottom: 14 })
-        .borderRadius(16)
-        .stateStyles({
-          pressed: { .backgroundColor($r('app.color.press_feedback')) },
-          normal: { .backgroundColor(Color.Transparent) }
-        })
-        .onClick(() => { this.onAboutComment(); })
-
-        Divider().strokeWidth(0.5).color($r('app.color.divider')).margin({ left: 16, right: 12 })
-
-        Row() {
-          Text('删除连接健康度日志').fontSize(16).fontColor($r('app.color.text_primary')).layoutWeight(1)
-          SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(18).fontColor([$r('app.color.text_secondary')])
-        }.width('100%').padding({ left: 16, right: 12, top: 14, bottom: 14 })
-        .borderRadius(16)
-        .stateStyles({
-          pressed: { .backgroundColor($r('app.color.press_feedback')) },
-          normal: { .backgroundColor(Color.Transparent) }
-        })
-        .onClick(() => { this.onAboutClearSla(); })
-
-        Divider().strokeWidth(0.5).color($r('app.color.divider')).margin({ left: 16, right: 12 })
-
-        Row() {
-          Text('重置引导').fontSize(16).fontColor($r('app.color.text_primary')).layoutWeight(1)
-          SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(18).fontColor([$r('app.color.text_secondary')])
-        }.width('100%').padding({ left: 16, right: 12, top: 14, bottom: 14 })
-        .borderRadius(16)
-        .stateStyles({
-          pressed: { .backgroundColor($r('app.color.press_feedback')) },
-          normal: { .backgroundColor(Color.Transparent) }
-        })
-        .onClick(() => { this.onAboutReset(); })
-      }
-      .width('100%').borderRadius(16).backgroundColor($r('app.color.card_background'))
-      .margin({ top: 32, bottom: 24 })
-
-      Blank().layoutWeight(1)
-    }
-    .width('100%').height('100%').padding({ left: 16, right: 16 })
-  }
-
-  private openExternalLink(url: string): void {
-    const ctx = this.getUIContext().getHostContext() as common.UIAbilityContext;
-    ctx.openLink(url, { appLinkingOnly: false })
-      .then(() => {})
-      .catch((e: Error) => { hilog.warn(0x0001, TAG, `openLink fail: ${e.message}`); });
-  }
-
-  private onAboutLicense(): void {
-    this.openExternalLink('https://license.coscl.org.cn/MulanPSL2');
-  }
-
-  private onAboutRepo(): void {
-    this.openExternalLink('https://github.com/Octopustank/HarmoNiLink');
-  }
-
-  private onAboutComment(): void {
-    const ctx = this.getUIContext().getHostContext() as common.UIAbilityContext;
-    try {
-      commentManager.showCommentDialog(ctx).then(() => {})
-        .catch((e: BusinessError) => {
-          // showCommentDialog fails in many situations. Two real-world groups:
-          //  (A) account/state gating the user can act on (not signed in,
-          //      already rated this version / within a year);
-          //  (B) the app is NOT published on AppGallery — the dialog is backed
-          //      by the market, which validates bundleName+versionCode; an
-          //      unsigned/unlisted debug build has no market record, so it is
-          //      rejected. That is a platform constraint, NOT a network error,
-          //      so the fallback must NOT claim "check your network".
-          // Surface a readable reason instead of swallowing it — "点了没反应"
-          // is a bug report.
-          const code = e ? e.code : 0;
-          let msg = '无法打开评价：请确认应用已上架华为应用市场，并已登录华为账号';
-          if (code === 1021500006) msg = '需要登录华为账号后才能评价';
-          else if (code === 1021500007) msg = '你已对当前版本评价过了，感谢支持';
-          else if (code === 1021500009) msg = '你一年内已评价过，感谢支持';
-          else if (code === 1021500003) msg = '无法连接华为应用市场，请检查网络';
-          else if (code === 1021500005) msg = '应用上下文无效，请重启应用后重试';
-          this.getUIContext().getPromptAction().showToast({ message: msg, duration: 2500 });
-          hilog.warn(0x0001, TAG, 'showCommentDialog fail: code=' + code + ' msg=' + (e ? e.message : ''));
-        });
-    } catch (err) {
-      hilog.warn(0x0001, TAG, 'showCommentDialog throw: ' + JSON.stringify(err));
-      try {
-        this.getUIContext().getPromptAction().showToast({ message: '暂时无法打开评价', duration: 2500 });
-      } catch (e) {
-        hilog.warn(0x0001, TAG, `comment fallback toast err: ${(e as Error).message}`);
-      }
-    }
-  }
-
-  /** True when the current build is a debug (unsigned/unlisted) HAP — the
-   * rating prompt then only toasts (AppGallery can't validate a debug build). */
-  private isDebugBuild(): boolean {
-    try {
-      const info = bundleManager.getBundleInfoForSelfSync(bundleManager.BundleFlag.GET_BUNDLE_INFO_WITH_APPLICATION);
-      return info.appInfo.debug;
-    } catch (e) {
-      return false; // fail-safe: treat as release
-    }
-  }
-
-  /** Rating prompt — fired on health-sheet close. Prompts only after the app
-   * has been TIME-TESTED and the CURRENT moment is healthy (gates G1–G5; any
-   * miss returns silently, writing nothing):
-   *   G1 not already tapped 去评分 (permanent)
-   *   G2 a GEO write was ever acked
-   *   G3 first ack ≥ 48h ago (absolute, not calendar days)
-   *   G4 ≤ 3 RED-only cells in the 2h window (~≤6min total outage)
-   *   G5 never declined, or declined ≥ 7 days ago (cooldown, not permanent)
-   * 谢绝/dismiss writes declined_at (re-prompt after cooldown); 去评分 writes
-   * rating_shown (permanent — market already rate-limits 1/year). debug → toast
-   * + per-gate hilog; release → 2-button dialog. Best-effort: any failure is
-   * silent (hilog), never a misleading toast. */
-  private async maybePromptRating(): Promise<void> {
-    try {
-      const now = Date.now();
-      const debug = this.isDebugBuild();
-
-      if (cameraService.wasRatingShown()) {
-        if (debug) hilog.info(0x0001, TAG, '[RATING] G1 not met — already tapped 去评分');
-        return;
-      }
-      if (!cameraService.hasDownlink()) {
-        if (debug) hilog.info(0x0001, TAG, '[RATING] G2 not met — no downlink yet');
-        return;
-      }
-      const firstTs = cameraService.getFirstDownlinkTs();
-      if (firstTs <= 0 || now - firstTs < RATING_MIN_AGE_MS) {
-        if (debug) hilog.info(0x0001, TAG, `[RATING] G3 not met — age=${firstTs > 0 ? now - firstTs : -1}ms`);
-        return;
-      }
-      const redCells = await this.countRedCells();
-      if (redCells > RATING_MAX_RED_CELLS) {
-        if (debug) hilog.info(0x0001, TAG, `[RATING] G4 not met — red=${redCells}`);
-        return;
-      }
-      const declinedAt = cameraService.getDeclinedAt();
-      if (declinedAt > 0 && now - declinedAt < RATING_DECLINE_COOLDOWN_MS) {
-        if (debug) hilog.info(0x0001, TAG, `[RATING] G5 not met — declined ${now - declinedAt}ms ago`);
-        return;
-      }
-
-      if (debug) {
-        // Debug: toast only (AppGallery can't validate an unsigned build); log
-        // the inputs so each gate can be verified on-device.
-        hilog.info(0x0001, TAG, `[RATING] all gates passed — firstTs=${firstTs} red=${redCells}`);
-        this.getUIContext().getPromptAction().showToast({ message: '评分弹窗触发（debug 验证）', duration: 2000 });
-        return;
-      }
-
-      this.getUIContext().getPromptAction().showDialog({
-        title: '给个评价吧',
-        message: '如果你觉得 HarmoNiLink 好用，欢迎到华为应用市场给个评价。',
-        buttons: [
-          { text: '谢绝', color: $r('app.color.text_secondary') },
-          { text: '去评分', color: $r('app.color.brand') }
-        ]
-      }).then((result: promptAction.ShowDialogSuccessResponse) => {
-        if (result.index === 1) {
-          cameraService.markRatingShown(); // 去评分 → permanent
-          this.onAboutComment(); // existing flow (self try/catch + code map)
-        } else {
-          cameraService.markDeclined(); // 谢绝 → cooldown
-        }
-      }).catch(() => {
-        cameraService.markDeclined(); // dismissed/back → treat as declined (cooldown)
-      });
-    } catch (err) {
-      hilog.warn(0x0001, TAG, 'rating prompt failed: ' + JSON.stringify(err));
-    }
-  }
-
-  /** G4 input: count RED-only cells (完全断连) in the current camera's 2h
-   * window. Awaits the persisted load so a cold-start open-then-close can't
-   * under-count RED while the disk merge is still in flight (which would make
-   * G4 pass on a not-yet-loaded, all-grey timeline). */
-  private async countRedCells(): Promise<number> {
-    const cells = await cameraService.getSlaTimelineLoaded(this.infoCameraName);
-    let red = 0;
-    for (const c of cells) {
-      if (c.sev === SlaSev.RED) red++;
-    }
-    return red;
-  }
-
-  /** 关于 → 删除连接健康度日志: clears all persisted SLA timelines (2h 窗口
-   * 与各相机 tracker), destructive so it asks for confirmation. */
-  private onAboutClearSla(): void {
-    this.getUIContext().getPromptAction().showDialog({
-      title: '删除连接健康度日志',
-      message: '将清除所有相机的「过去 2 小时连接健康度」记录，且无法恢复。确定删除？',
-      buttons: [
-        { text: '取消', color: $r('app.color.text_secondary') },
-        { text: '删除', color: $r('app.color.danger') }
-      ]
-    }).then((result: promptAction.ShowDialogSuccessResponse) => {
-      if (result.index === 1) {
-        cameraService.clearAllSla();
-        // If the info sheet is open, it must not keep showing stale cells.
-        this.slaCells = [];
-        this.slaTooltip = '';
-        this.slaTooltipIndex = -1;
-        this.getUIContext().getPromptAction().showToast({ message: '已删除连接健康度日志', duration: 2000 });
-      }
-    }).catch((err: Error) => {
-      hilog.warn(0x0001, TAG, 'Clear SLA dialog err: ' + err.message);
-    });
-  }
-  private onAboutReset(): void {
-    cameraService.resetOnboarding();
-    try {
-      this.getUIContext().getPromptAction().showToast({ message: '已重置引导提示，下次操作将重新显示', duration: 2500 });
-    } catch (e) {
-      hilog.warn(0x0001, TAG, `reset toast err: ${(e as Error).message}`);
+      DeviceHealthSheet({
+        cameraName: this.getInfoCamera()?.name ?? this.infoCameraName,
+        cameraAddress: this.getInfoCamera()?.address ?? '--',
+        stateText: this.stateLabel(this.getCameraStatus(this.infoCameraName)?.state ?? ConnectionState.Idle),
+        slaCells: this.slaCells
+      })
     }
   }
 
@@ -959,7 +609,15 @@ export struct ConnectionPage {
           Blank().height(56)
 
           if (cameraService.isPairingBonding()) { this.pairingNotice() }
-          this.gpsCard()
+          GpsCard({
+            controllerName: this.controllerName,
+            lat: this.gpsLat,
+            lon: this.gpsLon,
+            alt: this.gpsAlt,
+            sats: this.gpsSats,
+            time: this.gpsTime,
+            lightState: this.gpsLightState()
+          })
 
           Text('连接开关打开的相机将保持连接，断开后自动重连。\n未配对的相机请先在「配对」页扫描添加。\n需要后台下发数据，请在系统设置中允许始终定位。')
             .fontSize(11).fontColor($r('app.color.text_secondary'))
@@ -1023,45 +681,12 @@ export struct ConnectionPage {
         // Rating prompt fires on HEALTH-sheet close (the act of closing proves
         // the user opened it) — after dismissal, so it never covers the sheet.
         if (this.sheetKind === 'info') {
-          this.maybePromptRating();
+          const ctx = this.getUIContext().getHostContext() as common.UIAbilityContext;
+          if (ctx) {
+            RatingPrompt.maybePrompt(ctx, this.infoCameraName);
+          }
         }
       }
     })
-  }
-}
-
-@Component
-struct GpsRow {
-  @Prop label: string = '';
-  @Prop value: string = '--';
-  build() {
-    Row() {
-      Text(this.label).fontSize(13).fontColor($r('app.color.text_secondary')).width(64)
-      // NOTE: no layoutWeight(1) here on purpose — a layoutWeight'd Text owns the
-      // whole remaining row width, so its a11y/检测 bounding box is ~98% empty
-      // background. Pixel-based contrast auditors then average background with a
-      // few white pixels and report a bogus ratio (1.52) even though the real
-      // glyph contrast is ~12–14:1 (white #E6FFFFFF on card #2A2A2A). Content-
-      // sized bounds keep the measured box on the glyphs themselves.
-      Text(this.value).fontSize(13).fontColor($r('app.color.text_primary'))
-    }.width('100%').padding({ top: 2, bottom: 2 })
-  }
-}
-
-@Component
-struct InfoRow {
-  @Prop label: string = '';
-  @Prop value: string = '--';
-  build() {
-    Row() {
-      Text(this.label).fontSize(14).fontColor($r('app.color.text_secondary')).width(80)
-      // Same tight-bounds rationale as GpsRow: layoutWeight(1) would make the
-      // a11y/检测 box span the whole row (~98% empty) and skew pixel-based
-      // contrast audits. constraintSize keeps content sizing for short values
-      // while still capping long ones so maxLines+ellipsis works.
-      Text(this.value).fontSize(14).fontColor($r('app.color.text_primary'))
-        .constraintSize({ maxWidth: '100%' })
-        .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-    }.width('100%').padding({ left: 16, right: 12, top: 10, bottom: 10 })
   }
 }
