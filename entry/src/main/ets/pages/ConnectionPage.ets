@@ -6,9 +6,11 @@
  * buttons and the global keep-alive toggle. Deleting a camera is a standard
  * HDS swipe-left action (trash icon / swipe-through).
  *
- * Layout pieces live in components/: GpsCard (GPS info card), DeviceHealthSheet
- * (设备信息 + SLA 看板), AboutSheet (关于). This page owns the live state
- * mirrors, the toggle flow, the device list, and the shared half-modal.
+ * Layout pieces live in components/: DeviceHealthSheet (设备信息 + SLA 看板)
+ * and AboutSheet (关于). The GPS card MUST stay page-internal (per-second
+ * refresh; cross-file extraction froze its re-render on-device — see the
+ * gpsCard @Builder note). This page owns the live state mirrors, the toggle
+ * flow, the device list, and the shared half-modal.
  *
  * MessagesCommonView pattern (requires HdsNavigation ancestor).
  */
@@ -22,7 +24,6 @@ import { PairedCamera } from '../ble/protocol/NikonPairingEngine';
 import { SlaCell } from '../data/SlaTracker';
 import { HdsNavDestination, ScrollEffectType, hdsMaterial, HdsListItem } from '@kit.UIDesignKit';
 import { SwipeDeleteTriggerType } from '@hms.hds.HdsStyle';
-import { GpsCard, GpsLightState } from '../components/GpsCard';
 import { DeviceHealthSheet } from '../components/DeviceHealthSheet';
 import { AboutSheet } from '../components/AboutSheet';
 import { CommentDialog } from '../components/CommentDialog';
@@ -416,6 +417,42 @@ export struct ConnectionPage {
     return this.stateLabel(st);
   }
 
+  /** Always-present GPS card — stable layout, no jump on connect/disconnect.
+   * The status light is ALWAYS visible (grey = nothing connected, yellow =
+   * acquiring / connecting, green = heartbeat running with a fix) and
+   * replaces the old 定位 row.
+   *
+   * MUST stay a page-internal @Builder + page-internal GpsRow: this card is
+   * the only UI fed by per-second @State updates. Two on-device experiments
+   * (2026-08-29, see AGENTS.md) mapped exactly which cross-file channels
+   * freeze: params bound as a DIRECT state reference (@Prop value / @Builder
+   * literal / @ObjectLink) all stop updating in AOT builds, while a METHOD-
+   * CALL param (re-evaluated on every parent re-render) survives. Simulators
+   * only render the initial '--' state and cannot catch any of this. Do NOT
+   * extract it again. */
+  @Builder gpsCard() {
+    Column() {
+      Row() {
+        Text('GPS 信息').fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
+        Blank()
+        Circle({ width: 8, height: 8 }).fill(this.gpsLightColor())
+        Text(this.gpsLightLabel()).fontSize(11).fontColor(this.gpsLightColor()).margin({ left: 6 })
+      }.width('100%').margin({ bottom: 10 })
+      GpsRow({ label: '配对名称', value: this.controllerName })
+      Divider().strokeWidth(0.5).color($r('app.color.divider')).margin({ top: 4, bottom: 6 })
+      GpsRow({ label: '纬度', value: this.gpsLat })
+      GpsRow({ label: '经度', value: this.gpsLon })
+      GpsRow({ label: '海拔', value: this.gpsAlt })
+      GpsRow({ label: '卫星数', value: this.gpsSats })
+      GpsRow({ label: '更新时间', value: this.gpsTime })
+    }
+    .width('100%').alignItems(HorizontalAlign.Start)
+    .padding({ left: 16, right: 16, top: 12, bottom: 16 })
+    .borderRadius(16).backgroundColor($r('app.color.card_background'))
+    .shadow({ radius: 12, color: '#0D000000', offsetY: 2 })
+    .margin({ top: 12 })
+  }
+
   private anyCameraReady(): boolean {
     return this.cameraStatuses.some((c) => c.state === ConnectionState.Ready);
   }
@@ -424,12 +461,20 @@ export struct ConnectionPage {
     return this.cameraStatuses.some((c) => c.state !== ConnectionState.Ready && c.state !== ConnectionState.Idle);
   }
 
-  private gpsLightState(): number {
+  private gpsLightColor(): ResourceColor {
     if (this.anyCameraReady()) {
-      return this.gpsHasFix ? GpsLightState.DOWNLINK : GpsLightState.ACQUIRING;
+      return this.gpsHasFix ? $r('app.color.success') : $r('app.color.warning');
     }
-    if (this.anyCameraBusy()) return GpsLightState.BUSY; // connecting / acquiring
-    return GpsLightState.OFF; // nothing connected — grey
+    if (this.anyCameraBusy()) return $r('app.color.warning'); // connecting / acquiring
+    return $r('app.color.text_secondary'); // nothing connected — grey
+  }
+
+  private gpsLightLabel(): string {
+    if (this.anyCameraReady()) {
+      return this.gpsHasFix ? '定位下发中' : '正在获取';
+    }
+    if (this.anyCameraBusy()) return '正在连接';
+    return '未连接';
   }
 
   @Builder pairingNotice() {
@@ -616,15 +661,7 @@ export struct ConnectionPage {
           Blank().height(56)
 
           if (cameraService.isPairingBonding()) { this.pairingNotice() }
-          GpsCard({
-            controllerName: this.controllerName,
-            lat: this.gpsLat,
-            lon: this.gpsLon,
-            alt: this.gpsAlt,
-            sats: this.gpsSats,
-            time: this.gpsTime,
-            lightState: this.gpsLightState()
-          })
+          this.gpsCard()
 
           Text('需要后台下发数据，请在系统设置中允许始终定位')
             .fontSize(12).fontColor($r('app.color.text_secondary'))
@@ -695,5 +732,26 @@ export struct ConnectionPage {
         }
       }
     })
+  }
+}
+
+/** One key-value row of the GPS card. Deliberately a page-internal component
+ * (restored from v2.4.1): cross-file extraction broke @Prop updates for this
+ * per-second-refresh card on-device — see the gpsCard @Builder note. */
+@Component
+struct GpsRow {
+  @Prop label: string = '';
+  @Prop value: string = '--';
+  build() {
+    Row() {
+      Text(this.label).fontSize(13).fontColor($r('app.color.text_secondary')).width(64)
+      // NOTE: no layoutWeight(1) here on purpose — a layoutWeight'd Text owns the
+      // whole remaining row width, so its a11y/检测 bounding box is ~98% empty
+      // background. Pixel-based contrast auditors then average background with a
+      // few white pixels and report a bogus ratio (1.52) even though the real
+      // glyph contrast is ~12–14:1 (white #E6FFFFFF on card #2A2A2A). Content-
+      // sized bounds keep the measured box on the glyphs themselves.
+      Text(this.value).fontSize(13).fontColor($r('app.color.text_primary'))
+    }.width('100%').padding({ top: 2, bottom: 2 })
   }
 }

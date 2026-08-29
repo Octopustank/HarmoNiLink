@@ -87,7 +87,6 @@ entry/src/main/ets/
 │   ├── PairingPage.ets                — 扫描 & 配对
 │   └── ConnectionPage.ets             — 连接状态 & 设备管理
 ├── components/
-│   ├── GpsCard.ets                    — GPS 信息卡片
 │   ├── DeviceHealthSheet.ets          — 设备信息 & 连接健康度看板
 │   ├── AboutSheet.ets                 — 关于面板
 │   └── CommentDialog.ets              — 应用市场评价弹窗
