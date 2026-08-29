@@ -11,7 +11,8 @@
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { bundleManager, common } from '@kit.AbilityKit';
 import { SymbolGlyphModifier, promptAction } from '@kit.ArkUI';
-import { cameraService, ConnectionState, CameraStateEvent } from '../service/CameraService';
+import { cameraService } from '../service/CameraService';
+import { ConnectionState, CameraStateEvent } from '../service/ConnectionTypes';
 import { PairedCamera } from '../ble/protocol/NikonPairingEngine';
 import { SlaCell, SlaSev } from '../data/SlaTracker';
 import { HdsNavDestination, ScrollEffectType, hdsMaterial, HdsListItem } from '@kit.UIDesignKit';

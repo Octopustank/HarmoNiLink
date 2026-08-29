@@ -36,7 +36,9 @@ import {
   BleConnected, BleDisconnected, BleServicesDiscovered, BleMtuChanged,
   BlePairIndication, BleNot1Notification, BleWriteDone, BleError, BleEvent
 } from '../ble/BleEvent';
-import { CameraService, ConnectionState } from './CameraService';
+import { CameraService } from './CameraService';
+import { ConnectionState } from './ConnectionTypes';
+import { GpsWriteTarget } from './GpsDispatcher';
 import { SlaSev } from '../data/SlaTracker';
 
 const TAG = 'HarmoNiLink-CameraService';
@@ -46,9 +48,11 @@ const DEFAULT_CONTROLLER_NAME: string = 'HarmoNiLink';
  * A single camera's connection lifecycle.
  *
  * Owns all per-camera state and logic; delegates shared-resource access to the
- * Hub (CameraService) it was created by.
+ * Hub (CameraService) it was created by. Implements GpsWriteTarget so the
+ * Hub's GpsDispatcher can fan TIME/GEO writes out to Ready sessions without
+ * importing this class.
  */
-export class CameraSession {
+export class CameraSession implements GpsWriteTarget {
   private hub: CameraService;
 
   // ==== Per-camera state (moved out of CameraService) ====

@@ -9,7 +9,8 @@
  */
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { promptAction } from '@kit.ArkUI';
-import { cameraService, ConnectionState, CameraStateEvent } from '../service/CameraService';
+import { cameraService } from '../service/CameraService';
+import { ConnectionState, CameraStateEvent } from '../service/ConnectionTypes';
 import { DiscoveredCamera } from '../ble/BleScanner';
 import { HdsNavDestination, ScrollEffectType, hdsMaterial } from '@kit.UIDesignKit';
 

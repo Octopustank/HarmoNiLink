@@ -1,13 +1,20 @@
 /**
- * CameraService.ets — Multi-camera connection Hub
+ * CameraService.ets — Multi-camera connection Hub (coordinator)
  *
- * Phase 1: the Hub now holds MULTIPLE sessions (keyed by camera name) and
- * broadcasts per-session state as events. The single global `_state` mirror
- * from Phase 0 is gone — each CameraSession owns its own state and pushes
- * `CameraStateEvent { cameraName, state, message }` through the Hub.
+ * Phase-2 module split: the Hub now COORDINATES four focused subsystems and
+ * no longer implements them inline —
+ *   PermissionsGateway   — on-demand runtime permissions
+ *   BackgroundTaskKeeper — ContinuousTask lifecycle + interrupt notices
+ *   GpsDispatcher        — single GPS ticker fanned out to Ready sessions
+ *   SlaHub               — per-camera connection-health trackers
+ * — plus what is inherently Hub-shaped: the session registry, the shared BLE
+ * scan (pairing + reconnect pool), the pairing radio mutex, state broadcast,
+ * and the prefs facade the pages talk to.
  *
- * Shared resources stay here: scanner, prefs, pairing engine, satellite
- * subscription, GPS ticker, background task, ownership (tab-level mutex).
+ * The Hub holds MULTIPLE sessions (keyed by camera name) and broadcasts
+ * per-session state as events (`CameraStateEvent { cameraName, state,
+ * message }`). CameraSession owns what is per-connection; shared resources
+ * stay here (scanner, prefs, pairing engine).
  *
  * [CHECKPOINT] Every state transition, handshake step, and error is logged via HiLog.
  * For debugging, use: hdc shell hilog -T HarmoNiLink
@@ -15,19 +22,18 @@
  * Based on nsg/android/.../CameraConnectionService.kt
  */
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { geoLocationManager } from '@kit.LocationKit';
-import { backgroundTaskManager } from '@kit.BackgroundTasksKit';
-import { common, wantAgent, WantAgent, abilityAccessCtrl } from '@kit.AbilityKit';
-import { BusinessError } from '@kit.BasicServicesKit';
-import { window } from '@kit.ArkUI';
+import { common } from '@kit.AbilityKit';
 import { PairedCamera, NikonPairingEngine } from '../ble/protocol/NikonPairingEngine';
-import { GeoPayloadGenerator, GpsPosition } from '../ble/protocol/GeoPayloadGenerator';
-import { TimePayloadGenerator } from '../ble/protocol/TimePayloadGenerator';
-import { GpsData } from './GpsData';
 import { BleScanner, DiscoveredCamera } from '../ble/BleScanner';
 import { PreferencesRepository } from '../data/PreferencesRepository';
-import { SlaTracker, SlaCell, SlaSev } from '../data/SlaTracker';
+import { SlaSev, SlaCell } from '../data/SlaTracker';
 import { CameraSession } from './CameraSession';
+import { ConnectionState, CameraStateEvent, StateListener, OperationOwner } from './ConnectionTypes';
+import { PermissionsGateway } from './PermissionsGateway';
+import { BackgroundTaskKeeper } from './BackgroundTaskKeeper';
+import { GpsDispatcher, GpsWriteTarget } from './GpsDispatcher';
+import { SlaHub } from './SlaHub';
+import { GpsData } from './GpsData';
 
 const TAG = 'HarmoNiLink-CameraService';
 
@@ -41,44 +47,6 @@ const MAX_CONNECTIONS = 0;
 // (threshold + 1) triggers the dismissable stability/battery warning.
 const MULTI_CAM_WARN_THRESHOLD = 2;
 
-// GPS phase stagger: with N cameras, space each camera's write by this many ms
-// so they don't all grab the radio in the same millisecond (Phase 2 power/
-// scheduling strategy). 200ms is comfortably below the 1500ms foreground tick.
-const GPS_PHASE_STAGGER_MS = 200;
-
-// User-grant permissions needed for scan/pair/connect. Requested in ONE batch
-// (system queues the dialogs) on first user action, not at app startup.
-const USER_GRANT_PERMISSIONS: string[] = [
-  'ohos.permission.ACCESS_BLUETOOTH',
-  'ohos.permission.DISCOVER_BLUETOOTH',
-  'ohos.permission.APPROXIMATELY_LOCATION',
-  'ohos.permission.LOCATION',
-];
-// Must be requested AFTER LOCATION is granted; failure is non-fatal.
-const BACKGROUND_LOCATION_PERMISSION: string = 'ohos.permission.LOCATION_IN_BACKGROUND';
-
-export enum ConnectionState {
-  Idle = 'Idle',
-  Scanning = 'Scanning',
-  Connecting = 'Connecting',
-  Discovering = 'Discovering',
-  Pairing = 'Pairing',
-  Bonding = 'Bonding',
-  Ready = 'Ready',
-  Error = 'Error',
-}
-
-/** A per-camera state change, broadcast to all listeners. */
-export interface CameraStateEvent {
-  /** '' for global (pairing-scan / ownership) events; otherwise the camera name. */
-  cameraName: string;
-  state: ConnectionState;
-  message: string;
-}
-
-export type StateListener = (event: CameraStateEvent) => void;
-export type OperationOwner = 'pairing' | 'connection' | 'none';
-
 /** A camera awaiting reconnect on the shared scan (reconnectPool). */
 interface ReconnectWatch {
   camera: PairedCamera;
@@ -86,35 +54,23 @@ interface ReconnectWatch {
 }
 
 export class CameraService {
-  // ==== Public shared state ====
+  // ==== Subsystems — SHARED across sessions (exposed to CameraSession) ====
 
-  // Subsystems — SHARED across sessions (exposed to CameraSession).
   scanner: BleScanner = new BleScanner();
   prefs: PreferencesRepository = new PreferencesRepository();
   pairingEngine: NikonPairingEngine = new NikonPairingEngine();
 
-  // GPS shared state — UI reads this directly; the single GPS ticker below
-  // fans out to all Ready sessions.
-  gpsData: GpsData = new GpsData();
-  // Real GNSS satellite count fed by Location Kit's satelliteStatusChange.
-  lastSatelliteCount: number = -1;
-  // Foreground/background flag — the GPS ticker picks the interval from it.
-  isForeground: boolean = true;
+  private permissions: PermissionsGateway;
+  private bgTask: BackgroundTaskKeeper;
+  private gps: GpsDispatcher;
+  private sla: SlaHub;
 
-  // ==== Private shared state ====
+  // ==== Hub-owned state ====
 
   private stateListeners: StateListener[] = [];
   private devicesChangedListeners: Array<() => void> = [];
   // Sessions keyed by camera name — multiple in Phase 1.
   private sessions: Map<string, CameraSession> = new Map();
-  // Per-camera SLA trackers (连接健康看板) — keyed by camera name, lazily
-  // created on first signal, dropped on removeCamera. Owned here (not in
-  // CameraSession) so the lifecycle survives session churn and can be flushed
-  // on background/destroy independently of the BLE session.
-  private slaTrackers: Map<string, SlaTracker> = new Map();
-  // In-flight persisted-SLA loads (per camera) — awaited by getSlaTimelineLoaded
-  // so the first info-sheet open never renders an empty bar due to async load.
-  private slaLoads: Map<string, Promise<void>> = new Map();
   // Reconnect pool: cameras waiting for their BLE address to be found by ONE
   // shared scan (routed by manufacturerDevice), instead of one scan each.
   private reconnectWatchers: ReconnectWatch[] = [];
@@ -135,46 +91,24 @@ export class CameraService {
   // Context (set from EntryAbility)
   private abilityContext: common.UIAbilityContext | null = null;
 
-  // Satellite subscription state — single location source (Hub-owned).
-  private satelliteSubscribed: boolean = false;
-  private satelliteStatusCb: ((status: geoLocationManager.SatelliteStatusInfo) => void) | null = null;
+  constructor() {
+    this.permissions = new PermissionsGateway((): common.UIAbilityContext | null => this.abilityContext);
+    this.bgTask = new BackgroundTaskKeeper(
+      (): common.UIAbilityContext | null => this.abilityContext,
+      (): number => this.getReadySessions().length,
+      (): boolean => this.hasKeepAliveIntent());
+    this.gps = new GpsDispatcher(
+      (): GpsWriteTarget[] => this.getReadySessions(),
+      (name: string): void => { this.slaOnSignal(name, SlaSev.YELLOW); },
+      (): void => { this.reconcileBackgroundTask(); });
+    this.sla = new SlaHub(this.prefs);
+  }
 
-  // Background task state — one ContinuousTask per app.
-  private backgroundTaskStarted: boolean = false;
-  // Generation guard for the async start()/sync stop() race: stop() bumps this
-  // so an in-flight start() (getWantAgent/startBackgroundRunning are awaited)
-  // can detect it landed after a stop request and immediately undo itself.
-  private bgGeneration: number = 0;
-  // Set when the system cancels OR suspends our ContinuousTask, or when a
-  // warm return-to-foreground finds it gone without our own stop() (frozen
-  // process → callbacks may never run). Latches the interrupt event so
-  // inferSilentRevocation() won't re-infer it every foreground return; cleared
-  // when a camera reaches Ready again (link restored → "现已恢复").
-  private bgTaskCancelled: boolean = false;
-  // Background modes currently held by the running ContinuousTask (string[] —
-  // the single-value BackgroundMode overload accepts ONE mode only, and the
-  // old `BLUETOOTH_INTERACTION | LOCATION` = 7 is not a valid enum value).
-  private bgModes: string[] = [];
-  // bgGeneration value at the last USER-driven stop (toggle off / no intent).
-  // Distinguishes "task absent because we stopped it" from "task absent
-  // because the system silently revoked it" in inferSilentRevocation().
-  private userStopGeneration: number = -1;
-  // Guards startBackgroundTask() against concurrent async double-fire:
-  // startGpsLoop() and reconcileBackgroundTask() can both call it in the same
-  // tick; backgroundTaskStarted only flips true after getWantAgent+start
-  // resolve, so without this gate both pass the guard and one hits 9800005.
-  private bgStartInFlight: boolean = false;
-  // Set whenever bgTaskCancelled is latched (any of the three paths); consumed
-  // by the delayed foreground prompt — one dialog per interruption event.
-  private pendingInterruptNotice: boolean = false;
-  private interruptNoticeTimer: number = -1;
+  // ==== GPS shared-state outlets (UI reads these directly) ====
 
-  // GPS ticker — one interval + alternating TIME/GEO, fanned out to Ready sessions.
-  private gpsTimer: number | null = null;
-  private gpsStep: number = 0; // 0=TIME, 1=GEO — alternating
-
-  // "保持连接" is a PER-CAMERA flag on PairedCamera (Phase 3). No global
-  // toggle state lives here anymore — see isKeepAlive/setKeepAlive below.
+  get gpsData(): GpsData { return this.gps.gpsData; }
+  get isForeground(): boolean { return this.gps.isForeground; }
+  set isForeground(v: boolean) { this.gps.isForeground = v; }
 
   // ==================== Public API ====================
 
@@ -226,60 +160,12 @@ export class CameraService {
     // Satellite subscription is INDEPENDENT of camera connection: the GNSS
     // satellite count is a device-level reading that must NOT reset to "--"
     // when all cameras drop. Subscribe once at startup, keep it alive.
-    this.subscribeSatelliteStatus();
+    this.gps.subscribeSatelliteStatus();
     // ContinuousTask cancel/suspend listeners — once at startup. Without them,
-    // a silent system cancel leaves backgroundTaskStarted=true forever and the
-    // guard in startBackgroundTask() early-returns on every retry (deadlock).
-    this.registerBgTaskListeners();
+    // a silent system cancel leaves the task flag set forever and the guard in
+    // startTask() early-returns on every retry (deadlock).
+    this.bgTask.registerListeners();
     this.prefs.init(ctx); // async init — loadSavedCamerasSync will return cache once ready
-  }
-
-  /** Register the ContinuousTask cancel/suspend listeners (once). On cancel,
-   * the system silently revokes the task and the notification; we must reset
-   * backgroundTaskStarted so a warm return-to-foreground re-applies it, and set
-   * bgTaskCancelled to latch the interrupt event (drives the interrupt notice).
-   * No re-apply here — the cancel callback window may freeze the process, and
-   * the next reconcileBackgroundTask / onAppForeground re-applies naturally. */
-  private registerBgTaskListeners(): void {
-    try {
-      backgroundTaskManager.on('continuousTaskCancel',
-        (info: backgroundTaskManager.ContinuousTaskCancelInfo): void => {
-          hilog.warn(0x0001, TAG, `[BG] ContinuousTask cancelled — reason=${info.reason} id=${info.id}`);
-          this.backgroundTaskStarted = false;
-          this.bgModes = [];
-          this.bgTaskCancelled = true;
-          this.pendingInterruptNotice = true;
-        });
-    } catch (e) {
-      hilog.warn(0x0001, TAG, `[BG] continuousTaskCancel on() fail: ${JSON.stringify(e)}`);
-    }
-    try {
-      backgroundTaskManager.on('continuousTaskSuspend',
-        (info: backgroundTaskManager.ContinuousTaskSuspendInfo): void => {
-          // Suspend ≠ cancel for the SYSTEM (task paused, revivable on
-          // foreground), but it IS equivalent for the USER: a suspended task
-          // means the process gets frozen in the background — the reconnect
-          // dies and health sampling goes dark. Per official docs (API 20+),
-          // registering this listener makes suspend (not cancel) the system's
-          // FIRST response to "task not doing its business", so without this
-          // flag the interruption was never surfaced. Mark it; Ready clears.
-          hilog.warn(0x0001, TAG, `[BG] ContinuousTask suspended — reason=${info.suspendReason}`);
-          if (!info.suspendState) {
-            // System re-activated the task (auto on foreground return): it is
-            // running again with modes we didn't pick. Mark started with an
-            // empty mode cache so the next reconcileBackgroundTask() aligns
-            // modes via updateBackgroundRunning() instead of a duplicate start.
-            this.backgroundTaskStarted = true;
-            this.bgModes = [];
-            return;
-          }
-          this.backgroundTaskStarted = false;
-          this.bgTaskCancelled = true;
-          this.pendingInterruptNotice = true;
-        });
-    } catch (e) {
-      hilog.warn(0x0001, TAG, `[BG] continuousTaskSuspend on() fail: ${JSON.stringify(e)}`);
-    }
   }
 
   // ==================== 保持连接 (per-camera auto-reconnect, Phase 3) ====================
@@ -410,68 +296,18 @@ export class CameraService {
     this.prefs.savePermissionHintShown();
   }
 
-  // ==================== Permissions ====================
+  // ==================== Permissions (delegated) ====================
 
   async requestPermissionsIfNeeded(): Promise<boolean> {
-    const ctx = this.abilityContext;
-    if (!ctx) return false;
-    try {
-      const atManager = abilityAccessCtrl.createAtManager();
-      const tokenId = ctx.applicationInfo.accessTokenId;
-      const check = atManager.checkAccessTokenSync as Function;
-
-      const needed: string[] = [];
-      for (let i = 0; i < USER_GRANT_PERMISSIONS.length; i++) {
-        const permission = USER_GRANT_PERMISSIONS[i];
-        if (check(tokenId, permission) !== 0) needed.push(permission);
-      }
-      if (needed.length === 0) return true;
-
-      hilog.info(0x0001, TAG, `[PERM] requesting ${needed.length} permission(s): ${needed.join(', ')}`);
-      const req = atManager.requestPermissionsFromUser as Function;
-      const result = await req(ctx, needed) as Record<string, Object>;
-      const authResults = result['authResults'] as number[];
-
-      let allGranted: boolean = true;
-      for (let i = 0; i < authResults.length; i++) {
-        if (authResults[i] !== 0) allGranted = false;
-      }
-      hilog.info(0x0001, TAG, `[PERM] batch result: ${authResults.join(', ')} allGranted=${allGranted}`);
-
-      return allGranted;
-    } catch (err) {
-      hilog.warn(0x0001, TAG, `[PERM] request failed: ${JSON.stringify(err)}`);
-      return false;
-    }
+    return this.permissions.requestPermissionsIfNeeded();
   }
 
   isBackgroundLocationGranted(): boolean {
-    const ctx = this.abilityContext;
-    if (!ctx) return false;
-    try {
-      const atManager = abilityAccessCtrl.createAtManager();
-      const check = atManager.checkAccessTokenSync as Function;
-      return check(ctx.applicationInfo.accessTokenId, BACKGROUND_LOCATION_PERMISSION) === 0;
-    } catch (err) {
-      hilog.warn(0x0001, TAG, `[PERM] background check error: ${JSON.stringify(err)}`);
-      return false;
-    }
+    return this.permissions.isBackgroundLocationGranted();
   }
 
   openBackgroundLocationSetting(): void {
-    const ctx = this.abilityContext;
-    if (!ctx) return;
-    try {
-      const atManager = abilityAccessCtrl.createAtManager();
-      const req = atManager.requestPermissionOnSetting as Function;
-      req(ctx, [BACKGROUND_LOCATION_PERMISSION]).then((statuses: number[]) => {
-        hilog.info(0x0001, TAG, `[PERM] on-setting result: ${statuses.join(', ')}`);
-      }).catch((err: BusinessError) => {
-        hilog.warn(0x0001, TAG, `[PERM] requestPermissionOnSetting failed: ${err.message}`);
-      });
-    } catch (err) {
-      hilog.warn(0x0001, TAG, `[PERM] requestPermissionOnSetting exception: ${JSON.stringify(err)}`);
-    }
+    this.permissions.openBackgroundLocationSetting();
   }
 
   // ==================== Ownership (Hub-level mutex) ====================
@@ -586,18 +422,6 @@ export class CameraService {
 
   // ==================== Delegated per-camera operations ====================
 
-  /** Pairing progress of the in-flight pairing session (pairing is serial).
-   *  DEPRECATED for success detection — a previously-connected camera keeps
-   *  its step=6 and would pollute the max. Use getPairingStepFor(name). */
-  getPairingStep(): number {
-    let step = 0;
-    this.sessions.forEach((s: CameraSession) => {
-      const ps = s.getPairingStep();
-      if (ps > step) step = ps;
-    });
-    return step;
-  }
-
   /** Pairing step of ONE camera's session (0 if none). Success detection must
    * be per-session: a sibling camera's step=6 must not fake a success for a
    * camera whose own bonding just failed. */
@@ -679,18 +503,18 @@ export class CameraService {
   /**
    * Reconcile the GPS ticker with the current Ready sessions: restart (fan out
    * to the remaining cameras) if any remain, else stop. Call after ONE camera
-   * disconnects/links-out — a bare stopGpsLoop() would kill GPS for the OTHER
+   * disconnects/links-out — a bare stop would kill GPS for the OTHER
    * still-connected cameras.
    */
   refreshGps(): void {
     if (this.getReadySessions().length > 0) {
       // A Ready camera exists: keep the ticker running, but DON'T restart it.
-      // Restarting resets the satellite count (stopGpsLoop sets it to -1) and
+      // Restarting resets the satellite count (stop sets it to -1) and
       // re-subscribes; getReadySessions() is dynamic, so the running ticker
       // already fans out to the changed set on its next beat.
-      this.ensureGpsRunning();
+      this.gps.ensureRunning();
     } else {
-      this.stopGpsLoop();
+      this.gps.stop();
     }
     // The GPS ticker and the ContinuousTask have DIFFERENT lifecycles: the
     // ticker needs a Ready session to write to, but the ContinuousTask must
@@ -706,44 +530,8 @@ export class CameraService {
     return this.prefs.loadSavedCamerasSync().some((c: PairedCamera) => c.keepAlive);
   }
 
-  /** Start/stop the ContinuousTask to match current connection intent:
-   * keep it while any camera is Ready (GPS writing) OR has keep-alive intent
-   * (reconnecting in the background); stop it only when neither holds. When it
-   * is already running, the held MODES track the Ready set in place — a camera
-   * going Ready adds location, all dropping reverts to bluetooth-only. */
   private reconcileBackgroundTask(): void {
-    const need = this.getReadySessions().length > 0 || this.hasKeepAliveIntent();
-    if (need) {
-      if (this.backgroundTaskStarted) {
-        const want = this.currentBgModes();
-        if (!this.sameModes(want)) this.updateBackgroundTask(want);
-      } else {
-        this.startBackgroundTask();
-      }
-    } else {
-      this.stopBackgroundTask();
-    }
-  }
-
-  /** Start the ticker only if it isn't already running (no satellite reset). */
-  private ensureGpsRunning(): void {
-    if (this.gpsTimer !== null) return;
-    this.startGpsLoop();
-  }
-
-  startGpsLoop(intervalMs: number = 1500): void {
-    const interval = this.isForeground ? intervalMs : 5000;
-    hilog.info(0x0001, TAG, `[GPS] startGpsLoop: interval=${interval}ms fg=${this.isForeground}`);
-    this.stopGpsLoop();
-    // Idempotent retry: setContext() subscribes at startup, but location
-    // permission may not be granted yet then (it's requested on first scan).
-    // Re-attempt here (no-op if already subscribed).
-    this.subscribeSatelliteStatus();
-    this.gpsStep = 0;
-    // Send TIME immediately, then alternate TIME/GEO
-    this.sendGpsTick();
-    this.gpsTimer = setInterval(() => { this.sendGpsTick(); }, interval);
-    this.startBackgroundTask();
+    this.bgTask.reconcile();
   }
 
   /** Ready sessions — only those whose handshake finished (chars prepared).
@@ -756,126 +544,6 @@ export class CameraService {
       if (s.getState() === ConnectionState.Ready) ready.push(s);
     });
     return ready;
-  }
-
-  /** Fan a YELLOW SLA signal (GPS no-fix / location-off) out to the given
-   * sessions — GPS is a shared device source, so a no-fix degrades every
-   * connected camera at once. Same-sev repeats are no-ops in the tracker. */
-  private signalSlaYellow(sessions: CameraSession[]): void {
-    for (let i = 0; i < sessions.length; i++) {
-      const name = sessions[i].getCameraName();
-      if (name !== '') this.slaOnSignal(name, SlaSev.YELLOW);
-    }
-  }
-
-  private sendGpsTick(): void {
-    const ready = this.getReadySessions();
-    if (ready.length === 0) {
-      this.stopGpsLoop();
-      return;
-    }
-    if (this.gpsStep === 0) {
-      const timePayload = TimePayloadGenerator.build();
-      hilog.info(0x0001, TAG, `[GPS] TIME ${timePayload.length}B to ${ready.length} camera(s)`);
-      for (let i = 0; i < ready.length; i++) {
-        this.staggeredWrite(ready[i], i, timePayload, true);
-      }
-      this.gpsStep = 1;
-    } else {
-      this.gpsStep = 0;
-      // Check if location service is enabled
-      try {
-        const locEnabled = geoLocationManager.isLocationEnabled?.() ?? true;
-        if (!locEnabled) {
-          hilog.warn(0x0001, TAG, '[GPS] Location service disabled, skip GEO');
-          this.signalSlaYellow(ready); // SLA YELLOW: location off
-          return;
-        }
-      } catch (e) { /* proceed anyway */ }
-
-      try {
-        geoLocationManager.getCurrentLocation({
-          priority: geoLocationManager.LocationRequestPriority.FIRST_FIX,
-          timeoutMs: 5000
-        }).then((pos) => {
-          const stillReady = this.getReadySessions();
-          if (stillReady.length === 0) return;
-          // Update shared GPS state
-          const lat = pos.latitude;
-          const lon = pos.longitude;
-          const alt = Math.round(pos.altitude);
-          const sats = this.lastSatelliteCount;
-          this.gpsData.hasFix = true;
-          this.gpsData.latitude = lat;
-          this.gpsData.longitude = lon;
-          this.gpsData.altitude = alt;
-          this.gpsData.satellites = sats;
-          this.gpsData.lastUpdateTime = new Date().toLocaleTimeString();
-
-          const gps: GpsPosition = {
-            latitude: lat, longitude: lon, altitude: alt,
-            satellites: sats >= 0 ? sats : 6, timestamp: new Date()
-          };
-          hilog.info(0x0001, TAG, `[GPS] GEO real lat=${lat.toFixed(6)} lon=${lon.toFixed(6)}`);
-          const payload = GeoPayloadGenerator.buildReal(gps);
-          for (let i = 0; i < stillReady.length; i++) {
-            this.staggeredWrite(stillReady[i], i, payload, false);
-          }
-        }).catch(() => {
-          hilog.debug(0x0001, TAG, '[GPS] GEO skip — no location');
-          this.signalSlaYellow(this.getReadySessions()); // SLA YELLOW: GPS no-fix
-        });
-      } catch (e) {
-        hilog.debug(0x0001, TAG, '[GPS] GEO skip — exception');
-        this.signalSlaYellow(this.getReadySessions()); // SLA YELLOW: GPS no-fix (sync throw)
-      }
-    }
-  }
-
-  /**
-   * Fan a write out to one camera, staggered by its index so N cameras don't
-   * all transmit in the same instant. Writes are self-guarding (BleClient
-   * drops them if the link is gone), so a delayed write after a disconnect is
-   * harmless.
-   */
-  private staggeredWrite(session: CameraSession, index: number, payload: Uint8Array, isTime: boolean): void {
-    const delay = index * GPS_PHASE_STAGGER_MS;
-    const doWrite = (): void => {
-      if (isTime) { session.writeTime(payload); } else { session.writeGeo(payload); }
-    };
-    if (delay === 0) {
-      doWrite();
-    } else {
-      setTimeout(doWrite, delay);
-    }
-  }
-
-  stopGpsLoop(): void {
-    if (this.gpsTimer !== null) {
-      clearInterval(this.gpsTimer);
-      this.gpsTimer = null;
-      hilog.info(0x0001, TAG, '[CHECKPOINT] GPS loop stopped');
-    }
-    // Satellite subscription is independent of the ticker — do NOT reset
-    // lastSatelliteCount here, so the satellite count survives camera drops.
-  }
-
-  private subscribeSatelliteStatus(): void {
-    if (this.satelliteSubscribed) return;
-    try {
-      this.satelliteStatusCb = (status: geoLocationManager.SatelliteStatusInfo) => {
-        if (status.satellitesNumber >= 0) {
-          this.lastSatelliteCount = status.satellitesNumber;
-        }
-      };
-      geoLocationManager.on('satelliteStatusChange', this.satelliteStatusCb);
-      this.satelliteSubscribed = true;
-      hilog.info(0x0001, TAG, '[GPS] subscribed to satelliteStatusChange');
-    } catch (err) {
-      this.satelliteSubscribed = false;
-      this.satelliteStatusCb = null;
-      hilog.warn(0x0001, TAG, `[GPS] satelliteStatusChange subscribe failed: ${JSON.stringify(err)}`);
-    }
   }
 
   // ==================== Persistence ====================
@@ -909,8 +577,7 @@ export class CameraService {
     this.sessions.delete(name);
     // Drop the SLA timeline too — a re-added camera must not inherit stale
     // health history (and the 2h window won't linger on disk).
-    this.slaTrackers.delete(name);
-    this.prefs.removeSla(name);
+    this.sla.remove(name);
     this.refreshGps();
     // Pairing page must drop the deleted camera's 已配对 marker.
     this.notifyDevicesChanged();
@@ -918,270 +585,71 @@ export class CameraService {
 
   // ==================== SLA timeline (连接健康看板) ====================
 
-  /** Get-or-create a camera's SLA tracker. Lazily loads the persisted snapshot
-   * (SlaTracker.load is if-empty guarded, so a live signal racing the async
-   * read is never overwritten). */
-  private getOrCreateSlaTracker(name: string): SlaTracker {
-    let t = this.slaTrackers.get(name);
-    if (!t) {
-      t = new SlaTracker((json: string): void => { this.prefs.saveSla(name, json); });
-      this.slaTrackers.set(name, t);
-      // Track the async persisted load so the first info-sheet open can await
-      // it (via getSlaTimelineLoaded) instead of rendering an empty bar because
-      // the disk read resolved a microtask later.
-      const pending: Promise<void> = this.prefs.loadSla(name).then((json: string | null): void => {
-        const cur = this.slaTrackers.get(name);
-        if (cur && json) cur.load(json);
-      });
-      this.slaLoads.set(name, pending);
-      pending.then((): void => {
-        if (this.slaLoads.get(name) === pending) this.slaLoads.delete(name);
-      });
-    }
-    return t;
-  }
-
-  /** GREEN signal — a GEO write was confirmed (full GPS downlink = has fix).
-   * Latches the global `hasDownlink` evidence flag + `first_downlink_ts` (the
-   * rating-prompt gates): a confirmed GEO write proves the pairing worked, and
-   * the first-ack timestamp anchors the "used it long enough" 48h gate. */
+  /** GREEN signal — a GEO write was confirmed (full GPS downlink = has fix). */
   slaOnDownlink(name: string): void {
-    const now = Date.now();
-    this.prefs.saveHasDownlink();
-    this.prefs.saveFirstDownlinkTsIfZero(now);
-    this.getOrCreateSlaTracker(name).onDownlink(now);
+    this.sla.onDownlink(name);
   }
 
-  /** Activity marker — a TIME write was confirmed (fires regardless of fix;
-   * never changes sev, only advances lastActivityAt for the gap rule). */
+  /** Activity marker — a TIME write was confirmed. */
   slaOnActivity(name: string): void {
-    this.getOrCreateSlaTracker(name).onActivity(Date.now());
+    this.sla.onActivity(name);
   }
 
   /** YELLOW/RED signal — an anomaly/transition for this camera. */
   slaOnSignal(name: string, sev: number): void {
-    this.getOrCreateSlaTracker(name).onSignal(Date.now(), sev);
+    this.sla.onSignal(name, sev);
   }
 
   /** Materialize a camera's SLA timeline for the UI. Frozen snapshot — the
    * caller copies it into @State BEFORE showing the sheet (do NOT call inside
    * a @Builder: the state listener re-runs it and shifts the 2h window). */
   getSlaTimeline(name: string): SlaCell[] {
-    return this.getOrCreateSlaTracker(name).materialize(Date.now());
+    return this.sla.getTimeline(name);
   }
 
   /** Materialize AFTER the persisted load settles — the first info-sheet open
    * renders the real history instead of an empty bar (async-load race). */
   async getSlaTimelineLoaded(name: string): Promise<SlaCell[]> {
-    const t = this.getOrCreateSlaTracker(name);
-    const pending = this.slaLoads.get(name);
-    if (pending) {
-      try { await pending; } catch (e) { /* best-effort */ }
-    }
-    return t.materialize(Date.now());
+    return this.sla.getTimelineLoaded(name);
   }
 
   /** Clear every camera's persisted health timeline + in-memory trackers
    * (关于 → 删除连接健康度日志). Slots restart empty from the next signal. */
   clearAllSla(): void {
-    this.slaTrackers.clear();
-    this.slaLoads.clear();
-    this.prefs.clearAllSla(); // per-key sweep incl. orphans, serialized
-    hilog.info(0x0001, TAG, '[SLA] cleared all health timelines');
+    this.sla.clearAll();
   }
 
   /** Unconditional flush of every camera's SLA — last line of defense against
    * an app kill (wired from onAppBackground + EntryAbility.onDestroy). */
   flushSlaAll(): void {
-    this.slaTrackers.forEach((t: SlaTracker): void => { t.flush(); });
+    this.sla.flushAll();
   }
 
   // ==================== Lifecycle (App Background/Foreground) ====================
 
   onAppBackground(): void {
     hilog.info(0x0001, TAG, '[LIFECYCLE] App → Background');
-    this.isForeground = false;
-    this.flushSlaAll(); // persist SLA before the process may be suspended
+    this.gps.isForeground = false;
+    this.sla.flushAll(); // persist SLA before the process may be suspended
     if (this.getReadySessions().length > 0) {
-      this.stopGpsLoop();
-      this.startGpsLoop(5000); // switch to slow background interval
+      this.gps.stop();
+      this.gps.start(5000); // switch to slow background interval
     }
     // A keep-alive camera mid-reconnect has no Ready session — ensure the
     // ContinuousTask is up so the background reconnect survives suspension.
-    this.reconcileBackgroundTask();
+    this.bgTask.reconcile();
   }
 
   onAppForeground(): void {
     hilog.info(0x0001, TAG, '[LIFECYCLE] App → Foreground');
-    this.isForeground = true;
+    this.gps.isForeground = true;
     if (this.getReadySessions().length > 0) {
-      this.stopGpsLoop();
-      this.startGpsLoop(); // restore default 1500ms interval
+      this.gps.stop();
+      this.gps.start(); // restore default 1500ms interval
     }
-    this.inferSilentRevocation();
-    this.reconcileBackgroundTask();
-    this.scheduleInterruptNotice();
-  }
-
-  /** Foreground-return notice for a background interruption. Fires ~4s after
-   * returning so the reconnect (which usually lands in 2–5s) settles first —
-   * one dialog per interruption event, fixed copy that covers both outcomes
-   * ("现已尝试恢复"). Skipped entirely if the user left before the delay. */
-  private scheduleInterruptNotice(): void {
-    if (!this.pendingInterruptNotice) return;
-    this.pendingInterruptNotice = false; // consume: never re-prompt this event
-    if (this.interruptNoticeTimer !== -1) clearTimeout(this.interruptNoticeTimer);
-    const ctx = this.abilityContext;
-    this.interruptNoticeTimer = setTimeout(() => {
-      this.interruptNoticeTimer = -1;
-      if (!this.isForeground || !ctx) return; // user already left again
-      window.getLastWindow(ctx).then((win) => {
-        win.getUIContext().getPromptAction().showDialog({
-          title: '连接提醒',
-          message: '因长时间未成功连接到设备，后台进程被系统中断。现已尝试恢复。',
-          buttons: [{ text: '知道了', color: '#0A59F7' }]
-        }).catch((e: BusinessError) => {
-          hilog.warn(0x0001, TAG, `[BG] interrupt-notice dialog fail: ${e.message}`);
-        });
-      }).catch((e: BusinessError) => {
-        hilog.warn(0x0001, TAG, `[BG] interrupt-notice getLastWindow fail: ${e.message}`);
-      });
-    }, 4000);
-  }
-
-  /** Fallback for revocations whose callbacks never ran: while frozen in the
-   * background the process can't execute cancel/suspend handlers, and a
-   * cold-ish thaw may deliver neither. On warm foreground, keep-alive intent +
-   * no Ready session + task not running (and we didn't stop it ourselves —
-   * userStopGeneration guards that path) means the system silently revoked it.
-   * Mark bgTaskCancelled so the interrupt notice explains the gap. */
-  private inferSilentRevocation(): void {
-    if (this.bgTaskCancelled || !this.hasKeepAliveIntent()) return;
-    if (this.getReadySessions().length > 0) return;
-    if (this.backgroundTaskStarted) return;
-    if (this.bgStartInFlight) return; // a start is still in flight — not "gone"
-    if (this.userStopGeneration === this.bgGeneration) return;
-    hilog.warn(0x0001, TAG, '[BG] task gone without our stop() at foreground — inferring silent system revocation');
-    this.bgTaskCancelled = true;
-    this.pendingInterruptNotice = true;
-  }
-
-  // ==================== Background Task ====================
-
-  private async startBackgroundTask(): Promise<void> {
-    if (this.backgroundTaskStarted || this.bgStartInFlight || !this.abilityContext) return;
-    this.bgStartInFlight = true; // concurrent callers (startGpsLoop + reconcile) must not double-fire
-    const ctx = this.abilityContext;
-    const gen = this.bgGeneration; // this request's generation
-    // Multi-mode MUST use the string[] overload: the single-value BackgroundMode
-    // overload accepts ONE mode, and `BLUETOOTH_INTERACTION | LOCATION` = 7 is
-    // not a valid enum value (the enum skips 7). Legal multi-mode is a string[].
-    const modes = this.currentBgModes();
-
-    let wantAgentInfo: wantAgent.WantAgentInfo = {
-      wants: [
-        {
-          bundleName: ctx.abilityInfo.bundleName,
-          abilityName: ctx.abilityInfo.name
-        }
-      ],
-      actionType: wantAgent.OperationType.START_ABILITY,
-      requestCode: 0,
-      wantAgentFlags: [wantAgent.WantAgentFlags.UPDATE_PRESENT_FLAG]
-    };
-
-    try {
-      const agent: WantAgent = await wantAgent.getWantAgent(wantAgentInfo);
-      if (gen !== this.bgGeneration) return; // a stop() raced in — abandon
-      try {
-        await backgroundTaskManager.startBackgroundRunning(ctx, modes, agent);
-        if (gen !== this.bgGeneration) {
-          // Start landed after a stop request — immediately undo it, else the
-          // notification task hangs while every switch is off.
-          hilog.info(0x0001, TAG, '[BG] ContinuousTask started after stop — undoing');
-          try { backgroundTaskManager.stopBackgroundRunning(ctx); } catch (e) { /* best-effort */ }
-          this.backgroundTaskStarted = false;
-          return;
-        }
-        this.backgroundTaskStarted = true;
-        this.bgModes = modes;
-        this.userStopGeneration = -1; // fresh start — clear any stale user-stop mark
-        hilog.info(0x0001, TAG, `[BG] ContinuousTask started (${modes.join('+')})`);
-      } catch (err) {
-        const be = err as BusinessError;
-        if (be.code === 9800005) {
-          // "Continuous task verification failed — already applied": the system
-          // still holds our task (e.g. suspended-but-registered, auto-resumed
-          // on foreground). Treat as running; empty mode cache makes the next
-          // reconcileBackgroundTask() align modes via updateBackgroundRunning.
-          hilog.info(0x0001, TAG, '[BG] start hit 9800005 — task already registered, syncing state');
-          this.backgroundTaskStarted = true;
-          this.bgModes = [];
-        } else {
-          hilog.warn(0x0001, TAG,
-            `[BG] startBackgroundRunning fail: ${be.code} ${be.message}`);
-        }
-      }
-      if (gen !== this.bgGeneration && this.backgroundTaskStarted) {
-        // A stop() raced in while we were starting — undo, same as above.
-        try { backgroundTaskManager.stopBackgroundRunning(ctx); } catch (e) { /* best-effort */ }
-        this.backgroundTaskStarted = false;
-      }
-    } catch (err) {
-      hilog.warn(0x0001, TAG,
-        `[BG] getWantAgent fail: ${(err as BusinessError).code} ${(err as BusinessError).message}`);
-    } finally {
-      this.bgStartInFlight = false; // single cleanup point — early returns above can't strand the gate
-    }
-  }
-
-  /** Dynamic single/multi-mode: while any camera is Ready (GPS writing) hold
-   * bluetooth + location; during pure reconnect (no Ready session) hold only
-   * bluetooth. Every held mode must have real business backing it — otherwise
-   * the system may cancel the task as "unused" (SYSTEM_CANCEL_NOT_USE_LOCATION
-   * when LOCATION is held but GPS isn't writing). */
-  private currentBgModes(): string[] {
-    return this.getReadySessions().length > 0
-      ? ['bluetoothInteraction', 'location']
-      : ['bluetoothInteraction'];
-  }
-
-  private sameModes(modes: string[]): boolean {
-    if (modes.length !== this.bgModes.length) return false;
-    for (let i = 0; i < modes.length; i++) {
-      if (modes[i] !== this.bgModes[i]) return false;
-    }
-    return true;
-  }
-
-  /** Switch the running ContinuousTask's background modes in place (add/remove
-   * location as cameras enter/leave Ready). */
-  private updateBackgroundTask(modes: string[]): void {
-    const ctx = this.abilityContext;
-    if (!ctx) return;
-    backgroundTaskManager.updateBackgroundRunning(ctx, modes).then(() => {
-      this.bgModes = modes;
-      hilog.info(0x0001, TAG, `[BG] ContinuousTask modes → ${modes.join('+')}`);
-    }).catch((err: BusinessError) => {
-      hilog.warn(0x0001, TAG,
-        `[BG] updateBackgroundRunning fail: ${err.code} ${err.message}`);
-    });
-  }
-
-  stopBackgroundTask(): void {
-    this.bgGeneration++; // invalidate any in-flight start()
-    if (!this.backgroundTaskStarted || !this.abilityContext) return;
-
-    try {
-      backgroundTaskManager.stopBackgroundRunning(this.abilityContext);
-      this.backgroundTaskStarted = false;
-      this.bgModes = [];
-      this.userStopGeneration = this.bgGeneration; // we did this — not the system
-      hilog.info(0x0001, TAG, '[BG] ContinuousTask stopped');
-    } catch (err) {
-      hilog.warn(0x0001, TAG,
-        `[BG] stopBackgroundRunning error: ${(err as BusinessError).code} ${(err as BusinessError).message}`);
-    }
+    this.bgTask.inferSilentRevocation();
+    this.bgTask.reconcile();
+    this.bgTask.scheduleInterruptNotice((): boolean => this.gps.isForeground);
   }
 
   // ==================== State broadcast ====================
@@ -1189,17 +657,10 @@ export class CameraService {
   /** Broadcast a per-camera (or global, name='') state change to all listeners. */
   broadcastSessionState(cameraName: string, state: ConnectionState, message: string): void {
     hilog.info(0x0001, TAG, `[CHECKPOINT] STATE: [${cameraName || '(global)'}] ${state} — ${message}`);
-    // A camera reaching Ready means the link is restored — clear the interrupt
-    // latch so the NEXT revocation can re-notify.
-    if (state === ConnectionState.Ready && this.bgTaskCancelled) {
-      this.bgTaskCancelled = false;
-      hilog.info(0x0001, TAG, '[BG] camera Ready — cleared interrupt latch');
-    }
-    // Ready also settles the interrupt-notice event itself: if the link came
-    // back while the user was watching in-app, don't let a stale flag pop the
-    // dialog on some much-later foreground return.
+    // A camera reaching Ready means the link is restored — the keeper clears
+    // the interrupt latch / pending notice so the NEXT revocation re-notifies.
     if (state === ConnectionState.Ready) {
-      this.pendingInterruptNotice = false;
+      this.bgTask.onReadyLinkRestored();
     }
     for (let i = 0; i < this.stateListeners.length; i++) {
       this.stateListeners[i]({ cameraName, state, message });
