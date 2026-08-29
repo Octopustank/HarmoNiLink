@@ -25,7 +25,6 @@
  * stay attributable.
  */
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { connection } from '@kit.ConnectivityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { window } from '@kit.ArkUI';
 import { PairedCamera } from '../ble/protocol/NikonPairingEngine';
@@ -39,6 +38,7 @@ import {
 import { CameraService } from './CameraService';
 import { ConnectionState } from './ConnectionTypes';
 import { GpsWriteTarget } from './GpsDispatcher';
+import { ClassicBonding, ClassicBondingHost } from './ClassicBonding';
 import { SlaSev } from '../data/SlaTracker';
 
 const TAG = 'HarmoNiLink-CameraService';
@@ -50,10 +50,14 @@ const DEFAULT_CONTROLLER_NAME: string = 'HarmoNiLink';
  * Owns all per-camera state and logic; delegates shared-resource access to the
  * Hub (CameraService) it was created by. Implements GpsWriteTarget so the
  * Hub's GpsDispatcher can fan TIME/GEO writes out to Ready sessions without
- * importing this class.
+ * importing this class, and ClassicBondingHost so the classic-BT bonding
+ * phase (discovery + pairDevice + bond tracking) lives in its own coordinator.
  */
-export class CameraSession implements GpsWriteTarget {
+export class CameraSession implements GpsWriteTarget, ClassicBondingHost {
   private hub: CameraService;
+  // Classic discovery / bonding coordinator — owns the bonding listeners and
+  // the pending-BLE-down wait (P0-2 discipline enforced inside it).
+  private bonding: ClassicBonding;
 
   // ==== Per-camera state (moved out of CameraService) ====
 
@@ -74,16 +78,6 @@ export class CameraSession implements GpsWriteTarget {
   private isPairMode: boolean = true; // true=NEW, false=RECONNECT
   private cameraSerial: string = '';
   private cameraName: string = ''; // real camera name (e.g. Z_6_2_<serial> / D5600_<serial>), set during scan
-
-  // Classic discovery / bonding state
-  private bondingDiscoveryActive: boolean = false;
-  // True while waiting for the BLE disconnect event to start classic discovery —
-  // older bodies (D5600) only become classic-discoverable once BLE is fully down.
-  private pendingBondingDiscovery: boolean = false;
-  // Registered classic-discovery/bond listeners — kept by reference so
-  // finishBonding can unregister them (connection.on accumulates otherwise).
-  private bondDiscoveryCb: ((data: Object) => void) | null = null;
-  private bondStateCb: ((data: connection.BondStateParam) => void) | null = null;
 
   // Connect watchdog — aborts stalled pairing against unresponsive devices
   private connectTimeoutId: number | null = null;
@@ -113,6 +107,25 @@ export class CameraSession implements GpsWriteTarget {
 
   constructor(hub: CameraService) {
     this.hub = hub;
+    this.bonding = new ClassicBonding(this);
+  }
+
+  // ==== ClassicBondingHost (bonding coordinator callbacks) ====
+
+  /** True while this session is in its Bonding state. */
+  isInBondingState(): boolean {
+    return this.state === ConnectionState.Bonding;
+  }
+
+  /** Bond attempt concluded — settle state, persist on success, release the
+   * pairing mutex (the full finishBonding flow). */
+  onBondingFinished(bonded: boolean, failMessage: string): void {
+    this.finishBonding(bonded, failMessage);
+  }
+
+  /** Progress line for the UI (no state re-broadcast). */
+  onProgressMessage(message: string): void {
+    this.statusMessage = message;
   }
 
   /** Per-session log prefix — with N cameras the log must say WHO did it. */
@@ -311,18 +324,9 @@ export class CameraSession implements GpsWriteTarget {
     }
     // Cancel any bonding in flight — otherwise a late BONDED event (or the user
     // confirming a pending system dialog) could finish a pairing that was
-    // cancelled, producing a ghost "已连接" with no connection.
-    // Capture discovery ownership BEFORE clearing the flags (the guard below
-    // must see the pre-cancel state).
-    const ownedDiscovery = this.bondingDiscoveryActive || this.pendingBondingDiscovery;
-    this.bondingDiscoveryActive = false;
-    this.pendingBondingDiscovery = false;
-    this.unregisterBondListeners();
-    // Stop classic discovery ONLY if this session owned it (bonding). Killing
-    // it unconditionally would abort a sibling session's bonding (P0-2).
-    if (ownedDiscovery) {
-      try { connection.stopBluetoothDiscovery(); } catch (e) {}
-    }
+    // cancelled, producing a ghost "已连接" with no connection. The coordinator
+    // stops classic discovery ONLY if it owned it (P0-2).
+    this.bonding.abort();
     this.pairingStep = 0;
     this.currentStage1 = null;
     this.cameraSerial = '';
@@ -350,9 +354,7 @@ export class CameraSession implements GpsWriteTarget {
     // No scanner.stopScan() here: the pairing scan was already stopped by
     // selectDiscoveredCamera, and a bare stop would kill the shared reconnect
     // scan other sessions are watching (P0-2). disconnect() unwatches us.
-    if (this.bondingDiscoveryActive || this.pendingBondingDiscovery) {
-      try { connection.stopBluetoothDiscovery(); } catch (e) {}
-    }
+    this.bonding.abort();
     this.disconnect();
   }
 
@@ -389,9 +391,7 @@ export class CameraSession implements GpsWriteTarget {
       // Leave the shared reconnect scan for its other watchers; classic
       // discovery is only stopped when THIS session owns it (P0-2).
       this.hub.unwatchReconnect(this.cameraName);
-      if (this.bondingDiscoveryActive || this.pendingBondingDiscovery) {
-        try { connection.stopBluetoothDiscovery(); } catch (e) {}
-      }
+      this.bonding.abort();
       // Route through the unified recovery path instead of dying on Error —
       // auto-reconnect keeps trying while the camera is unavailable. Settle
       // BEFORE disconnect() (which synchronously emits BleDisconnected and
@@ -451,12 +451,11 @@ export class CameraSession implements GpsWriteTarget {
       this.handleWriteDone(event.uuid);
     } else if (event instanceof BleDisconnected) {
       hilog.info(0x0001, TAG, `${this.slog()}BLE Disconnected`);
-      if (this.state === ConnectionState.Bonding && this.pendingBondingDiscovery) {
+      if (this.state === ConnectionState.Bonding && this.bonding.takePending()) {
         // BLE link fully down — camera should now be classic-discoverable.
         // Bonding path handles the rest; don't route to handleLinkLost.
-        this.pendingBondingDiscovery = false;
         hilog.info(0x0001, TAG, `${this.slog()}BLE fully down — starting classic discovery`);
-        this.startClassicDiscoveryForBonding();
+        this.bonding.begin();
         return;
       }
       // Only log the root cause once: when the disconnect comes from the BLE
@@ -499,9 +498,7 @@ export class CameraSession implements GpsWriteTarget {
       // Link-loss signal, not a terminal state: tear down and let
       // handleLinkLost decide between auto-reconnect and settling.
       this.hub.unwatchReconnect(this.cameraName);
-      if (this.bondingDiscoveryActive || this.pendingBondingDiscovery) {
-        try { connection.stopBluetoothDiscovery(); } catch (e) {}
-      }
+      this.bonding.abort();
       // handleLinkLost FIRST (settles with the concrete reason), disconnect
       // AFTER — disconnect() synchronously emits BleDisconnected, which would
       // re-enter handleBleEvent and overwrite the failure reason with the
@@ -730,124 +727,17 @@ export class CameraSession implements GpsWriteTarget {
     // missed event.
     this.setState(ConnectionState.Bonding, '正在通过经典蓝牙搜索相机…');
     hilog.info(0x0001, TAG, '[CHECKPOINT] Disconnecting BLE GATT for classic bonding');
-    this.pendingBondingDiscovery = true;
+    this.bonding.markPending();
     this.bleClient.disconnect();
 
     setTimeout(() => {
-      if (this.pendingBondingDiscovery && this.state === ConnectionState.Bonding) {
-        this.pendingBondingDiscovery = false;
+      if (this.bonding.takePending() && this.state === ConnectionState.Bonding) {
         hilog.warn(0x0001, TAG, '[CHECKPOINT] BLE disconnect event missed — starting discovery anyway');
-        this.startClassicDiscoveryForBonding();
+        this.bonding.begin();
       }
     }, 5000);
   }
 
-  private startClassicDiscoveryForBonding(): void {
-    hilog.info(0x0001, TAG, '[CHECKPOINT] Starting classic BT discovery for bonding');
-    this.bondingDiscoveryActive = true;
-
-    let bondAttempted: boolean = false;
-
-    try {
-      connection.startBluetoothDiscovery();
-      hilog.info(0x0001, TAG, '[CHECKPOINT] Classic discovery started');
-    } catch (err) {
-      hilog.error(0x0001, TAG, `[CHECKPOINT] startBluetoothDiscovery FAILED: ${JSON.stringify(err)}`);
-      this.finishBonding(false, '经典蓝牙发现启动失败');
-      return;
-    }
-
-    // Use discoveryResult event (v18 API) which gives deviceId + deviceName + rssi.
-    // Unregister any previous listener first (connection.on accumulates).
-    if (this.bondDiscoveryCb) { try { connection.off('discoveryResult', this.bondDiscoveryCb); } catch (e) {} }
-    this.bondDiscoveryCb = (data: Object) => {
-      // Guard: once bonding finished (or was abandoned), ignore late results —
-      // a camera that re-broadcasts under a new random address would otherwise
-      // trigger a second pairDevice after BONDED.
-      if (!this.bondingDiscoveryActive) return;
-      const devs: Object[] = Array.isArray(data) ? data as Object[] : [data];
-      for (let i = 0; i < devs.length; i++) {
-        const d = devs[i] as Record<string, Object>;
-        const name = (d['deviceName'] || '') as string;
-        const addr = (d['deviceId'] || '') as string;
-        if (!name || !addr) continue;
-
-        hilog.info(0x0001, TAG, `[DISCOVERY] found: name='${name}' addr=${addr}`);
-
-        // Match camera by name — classic BT name ≈ BLE name (e.g. Z_6_2_<serial>,
-        // D5600_<serial>, ...) or contains the serial or model. Normalize underscores.
-        const nameNorm = name.replace(/_/g, '').toLowerCase();
-        const bleNorm = (this.cameraName || '').replace(/_/g, '').toLowerCase();
-        const serialNorm = this.cameraSerial.replace(/-/g, '').toLowerCase();
-        const model = (this.cameraName || '').split('_')[0].toLowerCase();
-        // Match the TARGET camera only — other paired cameras (e.g. a Z-series
-        // body that is also broadcasting) must NOT match. Any camera-specific
-        // rule like name.includes('Z_') would mis-pair when 2 cameras coexist.
-        // The model-only fallback is the LAST resort and only when the serial is
-        // still unknown: with a known serial, two same-model bodies (e.g. two
-        // D5600) must be told apart by serial, never by model alone.
-        const matches = (bleNorm.length > 0 && (nameNorm.includes(bleNorm) || bleNorm.includes(nameNorm)))
-          || (serialNorm.length > 0 && nameNorm.includes(serialNorm))
-          || (model.length >= 3 && nameNorm.includes(model) && serialNorm.length === 0);
-        if (!matches) continue;
-
-        hilog.info(0x0001, TAG, `[CHECKPOINT] Matched camera! Trying pairDevice('${addr}')`);
-        try { connection.stopBluetoothDiscovery(); } catch (e) {}
-        bondAttempted = true;
-
-        try {
-          connection.pairDevice(addr);
-          this.statusMessage = 'Pairing with camera... accept dialog if shown.';
-        } catch (err) {
-          hilog.error(0x0001, TAG, `[CHECKPOINT] pairDevice FAILED: ${JSON.stringify(err)}`);
-          this.finishBonding(false, '配对请求失败');
-          return;
-        }
-
-        // Listen for bond state — filtered to the target device: an unrelated
-        // device's bond transition must not abort (or falsely complete) ours.
-        if (this.bondStateCb) connection.off('bondStateChange', this.bondStateCb);
-        this.bondStateCb = (bondData: connection.BondStateParam) => {
-          hilog.info(0x0001, TAG,
-            `[CHECKPOINT] bondState: deviceId=${bondData.deviceId} state=${bondData.state}`);
-          if (bondData.deviceId !== addr) return; // another device — ignore
-          if (!this.bondingDiscoveryActive) return; // stale — already finished
-          if (bondData.state === connection.BondState.BOND_STATE_BONDED) {
-            hilog.info(0x0001, TAG, '[CHECKPOINT] BONDED!');
-            this.bondingDiscoveryActive = false;
-            try { connection.stopBluetoothDiscovery(); } catch (e) {}
-            this.finishBonding(true);
-          } else if (bondData.state !== connection.BondState.BOND_STATE_BONDING) {
-            // NONE/INVALID after bonding started = failure — fail fast instead
-            // of waiting out the 20s timeout (and no false success dialog).
-            hilog.warn(0x0001, TAG, `[CHECKPOINT] Bond failed (state=${bondData.state}) — finishing`);
-            this.bondingDiscoveryActive = false;
-            try { connection.stopBluetoothDiscovery(); } catch (e) {}
-            this.finishBonding(false, '配对被拒绝或失败');
-          }
-        };
-        connection.on('bondStateChange', this.bondStateCb);
-
-        setTimeout(() => {
-          if (this.state === ConnectionState.Bonding) {
-            hilog.warn(0x0001, TAG, '[CHECKPOINT] Bonding response timeout (20s)');
-            this.finishBonding(false, '绑定响应超时');
-          }
-        }, 20000);
-        return;
-      }
-    };
-    try { connection.on('discoveryResult', this.bondDiscoveryCb); } catch (e) {}
-
-    // Timeout: 15 seconds
-    setTimeout(() => {
-      if (!bondAttempted && this.state === ConnectionState.Bonding) {
-        hilog.warn(0x0001, TAG, '[CHECKPOINT] Classic discovery timeout — proceeding without bond');
-        try { connection.stopBluetoothDiscovery(); } catch (e) {}
-        this.finishBonding(false, '未发现相机，配对超时');
-      }
-    }, 15000);
-  }
 
   private handleLinkLost(failReason: string = ''): void {
     if (this.state === ConnectionState.Ready) {
@@ -935,16 +825,11 @@ export class CameraSession implements GpsWriteTarget {
     }
   }
 
-  private unregisterBondListeners(): void {
-    if (this.bondDiscoveryCb) { try { connection.off('discoveryResult', this.bondDiscoveryCb); } catch (e) {} this.bondDiscoveryCb = null; }
-    if (this.bondStateCb) { try { connection.off('bondStateChange', this.bondStateCb); } catch (e) {} this.bondStateCb = null; }
-  }
-
   private finishBonding(bonded: boolean, failMessage: string = ''): void {
-    this.bondingDiscoveryActive = false;
-    this.pendingBondingDiscovery = false;
-    this.unregisterBondListeners();
-    try { connection.stopBluetoothDiscovery(); } catch (e) {}
+    // Teardown of the classic-BT phase (flags + listeners + discovery stop)
+    // lives in the coordinator — idempotent, and it only stops discovery it
+    // started (P0-2).
+    this.bonding.abort();
     if (bonded) {
       // Only a real BONDED marks pairing complete — persist the staged camera
       // NOW (it was staged in checkBondedAndFinish, before the BLE teardown).
