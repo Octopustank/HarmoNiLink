@@ -41,10 +41,6 @@ export class GpsDispatcher {
 
   private getReadyTargets: () => GpsWriteTarget[];
   private onSlaYellow: (name: string) => void;
-  // Invoked whenever a (re)start happens — the Hub reconciles the
-  // ContinuousTask there (a running ticker implies a Ready camera implies
-  // the task must be up).
-  private onLoopStarted: () => void;
 
   private gpsTimer: number | null = null;
   private gpsStep: number = 0; // 0=TIME, 1=GEO — alternating
@@ -54,11 +50,9 @@ export class GpsDispatcher {
   private satelliteStatusCb: ((status: geoLocationManager.SatelliteStatusInfo) => void) | null = null;
 
   constructor(getReadyTargets: () => GpsWriteTarget[],
-    onSlaYellow: (name: string) => void,
-    onLoopStarted: () => void) {
+    onSlaYellow: (name: string) => void) {
     this.getReadyTargets = getReadyTargets;
     this.onSlaYellow = onSlaYellow;
-    this.onLoopStarted = onLoopStarted;
   }
 
   /** Start the ticker only if it isn't already running (no satellite reset). */
@@ -79,7 +73,10 @@ export class GpsDispatcher {
     // Send TIME immediately, then alternate TIME/GEO
     this.sendTick();
     this.gpsTimer = setInterval(() => { this.sendTick(); }, interval);
-    this.onLoopStarted();
+    // NOTE: no ContinuousTask reconcile here — every caller of start() is
+    // followed by an explicit Hub-side reconcile. Reconciling from inside
+    // start() as well double-fires updateBackgroundRunning (observed as two
+    // identical calls in the same millisecond on-device).
   }
 
   stop(): void {

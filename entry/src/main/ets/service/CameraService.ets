@@ -99,8 +99,7 @@ export class CameraService {
       (): boolean => this.hasKeepAliveIntent());
     this.gps = new GpsDispatcher(
       (): GpsWriteTarget[] => this.getReadySessions(),
-      (name: string): void => { this.slaOnSignal(name, SlaSev.YELLOW); },
-      (): void => { this.reconcileBackgroundTask(); });
+      (name: string): void => { this.slaOnSignal(name, SlaSev.YELLOW); });
     this.sla = new SlaHub(this.prefs);
   }
 
