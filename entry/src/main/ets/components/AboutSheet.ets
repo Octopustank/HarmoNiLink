@@ -24,7 +24,11 @@ function AboutActionRow(label: string, onTap: () => void) {
     Text(label).fontSize(16).fontColor($r('app.color.text_primary')).layoutWeight(1)
     SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(18).fontColor([$r('app.color.text_secondary')])
   }
-  .width('100%').padding({ left: 16, right: 12, top: 14, bottom: 14 })
+  // 4px inset on every side keeps the pressed highlight off the card edges
+  // (matches the pairing page's row treatment); inner padding compensates so
+  // the label stays aligned with the non-pressable 应用版本 row above.
+  .width('100%').padding({ left: 12, right: 8, top: 14, bottom: 14 })
+  .margin({ left: 4, right: 4, top: 4, bottom: 4 })
   .borderRadius(16)
   .stateStyles({
     pressed: { .backgroundColor($r('app.color.press_feedback')) },

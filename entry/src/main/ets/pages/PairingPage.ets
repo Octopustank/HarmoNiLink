@@ -148,7 +148,13 @@ export struct PairingPage {
             .fontSize(16).fontWeight(500)
             .fontColor(this.isPaired(cam) ? $r('app.color.link') : $r('app.color.text_primary'))
             .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-          if (this.isPaired(cam)) {
+          // Status badge where 已配对 sits: while this row is the pairing
+          // target, show 配对中 (stronger feedback than spinner + subtitle
+          // alone); once pairing settles the target clears and the badge
+          // falls back to 已配对 / nothing.
+          if (this.pairingTargetId === cam.deviceId) {
+            Text('配对中').fontSize(12).fontColor($r('app.color.brand'))
+          } else if (this.isPaired(cam)) {
             Text('已配对').fontSize(12).fontColor($r('app.color.text_secondary'))
           }
         }
@@ -349,7 +355,10 @@ export struct PairingPage {
 
           if (this.discoveredCameras.length > 0) {
             Text('已发现的设备').fontSize(14).fontColor($r('app.color.text_secondary'))
-              .margin({ left: 12, bottom: 8, top: 28 }).alignSelf(ItemAlign.Start).fontWeight(500)
+              .margin({ left: 12, bottom: 2, top: 28 }).alignSelf(ItemAlign.Start).fontWeight(500)
+            Text('点击设备开始配对，配对中再点一次可取消')
+              .fontSize(11).fontColor($r('app.color.text_secondary'))
+              .margin({ left: 12, bottom: 8 }).alignSelf(ItemAlign.Start)
 
             // 尼康相机置顶（UUID 0xDE00 或命名匹配）— 标题始终显示（含 0）
             Text(`尼康相机（${this.nikonCameras().length}）`).fontSize(13).fontColor($r('app.color.text_secondary'))

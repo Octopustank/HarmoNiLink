@@ -530,13 +530,16 @@ export struct ConnectionPage {
 
   @Builder logSection() {
     Column() {
-      // 关于 — settings-style row with chevron (half-modal sheet)
+      // 关于 — settings-style row with chevron (half-modal sheet).
+      // 4px inset margin on every side keeps the pressed highlight off the
+      // card edges (matches the pairing page's row treatment).
       Row() {
         Text('关于').fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary')).layoutWeight(1)
         SymbolGlyph($r('sys.symbol.chevron_right'))
           .fontSize(18).fontColor([$r('app.color.text_secondary')])
       }
-      .width('100%').padding({ left: 12, right: 12, top: 14, bottom: 14 })
+      .width('100%').padding({ left: 8, right: 8, top: 14, bottom: 14 })
+      .margin({ left: 4, right: 4, top: 4, bottom: 4 })
       .borderRadius(16)
       .stateStyles({
         pressed: { .backgroundColor($r('app.color.press_feedback')) },
@@ -554,7 +557,8 @@ export struct ConnectionPage {
           .rotate({ angle: this.showLogs ? 90 : 0 })
           .animation({ duration: 200, curve: Curve.EaseOut })
       }
-      .width('100%').padding({ left: 12, right: 12, top: 14, bottom: 14 })
+      .width('100%').padding({ left: 8, right: 8, top: 14, bottom: 14 })
+      .margin({ left: 4, right: 4, top: 4, bottom: 4 })
       .borderRadius(16)
       .stateStyles({
         pressed: { .backgroundColor($r('app.color.press_feedback')) },
@@ -569,11 +573,12 @@ export struct ConnectionPage {
               Text(msg).fontSize(10).fontColor($r('app.color.text_secondary')).width('100%').padding({ top: 1, bottom: 1 })
             }, (msg: string, i: number) => `${i}_${msg}`)
           } else { Text('暂无日志').fontSize(12).fontColor($r('app.color.text_secondary')).padding({ top: 8 }) }
-        }.width('100%').padding({ left: 12, right: 12, bottom: 12 })
+        }
+        .width('100%').padding({ left: 8, right: 8, bottom: 8 })
+        .margin({ left: 4, right: 4, bottom: 4 })
       }
     }
     .width('100%').alignItems(HorizontalAlign.Start)
-    .padding({ top: 4, bottom: 4 })
     .borderRadius(16).backgroundColor($r('app.color.card_background'))
     .shadow({ radius: 12, color: '#0D000000', offsetY: 2 })
     .margin({ top: 12 })
@@ -619,15 +624,15 @@ export struct ConnectionPage {
             lightState: this.gpsLightState()
           })
 
-          Text('连接开关打开的相机将保持连接，断开后自动重连。\n未配对的相机请先在「配对」页扫描添加。\n需要后台下发数据，请在系统设置中允许始终定位。')
-            .fontSize(11).fontColor($r('app.color.text_secondary'))
+          Text('需要后台下发数据，请在系统设置中允许始终定位')
+            .fontSize(12).fontColor($r('app.color.text_secondary'))
             .width('100%').textAlign(TextAlign.Center).padding({ left: 4, right: 4 })
             .margin({ top: 12 })
             .lineHeight(16)
 
           this.savedDevicesSection()
-          Text('找不到相机？请前往「配对」页面搜索设备')
-            .fontSize(13).fontColor($r('app.color.text_secondary'))
+          Text('连接开关打开的相机将保持连接\n找不到相机？请先前往「配对」页面搜索、配对设备')
+            .fontSize(12).fontColor($r('app.color.text_secondary'))
             .textAlign(TextAlign.Center).width('100%').padding({ top: 4, bottom: 4 })
             .margin({ top: 12 })
           this.logSection()
