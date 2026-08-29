@@ -30,3 +30,4 @@ build/
 sign.sh
 .cxx/
 .env
+AGENTS.md
