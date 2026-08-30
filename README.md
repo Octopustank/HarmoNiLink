@@ -11,39 +11,47 @@ HarmoNiLink 让 HarmonyOS 手机/平板替代 SnapBridge，向尼康 Z / D 系�
 
 ---
 
-## 截图
+## 应用预览
 
-| 配对 & 扫描 | 连接 & GPS | 连接健康度 |
-|:---:|:---:|:---:|
-| <img src="pics/pair.png" width="280"/> | <img src="pics/connected.png" width="280"/> | <img src="pics/health.png" width="280"/> |
+| | |
+|:---:|:---:|
+| **自动发现，一键配对** | **实时同步 GPS 信息** |
+| <img src="pics/promo-1-pairing.png" width="300"/> | <img src="pics/promo-2-gps-sync.png" width="300"/> |
+| **持续连接，全天候跟拍** | **位置信息写进照片文件** |
+| <img src="pics/promo-3-always-connected.png" width="300"/> | <img src="pics/promo-4-exif.png" width="300"/> |
 
 ---
 
-## 特性
+## 核心亮点
 
-### 全自动 GPS 分发
-扫描、配对、GPS 传输全流程自动化。首次配对需用户确认系统弹窗，之后所有操作（含休眠唤醒重连）均无需手动介入。
+### 便捷连接，专注拍摄
+首次蓝牙配对成功后，每次打开应用只需轻触连接按钮，GPS 信息便会自动实时下达相机，连接后无需额外操作。
 
-### 智能扫描分组
-扫描时通过蓝牙广播中的服务特征（0xDE00）自动识别尼康相机并置顶分组（`Z_6_2_...`、`D5600_...`），手机、耳机、打印机等其他设备收进折叠区——多相机、嘈杂环境一目了然，不再大海捞针。
+### 快门记录经纬，不止于光影
+拍摄时，相机接收的位置信息（可在相机「连接至智能设备」-「位置数据」查看）会写入 RAW / JPG 照片的 EXIF 中。照片导入电脑或手机相册后自带地理坐标，地图模式自动归位。
 
-### 连接状态引导
-当相机端正在等待另一台已配对设备时（多台手机配对过同一台相机），App 会自动提示在相机【已配对设备】中切换当前设备，不再无声重试。
+### 后台稳定运行，持续连接
+基于系统原生蓝牙和定位任务机制，应用切到后台仍可稳定传输位置数据（需在系统设置中将定位权限设为「始终允许」），拍摄无干扰。若后台进程被系统中断，回到前台会自动恢复并给出提示。
 
-### 鸿蒙原生后台保活
-基于 `BackgroundMode.BLUETOOTH_INTERACTION` + `LOCATION` 双长时任务，不依赖无声音频等取巧手段。系统级后台调度保证 GPS 持续传输。后台持续下发需将定位权限设为「始终允许」，见[权限](#权限)。
+### 连接健康，一目了然
+每一台已配对相机都记录最近 2 小时连接健康度，四级状态直观呈现，正常、偶发断连、定位异常、完全中断一目了然（已配对设备左滑查看，删除设备也在左滑菜单中）。
 
-### 相机休眠兼容
-尼康相机进入休眠后维持 BLE 低功耗连接，GPS 数据持续写入。若连接意外中断（深度休眠 / 超出距离），自动执行指数退避重连。Z 系列与 D 系列（D5600 等）均已适配——D 系列较慢的连接建立与经典蓝牙配对时序（需 BLE 连接完全释放后才可被发现）自动处理，无需手动干预。
+### 一台手机，多台相机
+可同时连接多台尼康相机，每台独立开关、独立管理，一台休眠或断线不影响另一台；多台共享同一份定位数据，互不干扰。
 
-### 多设备可区分
-每台安装自动生成唯一配对名称（`HarmoNiLink-XXXX`），写入相机并显示在相机端已配对列表，多台手机同时配对同一台相机时互不混淆；连接页可随时查看本机名称。
+### 适配相机休眠，连接不掉线
+相机进入低功耗休眠后，蓝牙连接保持，GPS 持续下达；若意外断开，自动执行重连策略，省心省力。
 
-### 原生鸿蒙体验
-- **HDS 设计套件** — 沉浸光感、模糊标题栏、自适应背景材质
-- **亮/暗主题跟随** — 自动跟随系统色彩模式
-- **大屏适配** — 折叠屏展开 / 平板全屏铺满，无平行视界空白
-- **纯 ArkTS 实现** — Blowfish 加密全程 ArkTS 运算，零原生依赖
+### 纯净界面设计
+遵循 HDS 设计规范，支持沉浸光感、模糊标题栏，自动跟随系统亮/暗主题；点击条目有按压反馈，操作跟手。
+
+---
+
+## 使用指引
+
+1. 相机开启蓝牙配对模式，手机开启蓝牙与定位功能，打开应用后按照页面指引完成相机的蓝牙搜索与配对
+2. 在连接页面打开对应相机的连接开关，应用会自动持续向相机下发 GPS 坐标信息。GPS 信息可以在相机「连接至智能设备」-「位置数据(智能设备)」中查看
+3. 相机拍摄照片时将自动记录获取到的位置信息到 RAW/JPG 的元数据，便于后期整理分类
 
 ---
 
@@ -51,7 +59,7 @@ HarmoNiLink 让 HarmonyOS 手机/平板替代 SnapBridge，向尼康 Z / D 系�
 
 | 平台 | 要求 |
 |------|------|
-| 手机 / 平板 | HarmonyOS NEXT（运行要求 API 23 / SDK 6.1.0 及以上；构建于 SDK 6.1.1 · API 24） |
+| 手机 / 平板 | HarmonyOS NEXT（运行要求 API 23 / SDK 6.1.0 及以上；构建于 SDK 26.0.0 · API 26） |
 | 相机 | 尼康 Z 系列（Z 6II、Z 7II、Z 8、Z 9、Z f 等）与 D 系列（D5600 等） |
 
 > ✅ Z 6II、D5600 真机验证通过；其他型号欢迎测试反馈。
@@ -112,7 +120,7 @@ entry/src/main/ets/
 | BLE | `@ohos.bluetooth.ble` · `@ohos.bluetooth.connection` |
 | 定位 | `@kit.LocationKit` |
 | 后台 | `backgroundTaskManager` — `BLUETOOTH_INTERACTION` · `LOCATION` |
-| 构建 | Hvigor 6.0.0 · arm64-v8a |
+| 构建 | hvigor-ohos-plugin 6.26.4 · arm64-v8a |
 
 ---
 
@@ -136,7 +144,7 @@ Service  0xDE00
 
 ## 构建
 
-环境：[DevEco Studio](https://developer.huawei.com/consumer/cn/deveco-studio/) 或 [Command Line Tools for HMOS](https://developer.huawei.com/consumer/en/download/command-line-tools-for-hmos)，SDK 6.1.1（API 24）。构建产物兼容 API 23 及以上设备。
+环境：[DevEco Studio](https://developer.huawei.com/consumer/cn/deveco-studio/) 或 [Command Line Tools for HMOS](https://developer.huawei.com/consumer/en/download/command-line-tools-for-hmos)，SDK **26.0.0（API 26）**，hvigor-ohos-plugin 6.26.4。构建产物兼容 API 23（SDK 6.1.0）及以上设备（compatibleSdkVersion 6.1.0(23)）。
 
 ```bash
 make hap     # 开发调试 — 未签名 .hap
@@ -150,6 +158,8 @@ make clean   # 清理构建产物
 产物 (`make sign` 后)：
 - `build/outputs/default/HarmoNiLink-default-signed.hap` — 签名模块包
 - `build/outputs/default/HarmoNiLink-default-signed.app` — 签名应用包
+
+> 需要使用 **API 24 工具链**构建？检出到 v2.4.2 标签即可：`git checkout v2.4.2`（最后一个以 SDK 6.1.1 · API 24 构建的版本，compatibleSdkVersion 相同）。
 
 ---
 
