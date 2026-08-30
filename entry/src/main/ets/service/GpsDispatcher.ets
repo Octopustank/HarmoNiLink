@@ -116,9 +116,21 @@ export class GpsDispatcher {
   private geoSubscribed: boolean = false;
   private locationCb: Callback<geoLocationManager.Location> | null = null;
   private locationErrorCb: Callback<geoLocationManager.LocationError> | null = null;
-  // Prime dedupe: refreshGps() can fire several times in the same tick
-  // (Ready event + toggle etc.) — one priming fix per burst is plenty.
-  private lastPrimeAttemptTs: number = 0;
+  // Timestamp of the last SUCCESSFUL GPS acquisition — the geoHealth-driven
+  // fallback fetch in sendTick() measures its freshness window against it.
+  private lastGeoOkTs: number = 0;
+  // Fallback sampling: the subscription's timeInterval fallback does NOT fire
+  // for a stationary device (measured: distanceInterval acts as an AND filter
+  // — drift below the threshold suppresses callbacks even after many
+  // intervals). The ticker therefore tops up one getCurrentLocation whenever
+  // the last successful fix is older than the mode's freshness window.
+  private lastGeoAttemptTs: number = 0;
+  // Written-coordinate dedupe across the two GEO channels (subscription event
+  // + fallback fetch can deliver the same physical fix): skip the BLE write
+  // when the position moved <~1.1m within 3s — UI/geoHealth still update.
+  private lastWrittenLat: number = 999;
+  private lastWrittenLon: number = 999;
+  private lastWrittenTs: number = 0;
 
   // Satellite subscription state — process-wide constant, independent of the
   // power mode (see AGENTS.md reasoning + verification gate).
@@ -143,6 +155,18 @@ export class GpsDispatcher {
       return;
     }
     this.start(1500);
+  }
+
+  /** geoHealth freshness window of the active mode (2x timeInterval). */
+  private maxGeoIntervalMs(): number {
+    return GPS_MODE_PRESETS[this.mode].maxGeoIntervalMs;
+  }
+
+  /** Single reporting funnel: keep lastGeoOkTs fresh on success, then hand
+   *  the outcome to the Hub (SlaHub broadcasts to every tracker). */
+  private reportGeo(ok: boolean): void {
+    if (ok) this.lastGeoOkTs = Date.now();
+    this.onGeoResult(ok);
   }
 
   start(intervalMs: number = 1500): void {
@@ -252,6 +276,7 @@ export class GpsDispatcher {
 
   /** GEO distribution: one fix fans out to every Ready camera. */
   private handleLocation(location: geoLocationManager.Location): void {
+    this.reportGeo(true); // acquisition-level fact — recorded even if no camera is Ready
     const targets = this.getReadyTargets();
     if (targets.length === 0) return;
     const lat = location.latitude;
@@ -270,47 +295,30 @@ export class GpsDispatcher {
       satellites: sats >= 0 ? sats : 6, timestamp: new Date()
     };
     hilog.info(0x0001, TAG, `[GPS] GEO event lat=${lat.toFixed(6)} lon=${lon.toFixed(6)} mode=${GPS_MODE_PRESETS[this.mode].label}`);
-    this.onGeoResult(true); // geoHealth ok — GEO write confirmations feed SLA separately
+    this.reportGeo(true); // geoHealth ok — GEO write confirmations feed SLA separately
+    // Cross-channel dedupe: the fallback fetch and the subscription can
+    // deliver the same physical fix — skip the BLE write when the position
+    // barely moved within 3s (UI/geoHealth above still update).
+    const nearDupe = Math.abs(lat - this.lastWrittenLat) < 1e-5
+      && Math.abs(lon - this.lastWrittenLon) < 1e-5
+      && (Date.now() - this.lastWrittenTs) < 3000;
+    this.lastWrittenLat = lat;
+    this.lastWrittenLon = lon;
+    this.lastWrittenTs = Date.now();
+    if (nearDupe) return;
     const payload = GeoPayloadGenerator.buildReal(gps);
     for (let i = 0; i < targets.length; i++) {
       this.staggeredWrite(targets[i], i, payload, false);
     }
   }
 
-  /** One-shot fix after a camera becomes Ready (pairing/reconnect): without
-   *  it the first GEO would wait for the next subscription event (10s
-   *  precise / 5min power-saving worst case). ALWAYS primes — the phone
-   *  having a recent fix says nothing about what THIS camera received —
-   *  deduped only against same-burst re-invocations (3s). getCurrentLocation
-   *  aggregates with the live subscription session, so the extra fetch is
-   *  nearly free (plan §3). */
-  primeOnce(): void {
-    const now = Date.now();
-    if (now - this.lastPrimeAttemptTs < 3000) {
-      hilog.debug(0x0001, TAG, '[GPS] prime skipped — same burst');
-      return;
-    }
-    this.lastPrimeAttemptTs = now;
-    hilog.info(0x0001, TAG, '[GPS] priming fix (FIRST_FIX, 10s timeout)');
-    try {
-      geoLocationManager.getCurrentLocation({
-        priority: geoLocationManager.LocationRequestPriority.FIRST_FIX,
-        timeoutMs: 10000
-      }).then((pos) => {
-        this.onGeoResult(true); // geoHealth ok even if the camera dropped meanwhile
-        if (this.getReadyTargets().length === 0) return;
-        this.handleLocation(pos);
-      }).catch(() => {
-        hilog.debug(0x0001, TAG, '[GPS] prime skip — no location');
-        this.signalGeoFailure();
-      });
-    } catch (e) {
-      hilog.debug(0x0001, TAG, '[GPS] prime exception');
-      this.signalGeoFailure();
-    }
-  }
-
-  /** TIME-only ticker tick: pure link keep-alive, zero location cost. */
+  /** Ticker tick: TIME keep-alive (zero location cost) + a geoHealth-driven
+   *  fallback fetch. The locationChange subscription is the main GEO channel
+   *  but its timeInterval fallback does not fire for a stationary device
+   *  (distanceInterval acts as an AND filter) — so whenever the last
+   *  successful fix is older than the mode's freshness window, this tick
+   *  fetches one getCurrentLocation. That implements plan §4's freshness
+   *  floor: at most ONE extra fetch per window (20s/120s/600s by mode). */
   private sendTick(): void {
     const ready = this.getReadyTargets();
     if (ready.length === 0) {
@@ -322,12 +330,39 @@ export class GpsDispatcher {
     for (let i = 0; i < ready.length; i++) {
       this.staggeredWrite(ready[i], i, timePayload, true);
     }
+    const now = Date.now();
+    if (now - this.lastGeoOkTs >= this.maxGeoIntervalMs()
+      && now - this.lastGeoAttemptTs >= this.maxGeoIntervalMs()) {
+      this.lastGeoAttemptTs = now;
+      this.fetchOnce();
+    }
+  }
+
+  /** One-shot fallback acquisition (FIRST_FIX, 10s): same distribution path
+   *  as the subscription callback; failure feeds geoHealth + SLA YELLOW. */
+  private fetchOnce(): void {
+    hilog.info(0x0001, TAG, '[GPS] fallback fetch (FIRST_FIX, 10s timeout)');
+    try {
+      geoLocationManager.getCurrentLocation({
+        priority: geoLocationManager.LocationRequestPriority.FIRST_FIX,
+        timeoutMs: 10000
+      }).then((pos) => {
+        this.onGeoResult(true);
+        this.handleLocation(pos);
+      }).catch(() => {
+        hilog.debug(0x0001, TAG, '[GPS] fallback skip — no location');
+        this.signalGeoFailure();
+      });
+    } catch (e) {
+      hilog.debug(0x0001, TAG, '[GPS] fallback exception');
+      this.signalGeoFailure();
+    }
   }
 
   /** GPS acquisition failure path: SLA YELLOW event per camera (existing
    *  semantics); geoHealth=fail rides the onGeoResult channel. */
   private signalGeoFailure(): void {
-    this.onGeoResult(false);
+    this.reportGeo(false);
     this.signalSlaYellow(this.getReadyTargets());
   }
 

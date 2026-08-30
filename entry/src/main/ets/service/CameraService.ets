@@ -514,10 +514,6 @@ export class CameraService {
       // re-subscribes; getReadySessions() is dynamic, so the running ticker
       // already fans out to the changed set on its next beat.
       this.gps.ensureRunning();
-      // Ready priming: a freshly (re)connected camera gets one immediate fix
-      // instead of waiting for the next locationChange event — throttled
-      // inside the dispatcher by the mode's freshness window.
-      this.gps.primeOnce();
     } else {
       this.gps.stop();
     }
