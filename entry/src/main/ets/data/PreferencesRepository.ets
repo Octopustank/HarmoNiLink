@@ -25,6 +25,7 @@ const KEY_HAS_DOWNLINK = 'has_downlink'; // a GEO write was acked at least once 
 const KEY_FIRST_DOWNLINK_TS = 'first_downlink_ts'; // first GEO-ack epoch-ms (48h age gate)
 const KEY_DECLINED_AT = 'declined_at'; // last 谢绝/dismiss epoch-ms (7-day cooldown gate)
 const KEY_PERMISSION_HINT_SHOWN = 'permission_hint_shown'; // location "always allow" hint shown (one-time)
+const KEY_GPS_MODE = 'gps_power_mode'; // GPS sampling mode: 0=precise (default), 1=power-saving
 // Suffix alphabet — no 0/O/1/I to avoid confusion when reading the name on the camera
 const SUFFIX_CHARS: string = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
 
@@ -49,6 +50,7 @@ export class PreferencesRepository {
   private firstDownlinkTsCache: number = 0; // first GEO-ack epoch-ms (0 = never)
   private declinedAtCache: number = 0; // last 谢绝/dismiss epoch-ms (0 = never)
   private permissionHintShownCache: boolean = false; // location "always allow" hint shown
+  private gpsModeCache: number = 0; // 0=precise, 1=power-saving
   // Serialized disk writes. The CACHE is the single source of truth: it is
   // updated synchronously on every mutation, and queued tasks merely snapshot
   // it to disk. This kills the old read-disk-modify-write race where a slow
@@ -105,6 +107,7 @@ export class PreferencesRepository {
       this.firstDownlinkTsCache = await this.store.get(KEY_FIRST_DOWNLINK_TS, 0) as number;
       this.declinedAtCache = await this.store.get(KEY_DECLINED_AT, 0) as number;
       this.permissionHintShownCache = await this.store.get(KEY_PERMISSION_HINT_SHOWN, false) as boolean;
+      this.gpsModeCache = await this.store.get(KEY_GPS_MODE, 0) as number;
       hilog.info(0x0001, TAG, `[CHECKPOINT] PreferencesRepository initialized (${this.cache.length} cameras)`);
       for (const c of this.cache) {
         hilog.info(0x0001, TAG,
@@ -207,6 +210,18 @@ export class PreferencesRepository {
   savePermissionHintShown(): void {
     this.permissionHintShownCache = true;
     this.putBool(KEY_PERMISSION_HINT_SHOWN, true);
+  }
+
+  // ==================== GPS 采样档位 ====================
+
+  /** 0=precise (default), 1=power-saving. Cache-backed sync read. */
+  getGpsModeSync(): number {
+    return this.gpsModeCache;
+  }
+
+  setGpsMode(mode: number): void {
+    this.gpsModeCache = mode;
+    this.putNumber(KEY_GPS_MODE, mode);
   }
 
   // ==================== Tab 持久化 ====================

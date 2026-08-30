@@ -31,7 +31,7 @@ import { CameraSession } from './CameraSession';
 import { ConnectionState, CameraStateEvent, StateListener, OperationOwner } from './ConnectionTypes';
 import { PermissionsGateway } from './PermissionsGateway';
 import { BackgroundTaskKeeper } from './BackgroundTaskKeeper';
-import { GpsDispatcher, GpsWriteTarget } from './GpsDispatcher';
+import { GpsDispatcher, GpsPowerMode, GpsWriteTarget } from './GpsDispatcher';
 import { SlaHub } from './SlaHub';
 import { GpsData } from './GpsData';
 
@@ -99,7 +99,8 @@ export class CameraService {
       (): boolean => this.hasKeepAliveIntent());
     this.gps = new GpsDispatcher(
       (): GpsWriteTarget[] => this.getReadySessions(),
-      (name: string): void => { this.slaOnSignal(name, SlaSev.YELLOW); });
+      (name: string): void => { this.slaOnSignal(name, SlaSev.YELLOW); },
+      (ok: boolean): void => { this.sla.onGeoResult(ok); });
     this.sla = new SlaHub(this.prefs);
   }
 
@@ -165,6 +166,7 @@ export class CameraService {
     // startTask() early-returns on every retry (deadlock).
     this.bgTask.registerListeners();
     this.prefs.init(ctx); // async init — loadSavedCamerasSync will return cache once ready
+    this.applyPersistedGpsMode(); // GEO rail follows the persisted power mode once prefs land
   }
 
   // ==================== 保持连接 (per-camera auto-reconnect, Phase 3) ====================
@@ -512,6 +514,10 @@ export class CameraService {
       // re-subscribes; getReadySessions() is dynamic, so the running ticker
       // already fans out to the changed set on its next beat.
       this.gps.ensureRunning();
+      // Ready priming: a freshly (re)connected camera gets one immediate fix
+      // instead of waiting for the next locationChange event — throttled
+      // inside the dispatcher by the mode's freshness window.
+      this.gps.primeOnce();
     } else {
       this.gps.stop();
     }
@@ -527,6 +533,33 @@ export class CameraService {
    * warrants the ContinuousTask (see reconcileBackgroundTask). */
   hasKeepAliveIntent(): boolean {
     return this.prefs.loadSavedCamerasSync().some((c: PairedCamera) => c.keepAlive);
+  }
+
+  // ==================== GPS 采样档位（精准优先 / 省电优先） ====================
+
+  /** 0=precise, 1=power-saving (persisted). */
+  getGpsModeSync(): number {
+    return this.prefs.getGpsModeSync();
+  }
+
+  /** Apply a new mode: persist, re-subscribe the GEO rail with the new
+   *  LocationRequest, and widen/narrow the SLA geoHealth freshness window. */
+  setGpsMode(mode: GpsPowerMode): void {
+    this.prefs.setGpsMode(mode);
+    this.gps.setMode(mode);
+    this.sla.setGeoIntervalMs(mode === GpsPowerMode.PRECISE ? 20000 : 600000);
+    hilog.info(0x0001, TAG, `[GPS] power mode applied: ${mode === GpsPowerMode.PRECISE ? 'precise' : 'power'}`);
+  }
+
+  /** Called once prefs are ready: apply the persisted mode (dispatcher
+   *  defaults to PRECISE until then). */
+  applyPersistedGpsMode(): void {
+    this.prefs.whenReady().then((): void => {
+      const mode = this.prefs.getGpsModeSync() === GpsPowerMode.POWER ? GpsPowerMode.POWER : GpsPowerMode.PRECISE;
+      this.gps.setMode(mode);
+      this.sla.setGeoIntervalMs(mode === GpsPowerMode.PRECISE ? 20000 : 600000);
+      hilog.info(0x0001, TAG, `[GPS] persisted power mode applied: ${mode === GpsPowerMode.PRECISE ? 'precise' : 'power'}`);
+    });
   }
 
   private reconcileBackgroundTask(): void {

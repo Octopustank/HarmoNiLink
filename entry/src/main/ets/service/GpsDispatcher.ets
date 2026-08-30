@@ -1,16 +1,34 @@
 /**
- * GpsDispatcher.ets — single GPS ticker fanned out to Ready sessions
+ * GpsDispatcher.ets — TIME keep-alive ticker + event-driven GEO distribution
  *
- * Extracted from CameraService. Owns the ONE location source and the ONE
- * ticker: alternating TIME/GEO writes, per-camera phase staggering, foreground
- * / background interval switching, and the GNSS satellite-count subscription.
+ * Two decoupled rails (2026-08-30 power redesign, plans/gps-power-strategy.md):
+ *   TIME rail — the ticker keeps its interval (foreground 1.5s / background
+ *   5s) and sends ONLY TIME payloads: zero-cost link keep-alive, decoupled
+ *   from GPS freshness.
+ *   GEO rail — event-driven: one `on('locationChange')` subscription whose
+ *   LocationRequest encodes the user-selected power mode
+ *   (precise: 10s / 5m; power-saving: 300s / 50m). The system fires on
+ *   movement or as an interval fallback — no polling, no GNSS wake-ups while
+ *   stationary (power-saving) — and pushes coordinates straight through the
+ *   existing staggeredWrite fan-out.
  *
- * The Hub supplies the current write targets (Ready sessions, as
- * GpsWriteTarget) and the SLA-yellow outlet (GPS is a shared device source —
- * a no-fix degrades every connected camera at once).
+ * The mode ("档位") is the only frequency control: no more implicit
+ * foreground/background GEO interval switching. It persists via
+ * PreferencesRepository and is applied here through setMode() (off+on
+ * re-subscription in one place).
+ *
+ * Ready priming: after pairing/reconnect the first coordinate would
+ * otherwise wait for the next subscription event (up to 10s precise /
+ * 10min power-saving), so primeOnce() fetches one getCurrentLocation —
+ * throttled by the mode's freshness window so repeated Ready events don't
+ * over-fetch.
+ *
+ * geoHealth: every acquisition outcome (success/failure) is reported to the
+ * Hub via onGeoResult for the SLA board's GREEN suppression logic.
  */
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { geoLocationManager } from '@kit.LocationKit';
+import { Callback } from '@ohos.base';
 import { GeoPayloadGenerator, GpsPosition } from '../ble/protocol/GeoPayloadGenerator';
 import { TimePayloadGenerator } from '../ble/protocol/TimePayloadGenerator';
 import { GpsData } from './GpsData';
@@ -18,9 +36,23 @@ import { GpsData } from './GpsData';
 const TAG = 'HarmoNiLink-GpsDispatcher';
 
 // GPS phase stagger: with N cameras, space each camera's write by this many ms
-// so they don't all grab the radio in the same millisecond (Phase 2 power/
-// scheduling strategy). 200ms is comfortably below the 1500ms foreground tick.
+// so they don't all grab the radio in the same millisecond. 200ms is
+// comfortably below the 1.5s foreground tick.
 const GPS_PHASE_STAGGER_MS = 200;
+
+// Mode presets: timeInterval is the fallback-freshness bound (seconds),
+// distanceInterval the movement trigger (meters). Values keep clear of the
+// GNSS 1s / network 20s minimum-interval clamps.
+const GEO_PRECISE_INTERVAL_S = 10;
+const GEO_PRECISE_DISTANCE_M = 5;
+const GEO_POWER_INTERVAL_S = 300;
+const GEO_POWER_DISTANCE_M = 50;
+
+/** GPS sampling power mode (persisted in PreferencesRepository). */
+export enum GpsPowerMode {
+  PRECISE = 0, // 10s fallback / 5m trigger — freshness first
+  POWER = 1,   // 300s fallback / 50m trigger — battery first
+}
 
 /** The slice of CameraSession the dispatcher writes to — an interface so this
  * module never imports the session class (no module cycle). */
@@ -31,28 +63,44 @@ export interface GpsWriteTarget {
 }
 
 export class GpsDispatcher {
-  // GPS shared state — UI reads gpsData directly; the single ticker below
+  // GPS shared state — UI reads gpsData directly; the GEO rail (and priming)
   // fans out to all Ready targets.
   readonly gpsData: GpsData = new GpsData();
   // Real GNSS satellite count fed by Location Kit's satelliteStatusChange.
   lastSatelliteCount: number = -1;
-  // Foreground/background flag — the ticker picks its interval from it.
+  // Foreground/background flag — the TIME ticker picks its interval from it.
   isForeground: boolean = true;
 
   private getReadyTargets: () => GpsWriteTarget[];
   private onSlaYellow: (name: string) => void;
+  private onGeoResult: (ok: boolean) => void;
 
+  private mode: GpsPowerMode = GpsPowerMode.PRECISE;
   private gpsTimer: number | null = null;
-  private gpsStep: number = 0; // 0=TIME, 1=GEO — alternating
+  // GEO rail: one locationChange subscription per dispatcher, built while any
+  // camera is Ready and torn down when the last one drops (an idling
+  // subscription would still wake GNSS every interval — pure waste).
+  private geoSubscribed: boolean = false;
+  private locationCb: Callback<geoLocationManager.Location> | null = null;
+  private locationErrorCb: Callback<geoLocationManager.LocationError> | null = null;
+  private lastGeoOkTs: number = 0;
 
-  // Satellite subscription state — single location source.
+  // Satellite subscription state — process-wide constant, independent of the
+  // power mode (see AGENTS.md reasoning + verification gate).
   private satelliteSubscribed: boolean = false;
   private satelliteStatusCb: ((status: geoLocationManager.SatelliteStatusInfo) => void) | null = null;
 
   constructor(getReadyTargets: () => GpsWriteTarget[],
-    onSlaYellow: (name: string) => void) {
+    onSlaYellow: (name: string) => void,
+    onGeoResult: (ok: boolean) => void) {
     this.getReadyTargets = getReadyTargets;
     this.onSlaYellow = onSlaYellow;
+    this.onGeoResult = onGeoResult;
+  }
+
+  /** geoHealth freshness window of the active mode (2x timeInterval). */
+  private maxGeoIntervalMs(): number {
+    return this.mode === GpsPowerMode.PRECISE ? 20000 : 600000;
   }
 
   /** Start the ticker only if it isn't already running (no satellite reset). */
@@ -63,99 +111,171 @@ export class GpsDispatcher {
 
   start(intervalMs: number = 1500): void {
     const interval = this.isForeground ? intervalMs : 5000;
-    hilog.info(0x0001, TAG, `[GPS] start: interval=${interval}ms fg=${this.isForeground}`);
+    hilog.info(0x0001, TAG, `[GPS] start: TIME interval=${interval}ms fg=${this.isForeground} mode=${this.mode}`);
     this.stop();
     // Idempotent retry: setContext() subscribes at startup, but location
     // permission may not be granted yet then (it's requested on first scan).
     // Re-attempt here (no-op if already subscribed).
     this.subscribeSatelliteStatus();
-    this.gpsStep = 0;
-    // Send TIME immediately, then alternate TIME/GEO
+    this.subscribeGeo();
+    // Immediate TIME — the link heartbeat starts right away.
     this.sendTick();
     this.gpsTimer = setInterval(() => { this.sendTick(); }, interval);
-    // NOTE: no ContinuousTask reconcile here — every caller of start() is
-    // followed by an explicit Hub-side reconcile. Reconciling from inside
-    // start() as well double-fires updateBackgroundRunning (observed as two
-    // identical calls in the same millisecond on-device).
   }
 
   stop(): void {
     if (this.gpsTimer !== null) {
       clearInterval(this.gpsTimer);
       this.gpsTimer = null;
-      hilog.info(0x0001, TAG, '[CHECKPOINT] GPS loop stopped');
+      hilog.info(0x0001, TAG, '[CHECKPOINT] GPS ticker stopped');
     }
+    this.unsubscribeGeo();
     // Satellite subscription is independent of the ticker — do NOT reset
     // lastSatelliteCount here, so the satellite count survives camera drops.
   }
 
+  /** Switch the GPS sampling mode: persist-free (caller persists), applies to
+   *  the live subscription via off+on in one place. A dropped event at the
+   *  switch instant is acceptable (next event follows the new cadence). */
+  setMode(mode: GpsPowerMode): void {
+    if (this.mode === mode) return;
+    hilog.info(0x0001, TAG, `[GPS] mode -> ${mode === GpsPowerMode.PRECISE ? 'precise' : 'power'}`);
+    this.mode = mode;
+    if (this.geoSubscribed) {
+      this.unsubscribeGeo();
+      this.subscribeGeo();
+    }
+  }
+
+  private geoRequest(): geoLocationManager.LocationRequest {
+    return this.mode === GpsPowerMode.PRECISE
+      ? { timeInterval: GEO_PRECISE_INTERVAL_S, distanceInterval: GEO_PRECISE_DISTANCE_M }
+      : { timeInterval: GEO_POWER_INTERVAL_S, distanceInterval: GEO_POWER_DISTANCE_M };
+  }
+
+  private subscribeGeo(): void {
+    if (this.geoSubscribed) return;
+    try {
+      this.locationCb = (location: geoLocationManager.Location) => {
+        this.handleLocation(location);
+      };
+      geoLocationManager.on('locationChange', this.geoRequest(), this.locationCb);
+      // Global error channel (switch off / permission denied / locate fail).
+      // Only consumed while OUR fix subscription is live — errors from other
+      // apps' sessions must not poison our geoHealth.
+      this.locationErrorCb = (err: geoLocationManager.LocationError) => {
+        if (!this.geoSubscribed) return;
+        hilog.warn(0x0001, TAG, `[GPS] locationError code=${err}`);
+        this.signalGeoFailure();
+      };
+      geoLocationManager.on('locationError', this.locationErrorCb);
+      this.geoSubscribed = true;
+      hilog.info(0x0001, TAG, `[GPS] locationChange subscribed (${this.mode === GpsPowerMode.PRECISE ? 'precise' : 'power'})`);
+    } catch (err) {
+      this.geoSubscribed = false;
+      this.locationCb = null;
+      hilog.warn(0x0001, TAG, `[GPS] locationChange subscribe failed: ${JSON.stringify(err)}`);
+    }
+  }
+
+  private unsubscribeGeo(): void {
+    if (!this.geoSubscribed) return;
+    try {
+      if (this.locationCb !== null) {
+        geoLocationManager.off('locationChange', this.locationCb);
+      }
+      if (this.locationErrorCb !== null) {
+        geoLocationManager.off('locationError', this.locationErrorCb);
+      }
+      hilog.info(0x0001, TAG, '[GPS] locationChange unsubscribed');
+    } catch (err) {
+      hilog.warn(0x0001, TAG, `[GPS] locationChange unsubscribe failed: ${JSON.stringify(err)}`);
+    }
+    this.geoSubscribed = false;
+    this.locationCb = null;
+    this.locationErrorCb = null;
+  }
+
+  /** GEO distribution: one fix fans out to every Ready camera. */
+  private handleLocation(location: geoLocationManager.Location): void {
+    const targets = this.getReadyTargets();
+    if (targets.length === 0) return;
+    const lat = location.latitude;
+    const lon = location.longitude;
+    const alt = Math.round(location.altitude);
+    const sats = this.lastSatelliteCount;
+    this.gpsData.hasFix = true;
+    this.gpsData.latitude = lat;
+    this.gpsData.longitude = lon;
+    this.gpsData.altitude = alt;
+    this.gpsData.satellites = sats;
+    this.gpsData.lastUpdateTime = new Date().toLocaleTimeString();
+
+    const gps: GpsPosition = {
+      latitude: lat, longitude: lon, altitude: alt,
+      satellites: sats >= 0 ? sats : 6, timestamp: new Date()
+    };
+    hilog.info(0x0001, TAG, `[GPS] GEO event lat=${lat.toFixed(6)} lon=${lon.toFixed(6)} mode=${this.mode}`);
+    this.lastGeoOkTs = Date.now();
+    this.onGeoResult(true); // geoHealth ok — GEO write confirmations feed SLA separately
+    const payload = GeoPayloadGenerator.buildReal(gps);
+    for (let i = 0; i < targets.length; i++) {
+      this.staggeredWrite(targets[i], i, payload, false);
+    }
+  }
+
+  /** One-shot fix after a camera becomes Ready (pairing/reconnect): without
+   *  it the first GEO would wait for the next subscription event (10s
+   *  precise / 10min power-saving). Throttled by the mode's freshness window
+   *  so repeated Ready events never over-fetch. */
+  primeOnce(): void {
+    if (Date.now() - this.lastGeoOkTs < this.maxGeoIntervalMs()) {
+      hilog.debug(0x0001, TAG, '[GPS] prime skipped — last fix still fresh');
+      return;
+    }
+    hilog.info(0x0001, TAG, '[GPS] priming fix (FIRST_FIX, 10s timeout)');
+    try {
+      geoLocationManager.getCurrentLocation({
+        priority: geoLocationManager.LocationRequestPriority.FIRST_FIX,
+        timeoutMs: 10000
+      }).then((pos) => {
+        this.onGeoResult(true); // geoHealth ok even if the camera dropped meanwhile
+        if (this.getReadyTargets().length === 0) return;
+        this.handleLocation(pos);
+      }).catch(() => {
+        hilog.debug(0x0001, TAG, '[GPS] prime skip — no location');
+        this.signalGeoFailure();
+      });
+    } catch (e) {
+      hilog.debug(0x0001, TAG, '[GPS] prime exception');
+      this.signalGeoFailure();
+    }
+  }
+
+  /** TIME-only ticker tick: pure link keep-alive, zero location cost. */
   private sendTick(): void {
     const ready = this.getReadyTargets();
     if (ready.length === 0) {
       this.stop();
       return;
     }
-    if (this.gpsStep === 0) {
-      const timePayload = TimePayloadGenerator.build();
-      hilog.info(0x0001, TAG, `[GPS] TIME ${timePayload.length}B to ${ready.length} camera(s)`);
-      for (let i = 0; i < ready.length; i++) {
-        this.staggeredWrite(ready[i], i, timePayload, true);
-      }
-      this.gpsStep = 1;
-    } else {
-      this.gpsStep = 0;
-      // Check if location service is enabled
-      try {
-        const locEnabled = geoLocationManager.isLocationEnabled?.() ?? true;
-        if (!locEnabled) {
-          hilog.warn(0x0001, TAG, '[GPS] Location service disabled, skip GEO');
-          this.signalSlaYellow(ready); // SLA YELLOW: location off
-          return;
-        }
-      } catch (e) { /* proceed anyway */ }
-
-      try {
-        geoLocationManager.getCurrentLocation({
-          priority: geoLocationManager.LocationRequestPriority.FIRST_FIX,
-          timeoutMs: 5000
-        }).then((pos) => {
-          const stillReady = this.getReadyTargets();
-          if (stillReady.length === 0) return;
-          // Update shared GPS state
-          const lat = pos.latitude;
-          const lon = pos.longitude;
-          const alt = Math.round(pos.altitude);
-          const sats = this.lastSatelliteCount;
-          this.gpsData.hasFix = true;
-          this.gpsData.latitude = lat;
-          this.gpsData.longitude = lon;
-          this.gpsData.altitude = alt;
-          this.gpsData.satellites = sats;
-          this.gpsData.lastUpdateTime = new Date().toLocaleTimeString();
-
-          const gps: GpsPosition = {
-            latitude: lat, longitude: lon, altitude: alt,
-            satellites: sats >= 0 ? sats : 6, timestamp: new Date()
-          };
-          hilog.info(0x0001, TAG, `[GPS] GEO real lat=${lat.toFixed(6)} lon=${lon.toFixed(6)}`);
-          const payload = GeoPayloadGenerator.buildReal(gps);
-          for (let i = 0; i < stillReady.length; i++) {
-            this.staggeredWrite(stillReady[i], i, payload, false);
-          }
-        }).catch(() => {
-          hilog.debug(0x0001, TAG, '[GPS] GEO skip — no location');
-          this.signalSlaYellow(this.getReadyTargets()); // SLA YELLOW: GPS no-fix
-        });
-      } catch (e) {
-        hilog.debug(0x0001, TAG, '[GPS] GEO skip — exception');
-        this.signalSlaYellow(this.getReadyTargets()); // SLA YELLOW: GPS no-fix (sync throw)
-      }
+    const timePayload = TimePayloadGenerator.build();
+    hilog.info(0x0001, TAG, `[GPS] TIME ${timePayload.length}B to ${ready.length} camera(s)`);
+    for (let i = 0; i < ready.length; i++) {
+      this.staggeredWrite(ready[i], i, timePayload, true);
     }
   }
 
+  /** GPS acquisition failure path: SLA YELLOW event per camera (existing
+   *  semantics); geoHealth=fail rides the onGeoResult channel. */
+  private signalGeoFailure(): void {
+    this.onGeoResult(false);
+    this.signalSlaYellow(this.getReadyTargets());
+  }
+
   /** Fan a YELLOW SLA signal (GPS no-fix / location-off) out to the given
-   * targets — GPS is a shared device source, so a no-fix degrades every
-   * connected camera at once. Same-sev repeats are no-ops in the tracker. */
+   *  targets — GPS is a shared device source, so a no-fix degrades every
+   *  connected camera at once. Same-sev repeats are no-ops in the tracker. */
   private signalSlaYellow(targets: GpsWriteTarget[]): void {
     for (let i = 0; i < targets.length; i++) {
       const name = targets[i].getCameraName();
@@ -187,6 +307,14 @@ export class GpsDispatcher {
   subscribeSatelliteStatus(): void {
     if (this.satelliteSubscribed) return;
     try {
+      // isGnssServiceSupported is @since 26: guard with optional call so
+      // devices on older SDK levels keep the legacy try/catch path.
+      const gnssSupported = (geoLocationManager.isGnssServiceSupported as
+        (() => boolean) | undefined)?.() ?? true;
+      if (!gnssSupported) {
+        hilog.info(0x0001, TAG, '[GPS] GNSS service unsupported — satellite count stays "--"');
+        return;
+      }
       this.satelliteStatusCb = (status: geoLocationManager.SatelliteStatusInfo) => {
         if (status.satellitesNumber >= 0) {
           this.lastSatelliteCount = status.satellitesNumber;

@@ -19,6 +19,7 @@ import { bundleManager, common } from '@kit.AbilityKit';
 import { SymbolGlyphModifier } from '@kit.ArkUI';
 import { cameraService } from '../service/CameraService';
 import { ConnectionState, CameraStateEvent } from '../service/ConnectionTypes';
+import { GpsPowerMode } from '../service/GpsDispatcher';
 import { RatingPrompt } from '../service/RatingPrompt';
 import { PairedCamera } from '../ble/protocol/NikonPairingEngine';
 import { SlaCell } from '../data/SlaTracker';
@@ -54,6 +55,7 @@ export struct ConnectionPage {
   @State gpsSats: string = '--';
   @State gpsHasFix: boolean = false;
   @State gpsTime: string = '--';
+  @State gpsMode: number = GpsPowerMode.PRECISE; // sampling mode mirror (persisted)
   @State appVersion: string = '';
   @State titleSub: string = '';
   @State owner: string = 'none'; // synced from cameraService — drives @State re-render
@@ -100,6 +102,11 @@ export struct ConnectionPage {
       }
     });
     this.gpsTimer = setInterval(() => { this.syncGps(); }, 1000);
+    // GPS sampling mode mirror — re-read once prefs have certainly landed.
+    this.gpsMode = cameraService.getGpsModeSync();
+    cameraService.whenPrefsReady().then((): void => {
+      this.gpsMode = cameraService.getGpsModeSync();
+    });
     // prefs init is async — the first loadSavedCameras() may see an empty
     // cache. Re-read once it has certainly settled (also triggers reconcile).
     setTimeout(() => { this.loadSavedCameras(); }, 1500);
@@ -119,6 +126,23 @@ export struct ConnectionPage {
 
   private getCameraStatus(name: string): CameraStatus | undefined {
     return this.cameraStatuses.find((c) => c.name === name);
+  }
+
+  /** GPS sampling mode switch (GPS card footer). Applies + persists via the
+   *  service; the dispatcher re-subscribes and the SLA freshness window
+   *  follows. */
+  private onGpsModeChange(mode: GpsPowerMode): void {
+    if (mode === this.gpsMode) return;
+    cameraService.setGpsMode(mode);
+    this.gpsMode = mode;
+    try {
+      const msg = mode === GpsPowerMode.POWER
+        ? '已切换为省电优先：静止时坐标最长 5 分钟更新一次'
+        : '已切换为精准优先：坐标约 10 秒兜底更新';
+      this.getUIContext().getPromptAction().showToast({ message: msg, duration: 2500 });
+    } catch (e) {
+      hilog.warn(0x0001, TAG, `mode toast err: ${(e as Error).message}`);
+    }
   }
 
   private syncGps(): void {
@@ -445,6 +469,27 @@ export struct ConnectionPage {
       GpsRow({ label: '海拔', value: this.gpsAlt })
       GpsRow({ label: '卫星数', value: this.gpsSats })
       GpsRow({ label: '更新时间', value: this.gpsTime })
+      Divider().strokeWidth(0.5).color($r('app.color.divider')).margin({ top: 8, bottom: 8 })
+      Row() {
+        Text('定位模式').fontSize(13).fontColor($r('app.color.text_secondary')).width(64)
+        Blank()
+        Row({ space: 8 }) {
+          Text('精准优先')
+            .fontSize(12)
+            .fontColor(this.gpsMode === GpsPowerMode.PRECISE ? $r('app.color.card_background') : $r('app.color.text_primary'))
+            .backgroundColor(this.gpsMode === GpsPowerMode.PRECISE ? $r('app.color.brand') : $r('app.color.card_background'))
+            .border({ width: 0.5, color: $r('app.color.divider') })
+            .borderRadius(12).padding({ left: 10, right: 10, top: 4, bottom: 4 })
+            .onClick(() => { this.onGpsModeChange(GpsPowerMode.PRECISE); })
+          Text('省电优先')
+            .fontSize(12)
+            .fontColor(this.gpsMode === GpsPowerMode.POWER ? $r('app.color.card_background') : $r('app.color.text_primary'))
+            .backgroundColor(this.gpsMode === GpsPowerMode.POWER ? $r('app.color.brand') : $r('app.color.card_background'))
+            .border({ width: 0.5, color: $r('app.color.divider') })
+            .borderRadius(12).padding({ left: 10, right: 10, top: 4, bottom: 4 })
+            .onClick(() => { this.onGpsModeChange(GpsPowerMode.POWER); })
+        }
+      }.width('100%')
     }
     .width('100%').alignItems(HorizontalAlign.Start)
     .padding({ left: 16, right: 16, top: 12, bottom: 16 })

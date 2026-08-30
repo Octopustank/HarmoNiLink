@@ -17,6 +17,11 @@ const TAG = 'HarmoNiLink-SlaHub';
 
 export class SlaHub {
   private prefs: PreferencesRepository;
+  // geoHealth freshness window of the active GPS power mode (precise 20s /
+  // power 10min = 2x the locationChange timeInterval). Injected into every
+  // tracker (existing and future) so decideSev can suppress GREEN while the
+  // most recent GPS acquisition failed.
+  private maxGeoIntervalMs: number = 20000;
   // Per-camera SLA trackers — keyed by camera name, lazily created on first
   // signal, dropped on removeCamera.
   private trackers: Map<string, SlaTracker> = new Map();
@@ -35,6 +40,7 @@ export class SlaHub {
     let t = this.trackers.get(name);
     if (!t) {
       t = new SlaTracker((json: string): void => { this.prefs.saveSla(name, json); });
+      t.setGeoIntervalMs(this.maxGeoIntervalMs);
       this.trackers.set(name, t);
       // Track the async persisted load so the first info-sheet open can await
       // it (via getTimelineLoaded) instead of rendering an empty bar because
@@ -71,6 +77,21 @@ export class SlaHub {
   /** YELLOW/RED signal — an anomaly/transition for this camera. */
   onSignal(name: string, sev: number): void {
     this.getOrCreate(name).onSignal(Date.now(), sev);
+  }
+
+  /** Global GPS-acquisition outcome (dispatcher level): broadcast to every
+   *  known tracker's geoHealth. Cameras without a tracker yet are ignored —
+   *  "no record" decides GREEN anyway, so lazily creating one is pointless. */
+  onGeoResult(ok: boolean): void {
+    const now = Date.now();
+    this.trackers.forEach((t: SlaTracker): void => { t.onGeoResult(ok, now); });
+  }
+
+  /** Freshness window of the active GPS power mode (precise 20000ms /
+   *  power 600000ms). Applies to future trackers too. */
+  setGeoIntervalMs(ms: number): void {
+    this.maxGeoIntervalMs = ms;
+    this.trackers.forEach((t: SlaTracker): void => { t.setGeoIntervalMs(ms); });
   }
 
   /** Materialize a camera's timeline for the UI. Frozen snapshot — the caller

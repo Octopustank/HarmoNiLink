@@ -90,6 +90,13 @@ interface RingSlot {
 interface SlaSnapshot {
   lastSeen: number;
   slots: RingSlot[];
+  /** Global GPS-acquisition health (dispatcher-level, shared by all cameras):
+   *  timestamp + ok flag of the most recent getCurrentLocation/locationChange
+   *  outcome. Persisted opportunistically (rides other snapshots) — a stale
+   *  value past the mode's freshness window is treated as "no information",
+   *  which is the same as the healthy default. */
+  geoLastTs?: number;
+  geoLastOk?: boolean;
 }
 
 // Flag bits.
@@ -106,6 +113,13 @@ export class SlaTracker {
   // Persist-coalescing buckets (init -1 → first signal always persists).
   private lastDownlinkBucket: number = -1;
   private lastSignalBucket: number = -1;
+  // geoHealth: most recent GPS-acquisition outcome (dispatcher level). ok=true
+  // initially — "no acquisition / no record" is the healthy default.
+  private geoLastOk: boolean = true;
+  private geoLastTs: number = 0;
+  // Freshness window of geoHealth, driven by the active power mode
+  // (precise: 2x timeInterval=20s; power: 2x timeInterval=10min).
+  private maxGeoIntervalMs: number = 20000;
   // Serialized-write sink (injected by the owner; prefs saveQueue in practice).
   private persist: (json: string) => void;
 
@@ -138,6 +152,8 @@ export class SlaTracker {
     try {
       const snap = JSON.parse(json) as SlaSnapshot;
       this.lastSeen = Math.max(this.lastSeen, snap.lastSeen || 0);
+      if (typeof snap.geoLastTs === 'number') this.geoLastTs = snap.geoLastTs;
+      if (typeof snap.geoLastOk === 'boolean') this.geoLastOk = snap.geoLastOk;
       const raw = Array.isArray(snap.slots) ? snap.slots : [];
       for (let i = 0; i < raw.length && i < CELL_COUNT; i++) {
         const r = raw[i];
@@ -204,6 +220,20 @@ export class SlaTracker {
     }
   }
 
+  /** Apply the freshness window of the active GPS power mode. */
+  setGeoIntervalMs(ms: number): void {
+    this.maxGeoIntervalMs = ms;
+  }
+
+  /** Record a GPS-acquisition outcome from the dispatcher (global, shared by
+   *  every camera). No dedicated persist trigger: the value rides the next
+   *  snapshot flushed by any other event — stale-after-kill degrades to "no
+   *  information", which decides GREEN anyway. */
+  onGeoResult(ok: boolean, now: number): void {
+    this.geoLastOk = ok;
+    this.geoLastTs = now;
+  }
+
   /** Unconditional snapshot persist — onAppBackground / onDestroy. */
   flush(): void {
     this.persist(this.snapshotJson());
@@ -220,6 +250,10 @@ export class SlaTracker {
   materialize(now: number): SlaCell[] {
     const nowBucket = this.bucketOf(now);
     const firstBucket = nowBucket - (CELL_COUNT - 1);
+    // geoHealth suppression: the most recent GPS acquisition FAILED and that
+    // failure is still inside the mode's freshness window. Any older or absent
+    // outcome is treated as healthy ("no acquisition is not a problem").
+    const geoSuppress = !this.geoLastOk && (now - this.geoLastTs) <= this.maxGeoIntervalMs;
     const cells: SlaCell[] = [];
     for (let i = 0; i < CELL_COUNT; i++) {
       const bucket = firstBucket + i;
@@ -229,7 +263,7 @@ export class SlaTracker {
       cells.push({
         startTs: st,
         endTs: Math.min(rawEnd, now), // clamp the in-progress cell to now
-        sev: this.decideSev(slot.bucket === bucket ? slot.flags : 0),
+        sev: this.decideSev(slot.bucket === bucket ? slot.flags : 0, geoSuppress),
       });
     }
     return cells;
@@ -244,7 +278,7 @@ export class SlaTracker {
    *            or 只有单一数据（TIME-only / GEO-only）
    *   RED    : no downlink ∧ red — 彻底断开，一次都没发出
    *   GREY   : no downlink ∧ no red — 未开启 / 被杀 / 无采样 */
-  private decideSev(flags: number): number {
+  private decideSev(flags: number, geoSuppress: boolean): number {
     const hasGeo = (flags & F_GEO) !== 0;
     const hasTime = (flags & F_TIME) !== 0;
     const hasRed = (flags & F_RED) !== 0;
@@ -256,8 +290,8 @@ export class SlaTracker {
     if (hasRed && hasYellow) return SlaSev.ORANGE;   // 两个问题并存
     if (hasRed) return SlaSev.YELLOW;                // 断连但成功下发
     if (hasYellow) return SlaSev.ORANGE;             // GPS 数据问题
-    if (hasGeo && hasTime) return SlaSev.GREEN;      // 完整配对健康
-    return SlaSev.ORANGE;                            // 只有单一数据（数据不完整）
+    if (!geoSuppress) return SlaSev.GREEN;           // 下发正常且定位获取无忧（含低频档 TIME-only 桶）
+    return SlaSev.ORANGE;                            // 定位获取时效内失败（geoHealth=fail）
   }
 
   // ==================== Internals ====================
@@ -285,6 +319,9 @@ export class SlaTracker {
   private snapshotJson(): string {
     const copy: RingSlot[] = [];
     for (const s of this.slots) copy.push({ bucket: s.bucket, flags: s.flags });
-    return JSON.stringify({ lastSeen: this.lastSeen, slots: copy } as SlaSnapshot);
+    return JSON.stringify({
+      lastSeen: this.lastSeen, slots: copy,
+      geoLastTs: this.geoLastTs, geoLastOk: this.geoLastOk,
+    } as SlaSnapshot);
   }
 }
