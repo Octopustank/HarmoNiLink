@@ -57,6 +57,9 @@ hap: clean-old-artifacts
 app: clean-old-artifacts
 	$(HVIGORW) assembleApp -p product=default
 
+# Requires signing material: cp .env.example .env and fill in the values
+# (keystore password etc.); certificates live under signing/ (gitignored).
+# See .env.example for the exact variables sign.sh consumes.
 sign: clean-old-artifacts
 	@bash sign.sh
 

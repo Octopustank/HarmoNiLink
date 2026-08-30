@@ -27,7 +27,6 @@ Thumbs.db
 signing/
 private.key
 build/
-sign.sh
 .cxx/
 .env
 AGENTS.md
