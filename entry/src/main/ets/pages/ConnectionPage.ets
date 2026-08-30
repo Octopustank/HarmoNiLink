@@ -31,6 +31,11 @@ import { CommentDialog } from '../components/CommentDialog';
 
 const TAG = 'HarmoNiLink-ConnectionPage';
 
+// Select dropdown options derived from the mode preset table (single source).
+const GPS_MODE_OPTIONS: SelectOption[] = GPS_MODE_PRESETS.map((p: GpsModePreset): SelectOption => {
+  return { value: p.label };
+});
+
 /** Per-camera live state, updated from CameraStateEvent. */
 interface CameraStatus {
   name: string;
@@ -55,7 +60,7 @@ export struct ConnectionPage {
   @State gpsSats: string = '--';
   @State gpsHasFix: boolean = false;
   @State gpsTime: string = '--';
-  @State gpsMode: number = GpsMode.MOVING; // sampling mode mirror (persisted)
+  @State gpsMode: number = GpsMode.REALTIME; // sampling mode mirror (persisted)
   @State appVersion: string = '';
   @State titleSub: string = '';
   @State owner: string = 'none'; // synced from cameraService — drives @State re-render
@@ -128,16 +133,22 @@ export struct ConnectionPage {
     return this.cameraStatuses.find((c) => c.name === name);
   }
 
-  /** One selectable chip of the GPS sampling mode row (page-internal: the
-   *  card repaints per second — see the cross-file freeze note on gpsCard). */
-  @Builder gpsModeChip(mode: number, label: string) {
-    Text(label)
-      .fontSize(12)
-      .fontColor(this.gpsMode === mode ? $r('app.color.card_background') : $r('app.color.text_primary'))
-      .backgroundColor(this.gpsMode === mode ? $r('app.color.brand') : $r('app.color.card_background'))
-      .border({ width: 0.5, color: $r('app.color.divider') })
-      .borderRadius(12).padding({ left: 10, right: 10, top: 4, bottom: 4 })
-      .onClick(() => { this.onGpsModeChange(mode); })
+  /** 定位模式说明 dialog — the Select shows only names; the trade-offs
+   *  (accuracy vs battery per mode) live here. */
+  private showModeInfo(): void {
+    this.getUIContext().getPromptAction().showDialog({
+      title: '定位模式说明',
+      message: [
+        '实时：GNSS 持续定位，坐标约 10 秒更新，轨迹最连续；耗电最高，适合步行/车载连续拍摄。',
+        '',
+        '智能省电：挪动约 20 米立即更新，静止时约 2 分钟兜底；适合定点驻拍兼顾走动。',
+        '',
+        '粗略省电：网络定位，约 5 分钟更新，精度约百米；最省电，适合只需大致位置记录。'
+      ].join('\n'),
+      buttons: [{ text: '知道了', color: $r('app.color.brand') }]
+    }).catch((e: Error) => {
+      hilog.warn(0x0001, TAG, `mode info dialog err: ${e.message}`);
+    });
   }
 
   /** GPS sampling mode switch (GPS card footer). Applies + persists via the
@@ -484,11 +495,21 @@ export struct ConnectionPage {
       Row() {
         Text('定位模式').fontSize(13).fontColor($r('app.color.text_secondary')).width(64)
         Blank()
-        Row({ space: 6 }) {
-          ForEach(GPS_MODE_PRESETS, (preset: GpsModePreset, i: number) => {
-            this.gpsModeChip(i, preset.label)
-          }, (preset: GpsModePreset) => preset.label)
-        }
+        Select(GPS_MODE_OPTIONS)
+          .selected(this.gpsMode)
+          .value(GPS_MODE_PRESETS[this.gpsMode].label)
+          .font({ size: 13 })
+          .fontColor($r('app.color.text_primary'))
+          .onSelect((index: number) => {
+            if (index >= 0 && index < GPS_MODE_PRESETS.length) {
+              this.onGpsModeChange(index);
+            }
+          })
+        SymbolGlyph($r('sys.symbol.info_circle'))
+          .fontSize(16)
+          .fontColor([$r('app.color.text_secondary')])
+          .margin({ left: 8 })
+          .onClick(() => { this.showModeInfo(); })
       }.width('100%')
     }
     .width('100%').alignItems(HorizontalAlign.Start)

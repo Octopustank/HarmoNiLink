@@ -61,29 +61,29 @@ export interface GpsModePreset {
 
 /** GPS sampling mode (persisted in PreferencesRepository). */
 export enum GpsMode {
-  MOVING = 0,     // 10s / 5m, FIRST_FIX — continuous track while moving
-  STATIONARY = 1, // 60s / 20m, FIRST_FIX — fresh + drift-tolerant at a spot
-  RELAXED = 2,    // 300s / 100m, LOW_POWER — ballpark location, most savings
+  REALTIME = 0, // FIRST_FIX, 10s / distance 0 — always the latest fix (原版手感)
+  SMART = 1,    // FIRST_FIX, 120s / 20m — movement triggers, stationary fallback
+  RELAXED = 2,  // LOW_POWER, 300s / 100m — network fixes, ballpark, most savings
 }
 
 export const GPS_MODE_PRESETS: GpsModePreset[] = [
   {
     priority: geoLocationManager.LocationRequestPriority.FIRST_FIX,
-    timeIntervalS: 10, distanceM: 5, maxGeoIntervalMs: 20000,
-    label: '移动拍摄',
-    toast: '已切换为移动拍摄：坐标约 10 秒兜底更新，适合连续拍摄',
+    timeIntervalS: 10, distanceM: 0, maxGeoIntervalMs: 10000,
+    label: '实时',
+    toast: '已切换为实时：GNSS 常开，坐标约 10 秒更新（最耗电）',
   },
   {
     priority: geoLocationManager.LocationRequestPriority.FIRST_FIX,
-    timeIntervalS: 60, distanceM: 20, maxGeoIntervalMs: 120000,
-    label: '定点拍摄',
-    toast: '已切换为定点拍摄：驻点时坐标每分钟更新，挪动约 20 米即触发',
+    timeIntervalS: 120, distanceM: 20, maxGeoIntervalMs: 120000,
+    label: '智能省电',
+    toast: '已切换为智能省电：挪动约 20 米立即更新，静止约 2 分钟兜底',
   },
   {
     priority: geoLocationManager.LocationRequestPriority.LOW_POWER,
     timeIntervalS: 300, distanceM: 100, maxGeoIntervalMs: 600000,
-    label: '宽松记录',
-    toast: '已切换为宽松记录：仅记录大致位置，最省电',
+    label: '粗略省电',
+    toast: '已切换为粗略省电：网络定位约 5 分钟一次，仅记录大致位置',
   },
 ];
 
@@ -108,7 +108,7 @@ export class GpsDispatcher {
   private onSlaYellow: (name: string) => void;
   private onGeoResult: (ok: boolean) => void;
 
-  private mode: GpsMode = GpsMode.MOVING;
+  private mode: GpsMode = GpsMode.REALTIME;
   private gpsTimer: number | null = null;
   // GEO rail: one locationChange subscription per dispatcher, built while any
   // camera is Ready and torn down when the last one drops (an idling
@@ -338,13 +338,16 @@ export class GpsDispatcher {
     }
   }
 
-  /** One-shot fallback acquisition (FIRST_FIX, 10s): same distribution path
+  /** One-shot fallback acquisition (10s): priority follows the active mode
+   *  preset — a RELAXED (LOW_POWER) subscription must not be "topped up" by
+   *  a FIRST_FIX fetch that would wake GNSS anyway. Same distribution path
    *  as the subscription callback; failure feeds geoHealth + SLA YELLOW. */
   private fetchOnce(): void {
-    hilog.info(0x0001, TAG, '[GPS] fallback fetch (FIRST_FIX, 10s timeout)');
+    const preset = GPS_MODE_PRESETS[this.mode];
+    hilog.info(0x0001, TAG, `[GPS] fallback fetch (${preset.label}, 10s timeout)`);
     try {
       geoLocationManager.getCurrentLocation({
-        priority: geoLocationManager.LocationRequestPriority.FIRST_FIX,
+        priority: preset.priority,
         timeoutMs: 10000
       }).then((pos) => {
         this.onGeoResult(true);
