@@ -44,6 +44,18 @@ import { SlaSev } from '../data/SlaTracker';
 const TAG = 'HarmoNiLink-CameraService';
 const DEFAULT_CONTROLLER_NAME: string = 'HarmoNiLink';
 
+// Write UUID prefixes used for failure classification (BleError messages
+// embed the full UUID, e.g. "Write 00002007-...: Inner error").
+const UUID_PREFIX_GEO = 'Write 00002007';
+const UUID_PREFIX_PAIR = 'Write 00002000';
+const UUID_PREFIX_ID = 'Write 00002002';
+// Generic "operation failed" the camera returns when it is awake but the
+// GPS/pairing session is not ready yet — a TRANSIENT rejection, not a dead
+// link (observed on every reconnect while the camera side settles).
+const ERR_CAMERA_NOT_READY = 2900099;
+// One delayed retry for camera-not-ready write rejections (1.5s later).
+const CAMERA_NOT_READY_RETRY_MS = 1500;
+
 /**
  * A single camera's connection lifecycle.
  *
@@ -104,6 +116,12 @@ export class CameraSession implements GpsWriteTarget, ClassicBondingHost {
   // failure episode (latched; setState(Ready) re-arms it). Replaces the old
   // 60s timestamp throttle, which still let dialogs stack every minute.
   private pairTargetHintLatched: boolean = false;
+  // Camera-not-ready (2900099) retry: cache of the last PAIR/ID payload so a
+  // single delayed re-write can recover a handshake the camera woke too
+  // slowly for. Cleared on disconnect and after the retry fires.
+  private pendingPairRetryUuid: string = '';
+  private pendingPairRetryPayload: Uint8Array | null = null;
+  private pairRetryTimerId: number | null = null;
 
   constructor(hub: CameraService) {
     this.hub = hub;
@@ -311,6 +329,9 @@ export class CameraSession implements GpsWriteTarget, ClassicBondingHost {
   disconnect(): void {
     hilog.info(0x0001, TAG, `${this.slog()}disconnect() called`);
     this.clearConnectTimeout();
+    if (this.pairRetryTimerId !== null) { clearTimeout(this.pairRetryTimerId); this.pairRetryTimerId = null; }
+    this.pendingPairRetryUuid = '';
+    this.pendingPairRetryPayload = null;
     this.clearScanFallbackTimer();
     // Release ownership ONLY if this session is the pairing holder: connection
     // sessions never take the mutex (many connect in parallel), so releasing
@@ -471,6 +492,42 @@ export class CameraSession implements GpsWriteTarget, ClassicBondingHost {
       this.hub.slaOnSignal(this.cameraName, SlaSev.RED);
       this.handleLinkLost();
     } else if (event instanceof BleError) {
+      // === Transient camera-not-ready rejection (2900099) ===
+      // The camera is awake but its GPS/pairing session hasn't settled; the
+      // link itself is alive (TIME keep-alive proves it). One delayed retry
+      // of the SAME payload recovers the handshake; a second failure falls
+      // through to the normal link-death path.
+      if (event.code === ERR_CAMERA_NOT_READY
+        && (event.message.startsWith(UUID_PREFIX_PAIR) || event.message.startsWith(UUID_PREFIX_ID))) {
+        if (this.pairRetryTimerId === null && this.pendingPairRetryPayload !== null) {
+          hilog.warn(0x0001, TAG,
+            `${this.slog()}write rejected 2900099 (camera not ready) — retrying in ${CAMERA_NOT_READY_RETRY_MS}ms`);
+          this.pairRetryTimerId = setTimeout(() => {
+            this.pairRetryTimerId = null;
+            const uuid = this.pendingPairRetryUuid;
+            const payload = this.pendingPairRetryPayload;
+            this.pendingPairRetryUuid = '';
+            this.pendingPairRetryPayload = null;
+            if (uuid === '' || payload === null) return;
+            if (uuid.startsWith(UUID_PREFIX_ID)) {
+              this.bleClient.writeId(payload);
+            } else {
+              this.bleClient.writePairMessage(payload);
+            }
+          }, CAMERA_NOT_READY_RETRY_MS);
+        }
+        return; // never a link-death signal
+      }
+      // === GEO write rejection is NOT a dead link ===
+      // The camera refuses 0x2007 while its GPS session is still waking (the
+      // same 2900099-class transient; TIME keep-alive on the same link proves
+      // the link is alive). Degrade to a SLA YELLOW (data-quality problem),
+      // keep the link, and let the next channel event re-attempt.
+      if (event.message.startsWith(UUID_PREFIX_GEO)) {
+        hilog.warn(0x0001, TAG, `${this.slog()}GEO write rejected — camera GPS session not ready; link kept`);
+        this.hub.slaOnSignal(this.cameraName, SlaSev.YELLOW);
+        return;
+      }
       hilog.error(0x0001, TAG, `${this.slog()}BLE Error: ${event.message}`);
       // Link-death attribution: three-way split so a slow-waking camera's
       // death can be traced to exactly one cause. The P1 watchdog relaxation
@@ -562,6 +619,8 @@ export class CameraSession implements GpsWriteTarget, ClassicBondingHost {
     const data = this.currentStage1.encode();
     hilog.info(0x0001, TAG,
       `[CHECKPOINT] Sending stage 1: ${this.currentStage1.toString()}`);
+    this.pendingPairRetryUuid = UUID_PREFIX_PAIR;
+    this.pendingPairRetryPayload = data;
     this.bleClient.writePairMessage(data);
   }
 
@@ -659,6 +718,8 @@ export class CameraSession implements GpsWriteTarget, ClassicBondingHost {
 
     hilog.info(0x0001, TAG,
       `[CHECKPOINT] writeControllerId: '${this.controllerName}' (32 bytes, zero-padded)`);
+    this.pendingPairRetryUuid = UUID_PREFIX_ID;
+    this.pendingPairRetryPayload = nameBytes;
     this.bleClient.writeId(nameBytes);
 
     // Fallback: proceed to bonding after 3 seconds if no write callback

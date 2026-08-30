@@ -350,7 +350,7 @@ export class BleClient {
           } else {
             hilog.error(0x0001, TAG, `[W] ERR ${uuid} ${err.code}: ${err.message}`);
           }
-          this.emit(new BleError(`Write ${uuid}: ${err.message}`));
+          this.emit(new BleError(`Write ${uuid}: ${err.message}`, err.code));
         }
         else { hilog.info(0x0001, TAG, `[W] OK`); this.emit(new BleWriteDone(uuid, 0)); }
         // Flush the buffered (newest-wins) write now that the slot is free.
@@ -369,7 +369,7 @@ export class BleClient {
       this.writeBusy = false;
       if (this.writeTimeoutId !== null) { clearTimeout(this.writeTimeoutId); this.writeTimeoutId = null; }
       hilog.error(0x0001, TAG, `[W] SYNC-THROW ${uuid} ${be.code}: ${be.message}`);
-      this.emit(new BleError(`Write ${uuid}: ${be.message}`));
+      this.emit(new BleError(`Write ${uuid}: ${be.message}`, be.code));
     }
   }
 

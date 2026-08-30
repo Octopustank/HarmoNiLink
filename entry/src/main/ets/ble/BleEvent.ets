@@ -33,5 +33,8 @@ export class BleWriteDone extends BleEvent {
 }
 export class BleError extends BleEvent {
   readonly message: string;
-  constructor(message: string) { super(); this.message = message; }
+  /** Platform error code (err.code) when the failure came from a system
+   *  callback; 0 for locally-synthesized errors (timeouts). */
+  readonly code: number;
+  constructor(message: string, code: number = 0) { super(); this.message = message; this.code = code; }
 }

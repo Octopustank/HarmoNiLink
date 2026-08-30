@@ -353,14 +353,20 @@ export class GpsDispatcher {
    *  Ready camera over BLE — zero GNSS cost. The app-resident subscription
    *  kept it fresh while the link was down, so a camera reconnecting after
    *  the user walked around receives the position where the USER is now.
-   *  Burst-guarded: refreshGps() fires on every state event. */
+   *  DELAYED 2.5s after Ready: the camera rejects 0x2007 (2900099-class)
+   *  while its GPS session wakes — writing in the Ready instant just burns
+   *  a rejection. Burst-guard 30s: a reconnect loop must not multiply
+   *  cache writes (the GEO-failure path no longer tears the link down, but
+   *  neither should it hammer a waking camera). */
   writeCachedGps(): void {
     if (!this.gpsData.hasFix) return;
     const now = Date.now();
-    if (now - this.lastCachedWriteTs < 5000) return;
+    if (now - this.lastCachedWriteTs < 30000) return;
     this.lastCachedWriteTs = now;
-    hilog.info(0x0001, TAG, `[GPS] cached fix -> Ready cameras (lat=${this.gpsData.latitude.toFixed(6)})`);
-    this.fanOutGps(this.gpsData.latitude, this.gpsData.longitude, this.gpsData.altitude);
+    setTimeout(() => {
+      hilog.info(0x0001, TAG, `[GPS] cached fix -> Ready cameras (lat=${this.gpsData.latitude.toFixed(6)})`);
+      this.fanOutGps(this.gpsData.latitude, this.gpsData.longitude, this.gpsData.altitude);
+    }, 2500);
   }
 
   /** Ticker tick: TIME keep-alive (zero location cost) + a geoHealth-driven
