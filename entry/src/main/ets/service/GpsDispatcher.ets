@@ -80,19 +80,19 @@ export const GPS_MODE_PRESETS: GpsModePreset[] = [
     priority: geoLocationManager.LocationRequestPriority.FIRST_FIX,
     timeIntervalS: 10, distanceM: 0, maxGeoIntervalMs: 10000,
     label: '实时',
-    toast: '已切换为实时：GNSS 常开，坐标约 10 秒更新（最耗电）',
+    toast: '已切换到实时：卫星定位，约 10 秒更新一次（最耗电）',
   },
   {
     priority: geoLocationManager.LocationRequestPriority.FIRST_FIX,
     timeIntervalS: 120, distanceM: 20, maxGeoIntervalMs: 120000,
     label: '智能省电',
-    toast: '已切换为智能省电：挪动约 20 米立即更新，静止约 2 分钟兜底',
+    toast: '已切换到智能省电：走动约 20 米即更新，静止约 2 分钟一次',
   },
   {
     priority: geoLocationManager.LocationRequestPriority.LOW_POWER,
     timeIntervalS: 300, distanceM: 100, maxGeoIntervalMs: 600000,
     label: '粗略省电',
-    toast: '已切换为粗略省电：网络定位约 5 分钟一次，仅记录大致位置',
+    toast: '已切换到粗略省电：网络定位，约 10 分钟保底一次（最省电）',
   },
 ];
 

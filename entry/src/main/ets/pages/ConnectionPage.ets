@@ -139,11 +139,11 @@ export struct ConnectionPage {
     this.getUIContext().getPromptAction().showDialog({
       title: '定位模式说明',
       message: [
-        '实时：GNSS 持续定位，坐标约 10 秒更新，轨迹最连续；耗电最高，适合步行/车载连续拍摄。',
+        '实时：卫星定位，约 10 秒更新一次，轨迹最连续；耗电最高，适合步行/车载连续拍摄。',
         '',
-        '智能省电：挪动约 20 米立即更新，静止时约 2 分钟兜底；适合定点驻拍兼顾走动。',
+        '智能省电：走动超过约 20 米立即更新，静止约 2 分钟更新一次；耗电较低，适合驻点拍摄兼顾走动。',
         '',
-        '粗略省电：网络定位，约 5 分钟更新，精度约百米；最省电，适合只需大致位置记录。'
+        '粗略省电：网络定位，约 10 分钟保底更新一次，精度约百米级；最省电，适合只需大致位置。'
       ].join('\n'),
       buttons: [{ text: '知道了', color: $r('app.color.brand') }]
     }).catch((e: Error) => {
@@ -506,9 +506,10 @@ export struct ConnectionPage {
             }
           })
         SymbolGlyph($r('sys.symbol.info_circle'))
-          .fontSize(16)
+          .fontSize(22)
           .fontColor([$r('app.color.text_secondary')])
-          .margin({ left: 8 })
+          .margin({ left: 12 })
+          .padding(4)
           .onClick(() => { this.showModeInfo(); })
       }.width('100%')
     }
