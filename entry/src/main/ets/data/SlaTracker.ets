@@ -253,16 +253,21 @@ export class SlaTracker {
     // geoHealth suppression: the most recent GPS acquisition FAILED and that
     // failure is still inside the mode's freshness window. Any older or absent
     // outcome is treated as healthy ("no acquisition is not a problem").
-    const geoSuppress = !this.geoLastOk && (now - this.geoLastTs) <= this.maxGeoIntervalMs;
+    const geoFailed = !this.geoLastOk && (now - this.geoLastTs) <= this.maxGeoIntervalMs;
     const cells: SlaCell[] = [];
     for (let i = 0; i < CELL_COUNT; i++) {
       const bucket = firstBucket + i;
       const slot = this.slotFor(bucket);
       const st = bucket * CELL_MS;
       const rawEnd = st + CELL_MS;
+      const endTs = Math.min(rawEnd, now); // clamp the in-progress cell to now
+      // Project the failure ONLY onto buckets overlapping the failure window
+      // [geoLastTs, now] — a confirmed-GEO cell from 90 minutes ago must not
+      // flip ORANGE because of a 10-second hiccup just now.
+      const geoSuppress = geoFailed && endTs > this.geoLastTs;
       cells.push({
         startTs: st,
-        endTs: Math.min(rawEnd, now), // clamp the in-progress cell to now
+        endTs: endTs,
         sev: this.decideSev(slot.bucket === bucket ? slot.flags : 0, geoSuppress),
       });
     }
@@ -291,7 +296,7 @@ export class SlaTracker {
     if (hasRed) return SlaSev.YELLOW;                // 断连但成功下发
     if (hasYellow) return SlaSev.ORANGE;             // GPS 数据问题
     if (!geoSuppress) return SlaSev.GREEN;           // 下发正常且定位获取无忧（含低频档 TIME-only 桶）
-    return SlaSev.ORANGE;                            // 定位获取时效内失败（geoHealth=fail）
+    return SlaSev.ORANGE;                            // geoHealth 时效内失败（TIME-only / GEO-only / 双全均橙）
   }
 
   // ==================== Internals ====================

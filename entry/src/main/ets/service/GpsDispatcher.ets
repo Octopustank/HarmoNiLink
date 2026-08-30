@@ -83,7 +83,9 @@ export class GpsDispatcher {
   private geoSubscribed: boolean = false;
   private locationCb: Callback<geoLocationManager.Location> | null = null;
   private locationErrorCb: Callback<geoLocationManager.LocationError> | null = null;
-  private lastGeoOkTs: number = 0;
+  // Prime dedupe: refreshGps() can fire several times in the same tick
+  // (Ready event + toggle etc.) — one priming fix per burst is plenty.
+  private lastPrimeAttemptTs: number = 0;
 
   // Satellite subscription state — process-wide constant, independent of the
   // power mode (see AGENTS.md reasoning + verification gate).
@@ -98,14 +100,15 @@ export class GpsDispatcher {
     this.onGeoResult = onGeoResult;
   }
 
-  /** geoHealth freshness window of the active mode (2x timeInterval). */
-  private maxGeoIntervalMs(): number {
-    return this.mode === GpsPowerMode.PRECISE ? 20000 : 600000;
-  }
-
-  /** Start the ticker only if it isn't already running (no satellite reset). */
+  /** Start the ticker only if it isn't already running (no satellite reset).
+   *  Also re-attempts the GEO subscription — if subscribeGeo() failed
+   *  transiently inside start(), the running ticker alone would leave the
+   *  GEO rail dead until an fg/bg transition. */
   ensureRunning(): void {
-    if (this.gpsTimer !== null) return;
+    if (this.gpsTimer !== null) {
+      this.subscribeGeo(); // idempotent
+      return;
+    }
     this.start(1500);
   }
 
@@ -160,16 +163,31 @@ export class GpsDispatcher {
         this.handleLocation(location);
       };
       geoLocationManager.on('locationChange', this.geoRequest(), this.locationCb);
-      // Global error channel (switch off / permission denied / locate fail).
-      // Only consumed while OUR fix subscription is live — errors from other
-      // apps' sessions must not poison our geoHealth.
+      // Mark subscribed IMMEDIATELY: if the error-channel registration below
+      // throws, the live locationChange closure must stay reachable for
+      // off() — otherwise the next subscribeGeo() registers a duplicate and
+      // every fix fans out twice.
+      this.geoSubscribed = true;
+      // Global error channel — events are NOT attributable to our session,
+      // so degrade only on codes that actually kill our rail:
+      //   -4 switch off / -2 permission denied  → rail dead, fail
+      //   -3 background permission denied       → benign while foreground
+      //                                            fixes keep working
+      //   -1 default / -5 internet              → no evidence about our rail
       this.locationErrorCb = (err: geoLocationManager.LocationError) => {
         if (!this.geoSubscribed) return;
-        hilog.warn(0x0001, TAG, `[GPS] locationError code=${err}`);
-        this.signalGeoFailure();
+        const E = geoLocationManager.LocationError;
+        const fatal = err === E.LOCATING_FAILED_LOCATION_SWITCH_OFF
+          || err === E.LOCATING_FAILED_LOCATION_PERMISSION_DENIED;
+        const bgDenied = err === E.LOCATING_FAILED_BACKGROUND_PERMISSION_DENIED;
+        if (fatal || (bgDenied && !this.isForeground)) {
+          hilog.warn(0x0001, TAG, `[GPS] locationError code=${err} — rail dead`);
+          this.signalGeoFailure();
+        } else {
+          hilog.info(0x0001, TAG, `[GPS] locationError code=${err} — not ours, ignored`);
+        }
       };
       geoLocationManager.on('locationError', this.locationErrorCb);
-      this.geoSubscribed = true;
       hilog.info(0x0001, TAG, `[GPS] locationChange subscribed (${this.mode === GpsPowerMode.PRECISE ? 'precise' : 'power'})`);
     } catch (err) {
       this.geoSubscribed = false;
@@ -216,7 +234,6 @@ export class GpsDispatcher {
       satellites: sats >= 0 ? sats : 6, timestamp: new Date()
     };
     hilog.info(0x0001, TAG, `[GPS] GEO event lat=${lat.toFixed(6)} lon=${lon.toFixed(6)} mode=${this.mode}`);
-    this.lastGeoOkTs = Date.now();
     this.onGeoResult(true); // geoHealth ok — GEO write confirmations feed SLA separately
     const payload = GeoPayloadGenerator.buildReal(gps);
     for (let i = 0; i < targets.length; i++) {
@@ -226,13 +243,18 @@ export class GpsDispatcher {
 
   /** One-shot fix after a camera becomes Ready (pairing/reconnect): without
    *  it the first GEO would wait for the next subscription event (10s
-   *  precise / 10min power-saving). Throttled by the mode's freshness window
-   *  so repeated Ready events never over-fetch. */
+   *  precise / 5min power-saving worst case). ALWAYS primes — the phone
+   *  having a recent fix says nothing about what THIS camera received —
+   *  deduped only against same-burst re-invocations (3s). getCurrentLocation
+   *  aggregates with the live subscription session, so the extra fetch is
+   *  nearly free (plan §3). */
   primeOnce(): void {
-    if (Date.now() - this.lastGeoOkTs < this.maxGeoIntervalMs()) {
-      hilog.debug(0x0001, TAG, '[GPS] prime skipped — last fix still fresh');
+    const now = Date.now();
+    if (now - this.lastPrimeAttemptTs < 3000) {
+      hilog.debug(0x0001, TAG, '[GPS] prime skipped — same burst');
       return;
     }
+    this.lastPrimeAttemptTs = now;
     hilog.info(0x0001, TAG, '[GPS] priming fix (FIRST_FIX, 10s timeout)');
     try {
       geoLocationManager.getCurrentLocation({
