@@ -435,7 +435,7 @@ export struct ConnectionPage {
       Row() {
         Text('GPS 信息').fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
         Blank()
-        Circle({ width: 8, height: 8 }).fill(this.gpsLightColor())
+        Row().width(8).height(8).borderRadius(4).backgroundColor(this.gpsLightColor())
         Text(this.gpsLightLabel()).fontSize(11).fontColor(this.gpsLightColor()).margin({ left: 6 })
       }.width('100%').margin({ bottom: 10 })
       GpsRow({ label: '配对名称', value: this.controllerName })
@@ -480,7 +480,7 @@ export struct ConnectionPage {
   @Builder pairingNotice() {
     Column() {
       Row({ space: 8 }) {
-        Circle({ width: 8, height: 8 }).fill($r('app.color.warning'))
+        Row().width(8).height(8).borderRadius(4).backgroundColor($r('app.color.warning'))
         Text('正在经典蓝牙绑定，连接操作已暂停').fontSize(13).fontColor($r('app.color.warning'))
       }
     }
@@ -551,7 +551,7 @@ export struct ConnectionPage {
           Text(cam.name).fontSize(16).fontWeight(500).fontColor($r('app.color.text_primary'))
             .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
           Row({ space: 6 }) {
-            Circle({ width: 6, height: 6 }).fill(this.stateColor(this.getCameraStatus(cam.name)?.state ?? ConnectionState.Idle))
+            Row().width(6).height(6).borderRadius(3).backgroundColor(this.stateColor(this.getCameraStatus(cam.name)?.state ?? ConnectionState.Idle))
             Text(this.cameraStateText(cam))
               .fontSize(11).fontColor(this.stateColor(this.getCameraStatus(cam.name)?.state ?? ConnectionState.Idle))
               .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })

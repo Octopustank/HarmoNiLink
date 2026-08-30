@@ -84,23 +84,23 @@ export struct DeviceHealthSheet {
   @Builder legend() {
     Column() {
       Row({ space: 6 }) {
-        Circle({ width: 8, height: 8 }).fill($r('app.color.success'))
+        Row().width(8).height(8).borderRadius(4).backgroundColor($r('app.color.success'))
         Text('连接正常').fontSize(12).fontColor($r('app.color.text_secondary'))
       }.margin({ top: 4 })
       Row({ space: 6 }) {
-        Circle({ width: 8, height: 8 }).fill($r('app.color.sla_light'))
+        Row().width(8).height(8).borderRadius(4).backgroundColor($r('app.color.sla_light'))
         Text('偶发断连，但数据已送达').fontSize(12).fontColor($r('app.color.text_secondary'))
       }.margin({ top: 4 })
       Row({ space: 6 }) {
-        Circle({ width: 8, height: 8 }).fill($r('app.color.warning'))
+        Row().width(8).height(8).borderRadius(4).backgroundColor($r('app.color.warning'))
         Text('存在数据问题（无定位等）').fontSize(12).fontColor($r('app.color.text_secondary'))
       }.margin({ top: 4 })
       Row({ space: 6 }) {
-        Circle({ width: 8, height: 8 }).fill($r('app.color.danger'))
+        Row().width(8).height(8).borderRadius(4).backgroundColor($r('app.color.danger'))
         Text('完全中断，无数据').fontSize(12).fontColor($r('app.color.text_secondary'))
       }.margin({ top: 4 })
       Row({ space: 6 }) {
-        Circle({ width: 8, height: 8 }).fill($r('app.color.sla_grey'))
+        Row().width(8).height(8).borderRadius(4).backgroundColor($r('app.color.sla_grey'))
         Text('无下发活动').fontSize(12).fontColor($r('app.color.text_secondary'))
       }.margin({ top: 4 })
     }
