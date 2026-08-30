@@ -43,6 +43,13 @@ const GPS_PHASE_STAGGER_MS = 200;
 // Mode presets: timeInterval is the fallback-freshness bound (seconds),
 // distanceInterval the movement trigger (meters). Values keep clear of the
 // GNSS 1s / network 20s minimum-interval clamps.
+// PRIORITY IS NOT OPTIONAL: with priority left undefined the system picks a
+// low-power schedule where the 10s timeInterval fallback does not produce
+// fixes for a stationary device indoors (measured: 65s without a single
+// event while TIME kept flowing). precise uses FIRST_FIX — the same
+// priority the pre-redesign getCurrentLocation polling used, which always
+// yielded fresh fixes; power uses BALANCED so the 50m trigger has enough
+// accuracy to fire without FIRST_FIX's duty cycle.
 const GEO_PRECISE_INTERVAL_S = 10;
 const GEO_PRECISE_DISTANCE_M = 5;
 const GEO_POWER_INTERVAL_S = 300;
@@ -152,8 +159,10 @@ export class GpsDispatcher {
 
   private geoRequest(): geoLocationManager.LocationRequest {
     return this.mode === GpsPowerMode.PRECISE
-      ? { timeInterval: GEO_PRECISE_INTERVAL_S, distanceInterval: GEO_PRECISE_DISTANCE_M }
-      : { timeInterval: GEO_POWER_INTERVAL_S, distanceInterval: GEO_POWER_DISTANCE_M };
+      ? { priority: geoLocationManager.LocationRequestPriority.FIRST_FIX,
+          timeInterval: GEO_PRECISE_INTERVAL_S, distanceInterval: GEO_PRECISE_DISTANCE_M }
+      : { priority: geoLocationManager.LocationRequestPriority.LOW_POWER,
+          timeInterval: GEO_POWER_INTERVAL_S, distanceInterval: GEO_POWER_DISTANCE_M };
   }
 
   private subscribeGeo(): void {
