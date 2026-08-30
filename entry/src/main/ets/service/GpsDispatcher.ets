@@ -17,6 +17,13 @@
  * PreferencesRepository and is applied here through setMode() (off+on
  * re-subscription in one place).
  *
+ * LIFECYCLE DECOUPLING (重连 ≠ 定位): the GEO subscription is APP-RESIDENT —
+ * built as early as permissions allow, NEVER torn down on link drops. A
+ * stationary device yields no callbacks (AND semantics ≈ zero cost); a
+ * moving one keeps gpsData/geoHealth fresh so that when a camera reconnects,
+ * writeCachedGps() pushes the LATEST position over BLE (zero GNSS cost).
+ * Only a mode switch re-subscribes (parameters changed).
+ *
  * Ready priming: after pairing/reconnect the first coordinate would
  * otherwise wait for the next subscription event (up to 10s precise /
  * 10min power-saving), so primeOnce() fetches one getCurrentLocation —
@@ -131,6 +138,7 @@ export class GpsDispatcher {
   private lastWrittenLat: number = 999;
   private lastWrittenLon: number = 999;
   private lastWrittenTs: number = 0;
+  private lastCachedWriteTs: number = 0;
 
   // Satellite subscription state — process-wide constant, independent of the
   // power mode (see AGENTS.md reasoning + verification gate).
@@ -177,7 +185,12 @@ export class GpsDispatcher {
     // permission may not be granted yet then (it's requested on first scan).
     // Re-attempt here (no-op if already subscribed).
     this.subscribeSatelliteStatus();
-    this.subscribeGeo();
+    this.subscribeGeo(); // idempotent — repairs a transiently failed subscribe
+    // No cached fix yet (fresh install / first connection): fetch one so the
+    // camera gets coordinates immediately instead of waiting for an event.
+    if (!this.gpsData.hasFix) {
+      this.fetchOnce();
+    }
     // Immediate TIME — the link heartbeat starts right away.
     this.sendTick();
     this.gpsTimer = setInterval(() => { this.sendTick(); }, interval);
@@ -189,7 +202,11 @@ export class GpsDispatcher {
       this.gpsTimer = null;
       hilog.info(0x0001, TAG, '[CHECKPOINT] GPS ticker stopped');
     }
-    this.unsubscribeGeo();
+    // GEO subscription stays ALIVE across link drops (订阅与重连解耦):
+    // stationary it never fires (AND semantics ≈ zero cost); while moving it
+    // keeps gpsData/geoHealth fresh so a reconnecting camera receives the
+    // LATEST position, not a stale one. Torn down only by setMode()'s
+    // off+on re-subscription.
     // Satellite subscription is independent of the ticker — do NOT reset
     // lastSatelliteCount here, so the satellite count survives camera drops.
   }
@@ -274,31 +291,27 @@ export class GpsDispatcher {
     this.locationErrorCb = null;
   }
 
-  /** GEO distribution: one fix fans out to every Ready camera. */
+  /** Subscription callback: record the acquisition, refresh the shared GPS
+   *  state, then fan the fix out (fanOutGps dedupes and distributes). */
   private handleLocation(location: geoLocationManager.Location): void {
     this.reportGeo(true); // acquisition-level fact — recorded even if no camera is Ready
-    const targets = this.getReadyTargets();
-    if (targets.length === 0) return;
-    const lat = location.latitude;
-    const lon = location.longitude;
-    const alt = Math.round(location.altitude);
-    const sats = this.lastSatelliteCount;
     this.gpsData.hasFix = true;
+    this.gpsData.satellites = this.lastSatelliteCount;
+    this.fanOutGps(location.latitude, location.longitude, Math.round(location.altitude));
+  }
+
+  /** Distribute one fix (from any channel) to every Ready camera, with
+   *  cross-channel dedupe: the fallback fetch and the subscription can
+   *  deliver the same physical fix — skip the BLE write when the position
+   *  barely moved within 3s (gpsData/geoHealth above still update). */
+  private fanOutGps(lat: number, lon: number, alt: number): void {
     this.gpsData.latitude = lat;
     this.gpsData.longitude = lon;
     this.gpsData.altitude = alt;
-    this.gpsData.satellites = sats;
     this.gpsData.lastUpdateTime = new Date().toLocaleTimeString();
-
-    const gps: GpsPosition = {
-      latitude: lat, longitude: lon, altitude: alt,
-      satellites: sats >= 0 ? sats : 6, timestamp: new Date()
-    };
-    hilog.info(0x0001, TAG, `[GPS] GEO event lat=${lat.toFixed(6)} lon=${lon.toFixed(6)} mode=${GPS_MODE_PRESETS[this.mode].label}`);
-    this.reportGeo(true); // geoHealth ok — GEO write confirmations feed SLA separately
-    // Cross-channel dedupe: the fallback fetch and the subscription can
-    // deliver the same physical fix — skip the BLE write when the position
-    // barely moved within 3s (UI/geoHealth above still update).
+    const targets = this.getReadyTargets();
+    if (targets.length === 0) return; // no consumer — gpsData stays fresh for the next Ready
+    hilog.info(0x0001, TAG, `[GPS] GEO out lat=${lat.toFixed(6)} lon=${lon.toFixed(6)} mode=${GPS_MODE_PRESETS[this.mode].label}`);
     const nearDupe = Math.abs(lat - this.lastWrittenLat) < 1e-5
       && Math.abs(lon - this.lastWrittenLon) < 1e-5
       && (Date.now() - this.lastWrittenTs) < 3000;
@@ -306,10 +319,29 @@ export class GpsDispatcher {
     this.lastWrittenLon = lon;
     this.lastWrittenTs = Date.now();
     if (nearDupe) return;
+    const sats = this.gpsData.satellites;
+    const gps: GpsPosition = {
+      latitude: lat, longitude: lon, altitude: alt,
+      satellites: sats >= 0 ? sats : 6, timestamp: new Date()
+    };
     const payload = GeoPayloadGenerator.buildReal(gps);
     for (let i = 0; i < targets.length; i++) {
       this.staggeredWrite(targets[i], i, payload, false);
     }
+  }
+
+  /** Reconnect recovery (重连 ≠ 定位): push the CACHED latest fix to every
+   *  Ready camera over BLE — zero GNSS cost. The app-resident subscription
+   *  kept it fresh while the link was down, so a camera reconnecting after
+   *  the user walked around receives the position where the USER is now.
+   *  Burst-guarded: refreshGps() fires on every state event. */
+  writeCachedGps(): void {
+    if (!this.gpsData.hasFix) return;
+    const now = Date.now();
+    if (now - this.lastCachedWriteTs < 5000) return;
+    this.lastCachedWriteTs = now;
+    hilog.info(0x0001, TAG, `[GPS] cached fix -> Ready cameras (lat=${this.gpsData.latitude.toFixed(6)})`);
+    this.fanOutGps(this.gpsData.latitude, this.gpsData.longitude, this.gpsData.altitude);
   }
 
   /** Ticker tick: TIME keep-alive (zero location cost) + a geoHealth-driven

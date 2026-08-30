@@ -514,6 +514,10 @@ export class CameraService {
       // re-subscribes; getReadySessions() is dynamic, so the running ticker
       // already fans out to the changed set on its next beat.
       this.gps.ensureRunning();
+      // 重连 ≠ 定位：push the cached latest fix over BLE immediately (zero
+      // GNSS cost) — the app-resident subscription kept it fresh while the
+      // link was down, so a reconnecting camera gets where the USER is now.
+      this.gps.writeCachedGps();
     } else {
       this.gps.stop();
     }
