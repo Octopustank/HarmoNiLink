@@ -196,6 +196,9 @@ export class CameraService {
     // Turning ON creates reconnect intent — the ContinuousTask must start now
     // (before any camera is Ready), not only when the GPS ticker spins up.
     this.reconcileBackgroundTask();
+    // USER-INTENT gate for the GEO subscription: alive while any paired
+    // camera's toggle is ON, unsubscribed when the last one goes off.
+    this.gps.setGeoIntent(this.hasKeepAliveIntent());
   }
 
   /** True if the first-connect hint (camera "关闭时发送" + keep-alive) has never been shown. */
@@ -613,6 +616,8 @@ export class CameraService {
     // health history (and the 2h window won't linger on disk).
     this.sla.remove(name);
     this.refreshGps();
+    // Removing a camera may end the last ON intent — re-evaluate the gate.
+    this.gps.setGeoIntent(this.hasKeepAliveIntent());
     // Pairing page must drop the deleted camera's 已配对 marker.
     this.notifyDevicesChanged();
   }

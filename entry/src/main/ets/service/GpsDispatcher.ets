@@ -17,12 +17,14 @@
  * PreferencesRepository and is applied here through setMode() (off+on
  * re-subscription in one place).
  *
- * LIFECYCLE DECOUPLING (重连 ≠ 定位): the GEO subscription is APP-RESIDENT —
- * built as early as permissions allow, NEVER torn down on link drops. A
- * stationary device yields no callbacks (AND semantics ≈ zero cost); a
- * moving one keeps gpsData/geoHealth fresh so that when a camera reconnects,
- * writeCachedGps() pushes the LATEST position over BLE (zero GNSS cost).
- * Only a mode switch re-subscribes (parameters changed).
+ * LIFECYCLE DECOUPLING (重连 ≠ 定位): the GEO subscription is gated by USER
+ * INTENT — alive while any paired camera's connection toggle is ON, torn
+ * down when the user turned every switch off or removed the camera. Link
+ * drops NEVER tear it down: a stationary device yields no callbacks (AND
+ * semantics ≈ zero cost); a moving one keeps gpsData/geoHealth fresh so
+ * that when a camera reconnects, writeCachedGps() pushes the LATEST
+ * position over BLE (zero GNSS cost). Only a mode switch re-subscribes
+ * (parameters changed).
  *
  * Ready priming: after pairing/reconnect the first coordinate would
  * otherwise wait for the next subscription event (up to 10s precise /
@@ -117,9 +119,11 @@ export class GpsDispatcher {
 
   private mode: GpsMode = GpsMode.REALTIME;
   private gpsTimer: number | null = null;
-  // GEO rail: one locationChange subscription per dispatcher, built while any
-  // camera is Ready and torn down when the last one drops (an idling
-  // subscription would still wake GNSS every interval — pure waste).
+  // GEO rail: one APP-RESIDENT locationChange subscription, gated by USER
+  // INTENT — alive while any paired camera's connection toggle is ON
+  // (setGeoIntent), torn down when the user turned every switch off or the
+  // camera was removed (无意图零定位). Link drops NEVER touch it (重连 ≠ 定位);
+  // only intent loss or a mode switch (parameters changed) re-subscribes.
   private geoSubscribed: boolean = false;
   private locationCb: Callback<geoLocationManager.Location> | null = null;
   private locationErrorCb: Callback<geoLocationManager.LocationError> | null = null;
@@ -209,6 +213,21 @@ export class GpsDispatcher {
     // off+on re-subscription.
     // Satellite subscription is independent of the ticker — do NOT reset
     // lastSatelliteCount here, so the satellite count survives camera drops.
+  }
+
+  /** USER-INTENT gate for the GEO subscription (订阅生命周期钉在意图上):
+   *  alive while any paired camera's connection toggle is ON — link drops
+   *  never tear it down, so the 2min inactivity disconnect/reconnect cycle
+   *  keeps its zero-GNSS-reconnect benefit. Intent gone (all switches off /
+   *  camera removed) → unsubscribe (无意图零定位, the pre-redesign
+   *  semantics). Idempotent; permission-less first runs fail silently and
+   *  are repaired by start()'s ensure + this gate on the next toggle. */
+  setGeoIntent(active: boolean): void {
+    if (active) {
+      this.subscribeGeo();
+    } else {
+      this.unsubscribeGeo();
+    }
   }
 
   /** Switch the GPS sampling mode: persist-free (caller persists), applies to
