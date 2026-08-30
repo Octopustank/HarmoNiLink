@@ -30,3 +30,6 @@ build/
 .cxx/
 .env
 AGENTS.md
+
+# Design plans (local, not committed)
+plans/
