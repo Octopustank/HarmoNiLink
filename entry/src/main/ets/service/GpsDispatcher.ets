@@ -40,26 +40,52 @@ const TAG = 'HarmoNiLink-GpsDispatcher';
 // comfortably below the 1.5s foreground tick.
 const GPS_PHASE_STAGGER_MS = 200;
 
-// Mode presets: timeInterval is the fallback-freshness bound (seconds),
-// distanceInterval the movement trigger (meters). Values keep clear of the
-// GNSS 1s / network 20s minimum-interval clamps.
+// Mode presets — the SINGLE source of truth for all three sampling modes:
+// LocationRequest parameters, the geoHealth freshness window (2x
+// timeInterval) consumed by SlaTracker.decideSev, and UI copy.
 // PRIORITY IS NOT OPTIONAL: with priority left undefined the system picks a
 // low-power schedule where the 10s timeInterval fallback does not produce
 // fixes for a stationary device indoors (measured: 65s without a single
-// event while TIME kept flowing). precise uses FIRST_FIX — the same
-// priority the pre-redesign getCurrentLocation polling used, which always
-// yielded fresh fixes; power uses BALANCED so the 50m trigger has enough
-// accuracy to fire without FIRST_FIX's duty cycle.
-const GEO_PRECISE_INTERVAL_S = 10;
-const GEO_PRECISE_DISTANCE_M = 5;
-const GEO_POWER_INTERVAL_S = 300;
-const GEO_POWER_DISTANCE_M = 50;
-
-/** GPS sampling power mode (persisted in PreferencesRepository). */
-export enum GpsPowerMode {
-  PRECISE = 0, // 10s fallback / 5m trigger — freshness first
-  POWER = 1,   // 300s fallback / 50m trigger — battery first
+// event while TIME kept flowing).
+// Values keep clear of the GNSS 1s / network 20s minimum-interval clamps.
+export interface GpsModePreset {
+  priority: geoLocationManager.LocationRequestPriority;
+  timeIntervalS: number;
+  distanceM: number;
+  /** geoHealth freshness window (2x timeInterval). */
+  maxGeoIntervalMs: number;
+  label: string;
+  /** Shown when the user switches to this mode. */
+  toast: string;
 }
+
+/** GPS sampling mode (persisted in PreferencesRepository). */
+export enum GpsMode {
+  MOVING = 0,     // 10s / 5m, FIRST_FIX — continuous track while moving
+  STATIONARY = 1, // 60s / 20m, FIRST_FIX — fresh + drift-tolerant at a spot
+  RELAXED = 2,    // 300s / 100m, LOW_POWER — ballpark location, most savings
+}
+
+export const GPS_MODE_PRESETS: GpsModePreset[] = [
+  {
+    priority: geoLocationManager.LocationRequestPriority.FIRST_FIX,
+    timeIntervalS: 10, distanceM: 5, maxGeoIntervalMs: 20000,
+    label: '移动拍摄',
+    toast: '已切换为移动拍摄：坐标约 10 秒兜底更新，适合连续拍摄',
+  },
+  {
+    priority: geoLocationManager.LocationRequestPriority.FIRST_FIX,
+    timeIntervalS: 60, distanceM: 20, maxGeoIntervalMs: 120000,
+    label: '定点拍摄',
+    toast: '已切换为定点拍摄：驻点时坐标每分钟更新，挪动约 20 米即触发',
+  },
+  {
+    priority: geoLocationManager.LocationRequestPriority.LOW_POWER,
+    timeIntervalS: 300, distanceM: 100, maxGeoIntervalMs: 600000,
+    label: '宽松记录',
+    toast: '已切换为宽松记录：仅记录大致位置，最省电',
+  },
+];
 
 /** The slice of CameraSession the dispatcher writes to — an interface so this
  * module never imports the session class (no module cycle). */
@@ -82,7 +108,7 @@ export class GpsDispatcher {
   private onSlaYellow: (name: string) => void;
   private onGeoResult: (ok: boolean) => void;
 
-  private mode: GpsPowerMode = GpsPowerMode.PRECISE;
+  private mode: GpsMode = GpsMode.MOVING;
   private gpsTimer: number | null = null;
   // GEO rail: one locationChange subscription per dispatcher, built while any
   // camera is Ready and torn down when the last one drops (an idling
@@ -121,7 +147,7 @@ export class GpsDispatcher {
 
   start(intervalMs: number = 1500): void {
     const interval = this.isForeground ? intervalMs : 5000;
-    hilog.info(0x0001, TAG, `[GPS] start: TIME interval=${interval}ms fg=${this.isForeground} mode=${this.mode}`);
+    hilog.info(0x0001, TAG, `[GPS] start: TIME interval=${interval}ms fg=${this.isForeground} mode=${GPS_MODE_PRESETS[this.mode].label}`);
     this.stop();
     // Idempotent retry: setContext() subscribes at startup, but location
     // permission may not be granted yet then (it's requested on first scan).
@@ -147,9 +173,9 @@ export class GpsDispatcher {
   /** Switch the GPS sampling mode: persist-free (caller persists), applies to
    *  the live subscription via off+on in one place. A dropped event at the
    *  switch instant is acceptable (next event follows the new cadence). */
-  setMode(mode: GpsPowerMode): void {
+  setMode(mode: GpsMode): void {
     if (this.mode === mode) return;
-    hilog.info(0x0001, TAG, `[GPS] mode -> ${mode === GpsPowerMode.PRECISE ? 'precise' : 'power'}`);
+    hilog.info(0x0001, TAG, `[GPS] mode -> ${GPS_MODE_PRESETS[mode].label}`);
     this.mode = mode;
     if (this.geoSubscribed) {
       this.unsubscribeGeo();
@@ -158,11 +184,12 @@ export class GpsDispatcher {
   }
 
   private geoRequest(): geoLocationManager.LocationRequest {
-    return this.mode === GpsPowerMode.PRECISE
-      ? { priority: geoLocationManager.LocationRequestPriority.FIRST_FIX,
-          timeInterval: GEO_PRECISE_INTERVAL_S, distanceInterval: GEO_PRECISE_DISTANCE_M }
-      : { priority: geoLocationManager.LocationRequestPriority.LOW_POWER,
-          timeInterval: GEO_POWER_INTERVAL_S, distanceInterval: GEO_POWER_DISTANCE_M };
+    const preset = GPS_MODE_PRESETS[this.mode];
+    return {
+      priority: preset.priority,
+      timeInterval: preset.timeIntervalS,
+      distanceInterval: preset.distanceM,
+    };
   }
 
   private subscribeGeo(): void {
@@ -197,7 +224,7 @@ export class GpsDispatcher {
         }
       };
       geoLocationManager.on('locationError', this.locationErrorCb);
-      hilog.info(0x0001, TAG, `[GPS] locationChange subscribed (${this.mode === GpsPowerMode.PRECISE ? 'precise' : 'power'})`);
+      hilog.info(0x0001, TAG, `[GPS] locationChange subscribed (${GPS_MODE_PRESETS[this.mode].label})`);
     } catch (err) {
       this.geoSubscribed = false;
       this.locationCb = null;
@@ -242,7 +269,7 @@ export class GpsDispatcher {
       latitude: lat, longitude: lon, altitude: alt,
       satellites: sats >= 0 ? sats : 6, timestamp: new Date()
     };
-    hilog.info(0x0001, TAG, `[GPS] GEO event lat=${lat.toFixed(6)} lon=${lon.toFixed(6)} mode=${this.mode}`);
+    hilog.info(0x0001, TAG, `[GPS] GEO event lat=${lat.toFixed(6)} lon=${lon.toFixed(6)} mode=${GPS_MODE_PRESETS[this.mode].label}`);
     this.onGeoResult(true); // geoHealth ok — GEO write confirmations feed SLA separately
     const payload = GeoPayloadGenerator.buildReal(gps);
     for (let i = 0; i < targets.length; i++) {

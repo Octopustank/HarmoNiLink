@@ -31,7 +31,7 @@ import { CameraSession } from './CameraSession';
 import { ConnectionState, CameraStateEvent, StateListener, OperationOwner } from './ConnectionTypes';
 import { PermissionsGateway } from './PermissionsGateway';
 import { BackgroundTaskKeeper } from './BackgroundTaskKeeper';
-import { GpsDispatcher, GpsPowerMode, GpsWriteTarget } from './GpsDispatcher';
+import { GpsDispatcher, GpsMode, GpsModePreset, GPS_MODE_PRESETS, GpsWriteTarget } from './GpsDispatcher';
 import { SlaHub } from './SlaHub';
 import { GpsData } from './GpsData';
 
@@ -535,30 +535,32 @@ export class CameraService {
     return this.prefs.loadSavedCamerasSync().some((c: PairedCamera) => c.keepAlive);
   }
 
-  // ==================== GPS 采样档位（精准优先 / 省电优先） ====================
+  // ==================== GPS 采样档位（移动 / 定点 / 宽松） ====================
 
-  /** 0=precise, 1=power-saving (persisted). */
+  /** Index into GPS_MODE_PRESETS (persisted). */
   getGpsModeSync(): number {
     return this.prefs.getGpsModeSync();
   }
 
   /** Apply a new mode: persist, re-subscribe the GEO rail with the new
    *  LocationRequest, and widen/narrow the SLA geoHealth freshness window. */
-  setGpsMode(mode: GpsPowerMode): void {
+  setGpsMode(mode: GpsMode): void {
     this.prefs.setGpsMode(mode);
     this.gps.setMode(mode);
-    this.sla.setGeoIntervalMs(mode === GpsPowerMode.PRECISE ? 20000 : 600000);
-    hilog.info(0x0001, TAG, `[GPS] power mode applied: ${mode === GpsPowerMode.PRECISE ? 'precise' : 'power'}`);
+    this.sla.setGeoIntervalMs(GPS_MODE_PRESETS[mode].maxGeoIntervalMs);
+    hilog.info(0x0001, TAG, `[GPS] sampling mode applied: ${GPS_MODE_PRESETS[mode].label}`);
   }
 
   /** Called once prefs are ready: apply the persisted mode (dispatcher
-   *  defaults to PRECISE until then). */
+   *  defaults to MOVING until then). */
   applyPersistedGpsMode(): void {
     this.prefs.whenReady().then((): void => {
-      const mode = this.prefs.getGpsModeSync() === GpsPowerMode.POWER ? GpsPowerMode.POWER : GpsPowerMode.PRECISE;
+      const mode: GpsMode = this.prefs.getGpsModeSync() as GpsMode;
+      const preset: GpsModePreset = GPS_MODE_PRESETS[mode];
+      if (preset === undefined) return; // corrupted persisted value — keep default
       this.gps.setMode(mode);
-      this.sla.setGeoIntervalMs(mode === GpsPowerMode.PRECISE ? 20000 : 600000);
-      hilog.info(0x0001, TAG, `[GPS] persisted power mode applied: ${mode === GpsPowerMode.PRECISE ? 'precise' : 'power'}`);
+      this.sla.setGeoIntervalMs(preset.maxGeoIntervalMs);
+      hilog.info(0x0001, TAG, `[GPS] persisted sampling mode applied: ${preset.label}`);
     });
   }
 
