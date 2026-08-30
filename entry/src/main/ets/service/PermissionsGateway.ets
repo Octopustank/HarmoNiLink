@@ -12,13 +12,14 @@
  */
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { common, abilityAccessCtrl } from '@kit.AbilityKit';
+import type { Permissions } from '@ohos.abilityAccessCtrl';
 import { BusinessError } from '@kit.BasicServicesKit';
 
 const TAG = 'HarmoNiLink-Permissions';
 
 // User-grant permissions needed for scan/pair/connect. Requested in ONE batch
 // (system queues the dialogs) on first user action, not at app startup.
-const USER_GRANT_PERMISSIONS: string[] = [
+const USER_GRANT_PERMISSIONS: Permissions[] = [
   'ohos.permission.ACCESS_BLUETOOTH',
   'ohos.permission.DISCOVER_BLUETOOTH',
   'ohos.permission.APPROXIMATELY_LOCATION',
@@ -42,7 +43,7 @@ export class PermissionsGateway {
       const tokenId = ctx.applicationInfo.accessTokenId;
       const check = atManager.checkAccessTokenSync as Function;
 
-      const needed: string[] = [];
+      const needed: Permissions[] = [];
       for (let i = 0; i < USER_GRANT_PERMISSIONS.length; i++) {
         const permission = USER_GRANT_PERMISSIONS[i];
         if (check(tokenId, permission) !== 0) needed.push(permission);
@@ -50,9 +51,8 @@ export class PermissionsGateway {
       if (needed.length === 0) return true;
 
       hilog.info(0x0001, TAG, `[PERM] requesting ${needed.length} permission(s): ${needed.join(', ')}`);
-      const req = atManager.requestPermissionsFromUser as Function;
-      const result = await req(ctx, needed) as Record<string, Object>;
-      const authResults = result['authResults'] as number[];
+      const result = await atManager.requestPermissionsFromUser(ctx, needed);
+      const authResults = result.authResults;
 
       let allGranted: boolean = true;
       for (let i = 0; i < authResults.length; i++) {

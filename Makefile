@@ -1,11 +1,10 @@
 # HarmoNiLink Makefile — GNU/Linux + DevEco CLI only
 #
-# Targets API 24 (build-profile.json5); CLT bundles are single-SDK, so the
+# Targets API 26 (build-profile.json5); CLT bundles are single-SDK, so the
 # toolchain is auto-discovered below by SDK metadata — NOT taken from
-# $OHOS_CLI_HOME (the shell may export the API-26 preview line, which cannot
-# build or sign this project). Requires an apiVersion-24 bundle under
-# ~/.local/share/harmonyos/cli-tools-* and `@ohos:registry=...` in ~/.npmrc;
-# both are enforced with clear errors.
+# $OHOS_CLI_HOME (the shell export may point anywhere). Requires an
+# apiVersion-26 bundle under ~/.local/share/harmonyos/cli-tools-* and
+# `@ohos:registry=...` in ~/.npmrc; both are enforced with clear errors.
 
 OS := $(shell uname -s)
 ifeq ($(OS),Linux)
@@ -18,16 +17,14 @@ ifeq ($(ENV_OK),no)
   $(error hvigorw not found on PATH — check DevEco CLI installation)
 endif
 
-# Toolchain root: the API-24 Release SDK lives in its own CLT bundle (NOT the
-# API-26 preview line pointed to by ~/.local/share/harmonyos/.current).
-# Scan cli-tools-* for the bundle whose SDK reports apiVersion 24 and pin it
-# (deliberate := override: a shell-exported OHOS_CLI_HOME may point at the
-# API-26 preview line, which CANNOT build this project).
+# Toolchain root: scan cli-tools-* for the bundle whose SDK reports
+# apiVersion 26 and pin it (deliberate := override: a shell-exported
+# OHOS_CLI_HOME may point elsewhere).
 OHOS_ROOT := $(HOME)/.local/share/harmonyos
 OHOS_CLI_HOME := $(shell for d in $(OHOS_ROOT)/cli-tools-*; do \
-  grep -q '"apiVersion": "24"' "$$d/command-line-tools/sdk/default/sdk-pkg.json" 2>/dev/null && { echo $$d; break; }; done)
+  grep -q '"apiVersion": "26"' "$$d/command-line-tools/sdk/default/sdk-pkg.json" 2>/dev/null && { echo $$d; break; }; done)
 ifeq ($(strip $(OHOS_CLI_HOME)),)
-  $(error No CLI bundle with API 24 SDK found under $(OHOS_ROOT)/cli-tools-* — install one or edit OHOS_CLI_HOME in this Makefile)
+  $(error No CLI bundle with API 26 SDK found under $(OHOS_ROOT)/cli-tools-* — install one or edit OHOS_CLI_HOME in this Makefile)
 endif
 export OHOS_CLI_HOME
 

@@ -84,9 +84,12 @@ export class SlaHub {
    * renders the real history instead of an empty bar (async-load race). */
   async getTimelineLoaded(name: string): Promise<SlaCell[]> {
     const t = this.getOrCreate(name);
-    const pending = this.loads.get(name);
-    if (pending) {
-      try { await pending; } catch (e) { /* best-effort */ }
+    const pending: Promise<void> | undefined = this.loads.get(name);
+    if (pending !== undefined) {
+      // Promise.resolve(): identical semantics (settles with `pending`), and
+      // gives the API-26 linter an explicit Thenable where its Map<string,
+      // Promise<void>> narrowing fails.
+      try { await Promise.resolve(pending); } catch (e) { /* best-effort */ }
     }
     return t.materialize(Date.now());
   }
