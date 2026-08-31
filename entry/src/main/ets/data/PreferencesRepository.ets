@@ -25,7 +25,7 @@ const KEY_HAS_DOWNLINK = 'has_downlink'; // a GEO write was acked at least once 
 const KEY_FIRST_DOWNLINK_TS = 'first_downlink_ts'; // first GEO-ack epoch-ms (48h age gate)
 const KEY_DECLINED_AT = 'declined_at'; // last 谢绝/dismiss epoch-ms (7-day cooldown gate)
 const KEY_PERMISSION_HINT_SHOWN = 'permission_hint_shown'; // location "always allow" hint shown (one-time)
-const KEY_GPS_MODE = 'gps_mode'; // GPS sampling mode: index into GPS_MODE_PRESETS (0/1/2)
+const KEY_GPS_MODE = 'gps_mode'; // GPS sampling mode: index into GPS_MODE_PRESETS (0=精确 1=省电)
 // Suffix alphabet — no 0/O/1/I to avoid confusion when reading the name on the camera
 const SUFFIX_CHARS: string = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
 
@@ -107,8 +107,21 @@ export class PreferencesRepository {
       this.firstDownlinkTsCache = await this.store.get(KEY_FIRST_DOWNLINK_TS, 0) as number;
       this.declinedAtCache = await this.store.get(KEY_DECLINED_AT, 0) as number;
       this.permissionHintShownCache = await this.store.get(KEY_PERMISSION_HINT_SHOWN, false) as boolean;
+      // v2.5.0 saved 3-tier indices (1=SMART, 2=RELAXED); v2.5.1 has two
+      // tiers (1=RELAXED). Migrate: legacy 1 (SMART) -> REALTIME — same
+      // power draw, strictly fresher updates, nothing lost. Legacy 2
+      // (RELAXED) -> 1. Write the migrated value back so the legacy
+      // ambiguity (old 1 vs new 1) never resurfaces.
       const savedMode = await this.store.get(KEY_GPS_MODE, 0) as number;
-      this.gpsModeCache = (savedMode >= 0 && savedMode <= 2) ? savedMode : 0;
+      let migratedMode = 0;
+      if (savedMode === 2) { migratedMode = 1; }
+      else if (savedMode === 1) { migratedMode = 0; }
+      this.gpsModeCache = migratedMode;
+      if (migratedMode !== savedMode) {
+        await this.store.put(KEY_GPS_MODE, migratedMode);
+        await this.store.flush();
+        hilog.info(0x0001, TAG, `[CHECKPOINT] gps_mode migrated ${savedMode} -> ${migratedMode} (two-tier)`);
+      }
       hilog.info(0x0001, TAG, `[CHECKPOINT] PreferencesRepository initialized (${this.cache.length} cameras)`);
       for (const c of this.cache) {
         hilog.info(0x0001, TAG,

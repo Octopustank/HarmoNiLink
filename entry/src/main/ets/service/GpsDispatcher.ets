@@ -69,30 +69,31 @@ export interface GpsModePreset {
 }
 
 /** GPS sampling mode (persisted in PreferencesRepository). */
+// Two tiers only (v2.5.1): real-device power telemetry showed the GNSS
+// ENGINE on/off is the only variable that matters (~0.2-0.36W, -21~-31%),
+// while sampling cadence (10s vs 120s, both FIRST_FIX) is within noise —
+// the former SMART tier promised savings it never delivered. Priority
+// (FIRST_FIX vs LOW_POWER) is the power switch; interval/distance are just
+// programming conveniences.
 export enum GpsMode {
   REALTIME = 0, // FIRST_FIX, 10s / distance 0 — always the latest fix (原版手感)
-  SMART = 1,    // FIRST_FIX, 120s / 20m — movement triggers, stationary fallback
-  RELAXED = 2,  // LOW_POWER, 300s / 100m — network fixes, ballpark, most savings
+  RELAXED = 1,  // LOW_POWER, 300s / 100m — network fixes, ballpark, most savings
+  // v2.5.0 persisted values: 1 was SMART, 2 was RELAXED — migrated on load
+  // in PreferencesRepository (1->REALTIME, 2->RELAXED).
 }
 
 export const GPS_MODE_PRESETS: GpsModePreset[] = [
   {
     priority: geoLocationManager.LocationRequestPriority.FIRST_FIX,
     timeIntervalS: 10, distanceM: 0, maxGeoIntervalMs: 10000,
-    label: '实时',
-    toast: '已切换到实时：卫星定位，约 10 秒更新一次（最耗电）',
-  },
-  {
-    priority: geoLocationManager.LocationRequestPriority.FIRST_FIX,
-    timeIntervalS: 120, distanceM: 20, maxGeoIntervalMs: 120000,
-    label: '智能省电',
-    toast: '已切换到智能省电：走动约 20 米即更新，静止约 2 分钟一次',
+    label: '精确',
+    toast: '已切换到精确：卫星定位，约 10 秒更新一次',
   },
   {
     priority: geoLocationManager.LocationRequestPriority.LOW_POWER,
     timeIntervalS: 300, distanceM: 100, maxGeoIntervalMs: 600000,
-    label: '粗略省电',
-    toast: '已切换到粗略省电：网络定位，约 10 分钟保底一次（最省电）',
+    label: '省电',
+    toast: '已切换到省电：网络定位，约 10 分钟保底一次',
   },
 ];
 
