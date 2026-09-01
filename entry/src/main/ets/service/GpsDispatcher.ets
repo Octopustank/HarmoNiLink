@@ -87,13 +87,13 @@ export const GPS_MODE_PRESETS: GpsModePreset[] = [
     priority: geoLocationManager.LocationRequestPriority.FIRST_FIX,
     timeIntervalS: 10, distanceM: 0, maxGeoIntervalMs: 10000,
     label: '精确',
-    toast: '已切换到精确：卫星定位，约 10 秒更新一次',
+    toast: '已切换到精确模式',
   },
   {
     priority: geoLocationManager.LocationRequestPriority.LOW_POWER,
     timeIntervalS: 300, distanceM: 100, maxGeoIntervalMs: 600000,
     label: '省电',
-    toast: '已切换到省电：网络定位，约 10 分钟保底一次',
+    toast: '已切换到省电模式',
   },
 ];
 
