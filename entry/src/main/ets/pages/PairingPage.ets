@@ -412,7 +412,11 @@ export struct PairingPage {
 
           Blank().layoutWeight(1)
         }
-        .padding({ left: 16, right: 16, bottom: 56 })
+        // bottom 72 = 56 tab-bar clearance + 16 floating-window barBottomMargin
+        // (MainPage TAB_BAR_BOTTOM_MARGIN_FLOATING), STATICALLY merged: the
+        // floating-window inset is rare and the full-screen cost is 16vp of
+        // imperceptible bottom whitespace — not worth a live state pipeline.
+        .padding({ left: 16, right: 16, bottom: 72 })
       }
       .edgeEffect(EdgeEffect.Spring)
       .scrollBar(BarState.Off)
