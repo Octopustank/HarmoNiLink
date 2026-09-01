@@ -388,7 +388,7 @@ export struct ConnectionPage {
   }
 
   private onAboutComment(): void {
-    CommentDialog.show(this.getUIContext());
+    CommentDialog.show(this.getUIContext(), false); // user-initiated — failures toast
   }
 
   /** 关于 → 删除连接健康度日志: clears all persisted SLA timelines (2h 窗口

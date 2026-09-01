@@ -1,31 +1,40 @@
 /**
- * RatingPrompt.ets — rating-prompt gates (G1–G5) + dialog
+ * RatingPrompt.ets — rating-prompt gates + direct system dialog
  *
  * Extracted from ConnectionPage. Fires on health-sheet close; prompts only
  * after the app has been TIME-TESTED and the CURRENT moment is healthy:
- *   G1 not already tapped 去评分 (permanent)
+ *   G1 not permanently silenced (already-rated rejection / attempt cap)
  *   G2 a GEO write was ever acked
  *   G3 first ack ≥ 48h ago (absolute, not calendar days)
  *   G4 ≤ 3 RED-only cells in the 2h window (~≤6min total outage)
- *   G5 never declined, or declined ≥ 7 days ago (cooldown, not permanent)
- * 谢绝/dismiss writes declined_at (re-prompt after cooldown); 去评分 writes
- * rating_shown (permanent — market already rate-limits 1/year). debug → toast
- * + per-gate hilog; release → 2-button dialog. Best-effort: any failure is
- * silent (hilog), never a misleading toast.
+ *   G5 cooldown: ≥ 30 days since the last dialog that actually went up
+ *   G6 fewer than 3 dialogs ever shown (cap — an unanswered user must not
+ *      be nagged monthly forever)
+ * v2.5.1 redesign: NO self-made two-button dialog before the system one —
+ * the prompt jumps straight to commentManager.showCommentDialog and reads
+ * the outcome (CommentDialog.onResult):
+ *   'shown'        → cooldown + attempt count (rate vs dismiss is not
+ *                    observable; the user WAS disturbed either way)
+ *   'alreadyRated' → permanent silence (covers rating via 关于页 — the
+ *                    market rejects and we silently stand down)
+ *   'transient'    → NOTHING persisted: the dialog never appeared, so no
+ *                    disturbance is owed — the next natural trigger retries.
+ * Every failure is silent (hilog only) — marketing surfaces never toast.
  */
 import { common, bundleManager } from '@kit.AbilityKit';
 import { window } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { cameraService } from './CameraService';
 import { SlaCell, SlaSev } from '../data/SlaTracker';
-import { CommentDialog } from '../components/CommentDialog';
+import { CommentDialog, RatingDialogOutcome } from '../components/CommentDialog';
 
 const TAG = 'HarmoNiLink-RatingPrompt';
 
 // Rating-prompt gates — tuned constants in one place.
-const RATING_MIN_AGE_MS = 48 * 3600 * 1000;              // G3: first downlink ≥ 48h ago
-const RATING_DECLINE_COOLDOWN_MS = 7 * 24 * 3600 * 1000; // G5: 谢绝冷却 7 天
-const RATING_MAX_RED_CELLS = 3;                          // G4: 2h 窗口 RED-only 桶 ≤ 3
+const RATING_MIN_AGE_MS = 48 * 3600 * 1000;                // G3: first downlink ≥ 48h ago
+const RATING_PROMPT_COOLDOWN_MS = 30 * 24 * 3600 * 1000;   // G5: 30 days after a dialog that went up
+const RATING_MAX_ATTEMPTS = 3;                             // G6: 3 shown dialogs → permanent silence
+const RATING_MAX_RED_CELLS = 3;                            // G4: 2h 窗口 RED-only 桶 ≤ 3
 
 export class RatingPrompt {
   /** True when the current build is a debug (unsigned/unlisted) HAP — the
@@ -75,9 +84,16 @@ export class RatingPrompt {
         if (debug) hilog.info(0x0001, TAG, `[RATING] G4 not met — red=${redCells}`);
         return;
       }
-      const declinedAt = cameraService.getDeclinedAt();
-      if (declinedAt > 0 && now - declinedAt < RATING_DECLINE_COOLDOWN_MS) {
-        if (debug) hilog.info(0x0001, TAG, `[RATING] G5 not met — declined ${now - declinedAt}ms ago`);
+      const attempts = cameraService.getRatingAttempts();
+      if (attempts >= RATING_MAX_ATTEMPTS) {
+        // Cap reached once and for all — persist it so G1 answers faster.
+        cameraService.markRatingShown();
+        if (debug) hilog.info(0x0001, TAG, `[RATING] G6 not met — attempts=${attempts} (now permanent)`);
+        return;
+      }
+      const lastTs = cameraService.getRatingLastTs();
+      if (lastTs > 0 && now - lastTs < RATING_PROMPT_COOLDOWN_MS) {
+        if (debug) hilog.info(0x0001, TAG, `[RATING] G5 not met — last dialog ${now - lastTs}ms ago`);
         return;
       }
 
@@ -91,22 +107,13 @@ export class RatingPrompt {
       }
 
       const win = await window.getLastWindow(ctx);
-      win.getUIContext().getPromptAction().showDialog({
-        title: '给个评价吧',
-        message: '如果你觉得 HarmoNiLink 好用，欢迎到华为应用市场给个评价。',
-        buttons: [
-          { text: '谢绝', color: $r('app.color.text_secondary') },
-          { text: '去评分', color: $r('app.color.brand') }
-        ]
-      }).then((result) => {
-        if (result.index === 1) {
-          cameraService.markRatingShown(); // 去评分 → permanent
-          CommentDialog.show(win.getUIContext()); // shared flow (self try/catch + code map)
-        } else {
-          cameraService.markDeclined(); // 谢绝 → cooldown
+      CommentDialog.show(win.getUIContext(), true, (outcome: RatingDialogOutcome) => {
+        if (outcome === 'shown') {
+          cameraService.markRatingAttempt(Date.now());
+        } else if (outcome === 'alreadyRated') {
+          cameraService.markRatingShown(); // permanent — never disturb again
         }
-      }).catch(() => {
-        cameraService.markDeclined(); // dismissed/back → treat as declined (cooldown)
+        // 'transient' → persist nothing; the next natural trigger retries.
       });
     } catch (err) {
       hilog.warn(0x0001, TAG, 'rating prompt failed: ' + JSON.stringify(err));

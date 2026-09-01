@@ -280,13 +280,19 @@ export class CameraService {
     return this.prefs.getFirstDownlinkTsSync();
   }
 
-  /** Last 谢绝/dismiss epoch-ms, 0 if the user never declined. */
-  getDeclinedAt(): number {
-    return this.prefs.getDeclinedAtSync();
+  /** How many system rating dialogs were actually shown (see
+   * PreferencesRepository — rate/dismiss are indistinguishable). */
+  getRatingAttempts(): number {
+    return this.prefs.getRatingAttemptsSync();
   }
 
-  markDeclined(): void {
-    this.prefs.saveDeclinedAt(Date.now());
+  /** Last actually-shown rating dialog epoch-ms, 0 if never. */
+  getRatingLastTs(): number {
+    return this.prefs.getRatingLastTsSync();
+  }
+
+  markRatingAttempt(now: number): void {
+    this.prefs.saveRatingAttempt(now);
   }
 
   // ==================== 定位权限说明 (location "always allow" hint) ====================

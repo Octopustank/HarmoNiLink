@@ -23,7 +23,8 @@ const KEY_SLA_PREFIX = 'sla_'; // per-camera SLA timeline (连接健康看板), 
 const KEY_RATING_SHOWN = 'rating_shown'; // user tapped 去评分 (permanent — never re-prompt)
 const KEY_HAS_DOWNLINK = 'has_downlink'; // a GEO write was acked at least once (rating gate)
 const KEY_FIRST_DOWNLINK_TS = 'first_downlink_ts'; // first GEO-ack epoch-ms (48h age gate)
-const KEY_DECLINED_AT = 'declined_at'; // last 谢绝/dismiss epoch-ms (7-day cooldown gate)
+const KEY_RATING_ATTEMPTS = 'rating_attempts'; // system rating dialogs actually shown (3 = permanent silence)
+const KEY_RATING_LAST_TS = 'rating_last_ts'; // last dialog-shown epoch-ms (30-day cooldown gate)
 const KEY_PERMISSION_HINT_SHOWN = 'permission_hint_shown'; // location "always allow" hint shown (one-time)
 const KEY_GPS_MODE = 'gps_mode'; // GPS sampling mode: index into GPS_MODE_PRESETS (0=精确 1=省电)
 // Suffix alphabet — no 0/O/1/I to avoid confusion when reading the name on the camera
@@ -48,7 +49,8 @@ export class PreferencesRepository {
   private ratingShownCache: boolean = false; // user tapped 去评分 (permanent)
   private hasDownlinkCache: boolean = false; // a GEO write was acked at least once
   private firstDownlinkTsCache: number = 0; // first GEO-ack epoch-ms (0 = never)
-  private declinedAtCache: number = 0; // last 谢绝/dismiss epoch-ms (0 = never)
+  private ratingAttemptsCache: number = 0; // dialogs actually shown (dismiss and rate are indistinguishable)
+  private ratingLastTsCache: number = 0; // last dialog-shown epoch-ms (0 = never)
   private permissionHintShownCache: boolean = false; // location "always allow" hint shown
   private gpsModeCache: number = 0; // index into GPS_MODE_PRESETS
   // Serialized disk writes. The CACHE is the single source of truth: it is
@@ -105,7 +107,8 @@ export class PreferencesRepository {
       this.ratingShownCache = await this.store.get(KEY_RATING_SHOWN, false) as boolean;
       this.hasDownlinkCache = await this.store.get(KEY_HAS_DOWNLINK, false) as boolean;
       this.firstDownlinkTsCache = await this.store.get(KEY_FIRST_DOWNLINK_TS, 0) as number;
-      this.declinedAtCache = await this.store.get(KEY_DECLINED_AT, 0) as number;
+      this.ratingAttemptsCache = await this.store.get(KEY_RATING_ATTEMPTS, 0) as number;
+      this.ratingLastTsCache = await this.store.get(KEY_RATING_LAST_TS, 0) as number;
       this.permissionHintShownCache = await this.store.get(KEY_PERMISSION_HINT_SHOWN, false) as boolean;
       // v2.5.0 saved 3-tier indices (1=SMART, 2=RELAXED); v2.5.1 has two
       // tiers (1=RELAXED). Migrate: legacy 1 (SMART) -> REALTIME — same
@@ -204,14 +207,25 @@ export class PreferencesRepository {
     this.putNumber(KEY_FIRST_DOWNLINK_TS, now);
   }
 
-  /** Last 谢绝/dismiss timestamp, 0 if the user never declined. */
-  getDeclinedAtSync(): number {
-    return this.declinedAtCache;
+  /** How many system rating dialogs were actually shown to this user
+   * (resolve of showCommentDialog — rating and dismissing are
+   * indistinguishable from our side). */
+  getRatingAttemptsSync(): number {
+    return this.ratingAttemptsCache;
   }
 
-  saveDeclinedAt(now: number): void {
-    this.declinedAtCache = now;
-    this.putNumber(KEY_DECLINED_AT, now);
+  /** How many system rating dialogs were shown, 0 if never. */
+  getRatingLastTsSync(): number {
+    return this.ratingLastTsCache;
+  }
+
+  /** Record one actually-shown rating dialog: attempt count + timestamp in
+   * one write (the cooldown and the cap both key off this event). */
+  saveRatingAttempt(now: number): void {
+    this.ratingAttemptsCache += 1;
+    this.ratingLastTsCache = now;
+    this.putNumber(KEY_RATING_ATTEMPTS, this.ratingAttemptsCache);
+    this.putNumber(KEY_RATING_LAST_TS, now);
   }
 
   // ==================== 定位权限说明 (location "always allow" hint) ====================
@@ -252,18 +266,20 @@ export class PreferencesRepository {
   // ==================== 重置引导 (re-show one-time content) ====================
 
   /** Reset all "show once" flags so the first-connect hint, the multi-camera
-   * warning, the rating decline cooldown and the location "always allow" hint
-   * are shown again. Invoked from the 关于 sheet. Deliberately NOT reset:
+   * warning, the rating cooldown and the location "always allow" hint are
+   * shown again. Invoked from the 关于 sheet. Deliberately NOT reset:
    * `hasDownlink`/`first_downlink_ts` (evidence, not hints) and `rating_shown`
-   * (the user already tapped 去评分 — permanent). */
+   * (already-rated / attempt-cap silence is permanent). */
   resetOnboarding(): void {
     this.connectHintShownCache = false;
     this.multiCamWarnedCache = false;
-    this.declinedAtCache = 0;
+    this.ratingAttemptsCache = 0;
+    this.ratingLastTsCache = 0;
     this.permissionHintShownCache = false;
     this.putBool(KEY_CONNECT_HINT_SHOWN, false);
     this.putBool(KEY_MULTI_CAM_WARNED, false);
-    this.putNumber(KEY_DECLINED_AT, 0);
+    this.putNumber(KEY_RATING_ATTEMPTS, 0);
+    this.putNumber(KEY_RATING_LAST_TS, 0);
     this.putBool(KEY_PERMISSION_HINT_SHOWN, false);
     hilog.info(0x0001, TAG, '[CHECKPOINT] onboarding flags reset');
   }
