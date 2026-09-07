@@ -3,7 +3,7 @@
     { "name": "module_desc", "value": "Nikon GPS Provider" },
     { "name": "EntryAbility_desc", "value": "Main Entry" },
     { "name": "EntryAbility_label", "value": "NiLink" },
-    { "name": "location_reason", "value": "GPS data is required to provide location to the Nikon camera" },
-    { "name": "bluetooth_reason", "value": "Bluetooth is required to communicate with the Nikon camera" }
+    { "name": "location_reason", "value": "用于获取手机当前位置并同步给尼康相机，为拍摄的照片写入GPS定位信息。" },
+    { "name": "bluetooth_reason", "value": "用于扫描、连接尼康相机，以向相机同步GPS定位数据。" }
   ]
 }
