@@ -789,10 +789,15 @@ export struct ConnectionPage {
       showClose: true,
       backgroundColor: $r('app.color.page_background'),
       enableOutsideInteractive: false, // 半模态打开时禁止操作底下 UI
-      onWillDismiss: (action: DismissSheetAction) => {
-        action.dismiss(); // allow the sheet to close
-        // Rating prompt fires on HEALTH-sheet close (the act of closing proves
-        // the user opened it) — after dismissal, so it never covers the sheet.
+      // No onWillDismiss: registering it makes the framework spring the panel
+      // back to its detent while waiting for the (async-by-design) confirm
+      // callback, then start a SECOND slide-down animation when dismiss() runs
+      // — visible as "drag down → release → snap back → slides down again".
+      // Letting the built-in dismissal run gives one continuous gesture.
+      // Rating prompt fires on HEALTH-sheet close (the act of closing proves
+      // the user opened it) — after the close animation, so it never covers
+      // the sheet. $$ two-way binding syncs showSheet itself.
+      onDisappear: () => {
         if (this.sheetKind === 'info') {
           const ctx = this.getUIContext().getHostContext() as common.UIAbilityContext;
           if (ctx) {
