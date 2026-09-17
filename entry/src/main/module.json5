@@ -10,6 +10,13 @@
     ],
     "deliveryWithInstall": true,
     "installationFree": false,
+    // 沉浸光感（沉浸式系统材质）：应用级开启，API 26+ 生效
+    "metadata": [
+      {
+        "name": "ohos.arkui.UIMaterial.state",
+        "value": "enable"
+      }
+    ],
     "pages": "$profile:main_pages",
     "abilities": [
       {
