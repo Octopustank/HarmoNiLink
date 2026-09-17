@@ -429,7 +429,7 @@ export struct PairingPage {
       style: {
         scrollEffectOpts: { scrollEffectType: ScrollEffectType.GRADIENT_BLUR },
         systemMaterialEffect: {
-          materialType: hdsMaterial.MaterialType.IMMERSIVE,
+          materialType: hdsMaterial.MaterialType.ADAPTIVE,
           materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE
         },
       },

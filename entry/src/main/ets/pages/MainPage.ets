@@ -57,7 +57,7 @@ class FloatingTabsModifier extends HdsTabsModifier {
     instance.barFloatingStyle({
       barBottomMargin: this.barMargin,
       systemMaterialEffect: {
-        materialType: hdsMaterial.MaterialType.IMMERSIVE,
+        materialType: hdsMaterial.MaterialType.ADAPTIVE,
         materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE
       }
     });
