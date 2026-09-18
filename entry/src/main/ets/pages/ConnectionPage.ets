@@ -21,6 +21,7 @@ import { cameraService } from '../service/CameraService';
 import { ConnectionState, CameraStateEvent } from '../service/ConnectionTypes';
 import { GpsMode, GpsModePreset, GPS_MODE_PRESETS } from '../service/GpsDispatcher';
 import { RatingPrompt } from '../service/RatingPrompt';
+import { ConfigTransfer, ConfigSnapshot } from '../service/ConfigTransfer';
 import { PairedCamera } from '../ble/protocol/NikonPairingEngine';
 import { SlaCell } from '../data/SlaTracker';
 import { HdsNavDestination, ScrollEffectType, hdsMaterial, HdsListItem } from '@kit.UIDesignKit';
@@ -414,6 +415,77 @@ export struct ConnectionPage {
     });
   }
 
+  /** 关于 → 导出配置: warns that the file carries pairing credentials,
+   *  then opens the system save picker. */
+  private onAboutExport(): void {
+    const ctx = this.getUIContext().getHostContext() as common.UIAbilityContext;
+    cameraService.getSavedCameras().then(async (cams: PairedCamera[]) => {
+      if (cams.length === 0) {
+        this.getUIContext().getPromptAction().showToast({ message: '当前没有已配对的相机，无需导出', duration: 2000 });
+        return;
+      }
+      this.getUIContext().getPromptAction().showDialog({
+        title: '导出配置',
+        message: `将导出当前设备名与 ${cams.length} 台已配对相机的记录，用于重装或换机后免重新配对。\n\n配置文件包含配对凭据，请妥善保管、不要分享。`,
+        buttons: [
+          { text: '取消', color: $r('app.color.text_secondary') },
+          { text: '导出', color: $r('app.color.brand') }
+        ]
+      }).then(async (result) => {
+        if (result.index !== 1) return;
+        try {
+          const name = await ConfigTransfer.exportConfig(ctx, cameraService.getControllerName(), cams);
+          if (name !== '') {
+            this.getUIContext().getPromptAction().showToast({ message: `已导出 ${cams.length} 台相机的配置`, duration: 2500 });
+          }
+        } catch (e) {
+          this.getUIContext().getPromptAction().showToast({ message: (e as Error).message, duration: 2500 });
+        }
+      }).catch((err: Error) => {
+        hilog.warn(0x0001, TAG, 'export dialog err: ' + err.message);
+      });
+    }).catch((err: Error) => {
+      hilog.warn(0x0001, TAG, 'export getSavedCameras err: ' + err.message);
+    });
+  }
+
+  /** 关于 → 导入配置: pick + strict-validate the file, confirm the
+   *  destructive overwrite (device name, camera list, SLA history), apply. */
+  private onAboutImport(): void {
+    const ctx = this.getUIContext().getHostContext() as common.UIAbilityContext;
+    ConfigTransfer.importConfig(ctx).then((snap: ConfigSnapshot | null) => {
+      if (!snap) return; // cancelled
+      const curCount = this.savedCameras.length;
+      this.getUIContext().getPromptAction().showDialog({
+        title: '导入配置',
+        message: `将覆盖当前设置：\n· 设备名 → ${snap.controllerName}\n· 已配对相机 → ${snap.cameras.length} 台（替换当前 ${curCount} 台）\n· 清空全部连接健康度记录\n\n此操作不可撤销。请确认系统蓝牙与相机端的配对仍然存在。`,
+        buttons: [
+          { text: '取消', color: $r('app.color.text_secondary') },
+          { text: '导入', color: $r('app.color.danger') }
+        ]
+      }).then(async (result) => {
+        if (result.index !== 1) return;
+        try {
+          await cameraService.applyImportedConfig(snap.controllerName, snap.cameras);
+          this.slaCells = [];
+          await this.loadSavedCameras(); // refresh the list + reconcile
+          this.getUIContext().getPromptAction().showToast({
+            message: `已导入配置：${snap.cameras.length} 台相机，打开连接开关即可重连`,
+            duration: 3000
+          });
+        } catch (e) {
+          hilog.warn(0x0001, TAG, 'applyImportedConfig err: ' + (e as Error).message);
+          this.getUIContext().getPromptAction().showToast({ message: '导入失败，请重试', duration: 2500 });
+        }
+      }).catch((err: Error) => {
+        hilog.warn(0x0001, TAG, 'import dialog err: ' + err.message);
+      });
+    }).catch((e: Error) => {
+      // Strict-validation rejections carry user-readable reasons.
+      this.getUIContext().getPromptAction().showToast({ message: e.message, duration: 3000 });
+    });
+  }
+
   private onAboutReset(): void {
     cameraService.resetOnboarding();
     try {
@@ -706,6 +778,8 @@ export struct ConnectionPage {
         onLicense: (): void => { this.onAboutLicense(); },
         onRepo: (): void => { this.onAboutRepo(); },
         onComment: (): void => { this.onAboutComment(); },
+        onExport: (): void => { this.onAboutExport(); },
+        onImport: (): void => { this.onAboutImport(); },
         onClearSla: (): void => { this.onAboutClearSla(); },
         onReset: (): void => { this.onAboutReset(); }
       })

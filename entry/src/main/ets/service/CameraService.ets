@@ -601,6 +601,30 @@ export class CameraService {
     return this.prefs.loadSavedCamerasSync().some((c: PairedCamera) => c.name === name);
   }
 
+  /** 导入配置：覆盖设备名 + 配对相机列表，并清空全部连接健康度记录。
+   *  运行时侧先把现有会话逐个拆除（removeCamera 负责断链、会话销毁、
+   *  SLA 清理），再写入导入的记录；连接开关一律 OFF —— 连接意图不随
+   *  配置迁移（与冷启动语义一致）。调用方负责先做用户确认。 */
+  async applyImportedConfig(controllerName: string, cameras: PairedCamera[]): Promise<void> {
+    const existing = [...this.prefs.loadSavedCamerasSync()];
+    for (const c of existing) {
+      await this.removeCamera(c.name);
+    }
+    this.prefs.setControllerName(controllerName);
+    for (const cam of cameras) {
+      this.prefs.saveCameraSync(new PairedCamera(
+        cam.name, cam.address, cam.addressType,
+        cam.device, cam.nonce, controllerName, false));
+    }
+    // removeCamera 已逐台清理；这里兜底清掉无主残留键（如已删相机的旧时间轴）。
+    this.clearAllSla();
+    this.refreshGps();
+    this.gps.setGeoIntent(this.hasKeepAliveIntent());
+    this.notifyDevicesChanged();
+    hilog.info(0x0001, TAG,
+      `[CHECKPOINT] config imported: controllerName=${controllerName} cameras=${cameras.length}`);
+  }
+
   async removeCamera(name: string): Promise<void> {
     // Remove the record FIRST, then abort the session: disconnect() broadcasts
     // an Idle event synchronously, and ConnectionPage's reconcile would see the

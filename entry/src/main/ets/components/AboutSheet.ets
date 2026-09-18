@@ -12,6 +12,9 @@ export interface AboutSheetParams {
   onLicense: () => void;
   onRepo: () => void;
   onComment: () => void;
+  /** 导出/导入配置 — the parent owns pickers, dialogs and toasts. */
+  onExport: () => void;
+  onImport: () => void;
   /** 关于 → 删除连接健康度日志 — the parent clears SLA state + shows its own
    * confirm dialog, so the destructive flow stays with the page. */
   onClearSla: () => void;
@@ -65,6 +68,10 @@ export function AboutSheet(params: AboutSheetParams) {
       AboutActionRow('开源仓库', params.onRepo)
       AboutRowDivider()
       AboutActionRow('做个评价', params.onComment)
+      AboutRowDivider()
+      AboutActionRow('导出配置', params.onExport)
+      AboutRowDivider()
+      AboutActionRow('导入配置', params.onImport)
       AboutRowDivider()
       AboutActionRow('删除连接健康度日志', params.onClearSla)
       AboutRowDivider()

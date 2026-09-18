@@ -420,6 +420,14 @@ export class PreferencesRepository {
     return name;
   }
 
+  /** Explicitly OVERWRITE the controller name (config import). Distinct from
+   * getOrCreateControllerName, which only generates once per install. */
+  setControllerName(name: string): void {
+    this.controllerNameCache = name;
+    hilog.info(0x0001, TAG, `[CHECKPOINT] Controller name overwritten: ${name}`);
+    this.saveControllerName(name);
+  }
+
   private async saveControllerName(name: string): Promise<void> {
     if (!this.store) {
       setTimeout(() => { this.saveControllerName(name); }, 1000);
