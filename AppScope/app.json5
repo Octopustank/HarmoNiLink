@@ -2,8 +2,8 @@
   "app": {
     "bundleName": "com.octopustank.nilink",
     "vendor": "octopustank",
-    "versionCode": 2005004,
-    "versionName": "2.5.4",
+    "versionCode": 2005005,
+    "versionName": "2.5.5",
     "icon": "$media:app_icon",
     "label": "$string:app_name"
   }
