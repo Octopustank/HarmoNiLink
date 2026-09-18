@@ -426,7 +426,7 @@ export struct ConnectionPage {
       }
       this.getUIContext().getPromptAction().showDialog({
         title: '导出配置',
-        message: `将导出当前设备名与 ${cams.length} 台已配对相机的记录，用于重装或换机后免重新配对。\n\n配置文件包含配对凭据，请妥善保管、不要分享。`,
+        message: `将导出当前设备名与 ${cams.length} 台已配对相机的记录，用于重装或换机后免重新配对（需系统蓝牙与相机端的配对仍然保留）。\n\n配置文件包含配对凭据，请妥善保管、不要分享。`,
         buttons: [
           { text: '取消', color: $r('app.color.text_secondary') },
           { text: '导出', color: $r('app.color.brand') }

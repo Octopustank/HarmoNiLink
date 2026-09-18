@@ -48,7 +48,12 @@ function AboutRowDivider() {
 
 @Builder
 export function AboutSheet(params: AboutSheetParams) {
-  Column() {
+  // Scroll wrapper: in a floating window (or any short viewport) the sheet
+  // content can exceed the sheet height — without scrolling the bottom rows
+  // would be unreachable. Blank().layoutWeight(1) is gone with it: inside a
+  // Scroll the column is content-sized, so no spacer is needed.
+  Scroll() {
+    Column() {
     Image($r('app.media.app_icon')).width(72).height(72).borderRadius(18).margin({ top: 36 })
     Text('NiLink').fontSize(22).fontWeight(FontWeight.Bold).margin({ top: 14 })
     Text('HarmoNiLink').fontSize(13).fontColor($r('app.color.text_secondary')).margin({ top: 2 })
@@ -83,8 +88,10 @@ export function AboutSheet(params: AboutSheetParams) {
     .width('100%').padding({ left: 4, right: 4 })
     .borderRadius(16).backgroundColor($r('app.color.card_background'))
     .margin({ top: 32, bottom: 24 })
-
-    Blank().layoutWeight(1)
+    }
+    .width('100%').padding({ left: 16, right: 16, bottom: 24 })
   }
-  .width('100%').height('100%').padding({ left: 16, right: 16 })
+  .width('100%').height('100%')
+  .scrollBar(BarState.Off)
+  .edgeEffect(EdgeEffect.Spring)
 }
