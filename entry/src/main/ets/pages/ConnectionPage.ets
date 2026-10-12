@@ -487,6 +487,8 @@ export struct ConnectionPage {
         try {
           await cameraService.applyImportedConfig(snap.controllerName, snap.cameras);
           this.slaCells = [];
+          // The GPS-card mirror is otherwise only refreshed in aboutToAppear.
+          this.controllerName = cameraService.getControllerName();
           await this.loadSavedCameras(); // refresh the list + reconcile
           this.getUIContext().getPromptAction().showToast({
             message: `已导入配置：${snap.cameras.length} 台相机，打开连接开关即可重连`,
