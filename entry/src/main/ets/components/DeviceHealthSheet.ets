@@ -110,8 +110,8 @@ export struct DeviceHealthSheet {
 
   build() {
     Column() {
-      Text('设备信息').fontSize(22).fontWeight(FontWeight.Bold).margin({ top: 36 })
-
+      // No self-drawn title: the system half-modal title bar shows 设备信息
+      // (and doubles as the pull-to-dismiss drag zone).
       Column() {
         this.infoRow('名称', this.cameraName)
         Divider().strokeWidth(0.5).color($r('app.color.divider')).margin({ left: 16, right: 12 })

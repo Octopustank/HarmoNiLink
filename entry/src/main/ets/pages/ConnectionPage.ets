@@ -16,7 +16,8 @@
  */
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { bundleManager, common } from '@kit.AbilityKit';
-import { SymbolGlyphModifier } from '@kit.ArkUI';
+import { deviceInfo } from '@kit.BasicServicesKit';
+import { SymbolGlyphModifier, uiMaterial } from '@kit.ArkUI';
 import { cameraService } from '../service/CameraService';
 import { ConnectionState, CameraStateEvent } from '../service/ConnectionTypes';
 import { GpsMode, GpsModePreset, GPS_MODE_PRESETS } from '../service/GpsDispatcher';
@@ -52,6 +53,24 @@ export struct ConnectionPage {
   @State showLogs: boolean = false;
   @State showSheet: boolean = false; // 半模态 sheet（关于 / 设备信息）— 单实例，避免两个 bindSheet 互相干扰
   @State sheetKind: string = 'about'; // 'about' | 'info'
+  // API 26 immersive system material for the shared half-modal sheet
+  // (官方示例10). apiAvailable gates the whole 26-only uiMaterial surface so
+  // the initializer is safe on API 23 devices; isImmersiveMaterialSupported
+  // then accounts for 26 devices that lack the hardware capability. Undefined
+  // + the page_background fallback keeps API 23 visually unchanged.
+  private readonly sheetSystemMaterial: SystemUiMaterial | undefined =
+    (deviceInfo.apiAvailable('26.0.0') && uiMaterial.isImmersiveMaterialSupported())
+      ? new uiMaterial.ImmersiveMaterial({ style: uiMaterial.ImmersiveStyle.ULTRA_THICK })
+      : undefined;
+
+  /** System half-modal title — also makes the header a drag zone (pull-down
+   *  to dismiss), which a builder-only top never gets. */
+  private sheetTitleOptions(): SheetTitleOptions {
+    const options: SheetTitleOptions = {
+      title: this.sheetKind === 'about' ? '关于' : '设备信息'
+    };
+    return options;
+  }
   @State infoCameraName: string = ''; // the camera whose SLA is shown
   @State slaCells: SlaCell[] = []; // materialized snapshot (frozen at open)
   // GPS data mirrored as @State so ArkUI detects changes
@@ -861,7 +880,11 @@ export struct ConnectionPage {
       height: SheetSize.LARGE,
       dragBar: true,
       showClose: true,
-      backgroundColor: $r('app.color.page_background'),
+      title: this.sheetTitleOptions(),
+      // With a system material the material needs transparency to show
+      // through; without it (API 23 fallback) keep the opaque page color.
+      backgroundColor: this.sheetSystemMaterial ? Color.Transparent : $r('app.color.page_background'),
+      systemMaterial: this.sheetSystemMaterial,
       enableOutsideInteractive: false, // 半模态打开时禁止操作底下 UI
       // No onWillDismiss: registering it makes the framework spring the panel
       // back to its detent while waiting for the (async-by-design) confirm

@@ -54,7 +54,7 @@ export function AboutSheet(params: AboutSheetParams) {
   // Scroll the column is content-sized, so no spacer is needed.
   Scroll() {
     Column() {
-    Image($r('app.media.app_icon')).width(72).height(72).borderRadius(18).margin({ top: 36 })
+    Image($r('app.media.app_icon')).width(72).height(72).borderRadius(18).margin({ top: 12 })
     Text('NiLink').fontSize(22).fontWeight(FontWeight.Bold).margin({ top: 14 })
     Text('HarmoNiLink').fontSize(13).fontColor($r('app.color.text_secondary')).margin({ top: 2 })
 
