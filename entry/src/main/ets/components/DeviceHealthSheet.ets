@@ -131,7 +131,6 @@ export struct DeviceHealthSheet {
         this.infoRow('状态', this.stateText)
       }
       .width('100%').borderRadius(16).backgroundColor($r('app.color.card_background'))
-      .margin({ top: 24 })
 
       Column() {
         Text('过去 2 小时连接健康度').fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))

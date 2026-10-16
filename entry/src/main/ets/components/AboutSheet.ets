@@ -58,7 +58,9 @@ export function AboutSheet(params: AboutSheetParams) {
   // Scroll the column is content-sized, so no spacer is needed.
   Scroll(params.scroller) {
     Column() {
-    Image($r('app.media.app_icon')).width(72).height(72).borderRadius(18).margin({ top: 12 })
+    // No top margin: the sheet nav's enableComponentSafeArea already clears
+    // the title bar, so an extra inset here would double it.
+    Image($r('app.media.app_icon')).width(72).height(72).borderRadius(18)
     Text('NiLink').fontSize(22).fontWeight(FontWeight.Bold).margin({ top: 14 })
     Text('HarmoNiLink').fontSize(13).fontColor($r('app.color.text_secondary')).margin({ top: 2 })
 
