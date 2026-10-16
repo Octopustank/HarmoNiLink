@@ -9,12 +9,11 @@
 import { SlaCell, SlaSev } from '../data/SlaTracker';
 
 // Fixed top spacer that clears the sheet's embedded HdsNavigation MODAL title
-// bar (56vp, main-title only). The official 半模态标题栏样式 pattern reserves
-// this as a NON-scrolling Blank so the content never slides under the bar —
-// using safe-area padding instead (enableComponentSafeArea) made the inset
-// scrollable, so content clipped under the bar's opaque zone. Matches
-// AboutSheet and the MODAL example's TITLE_BAR_HEIGHT_MODAL (56vp, main title).
-const SHEET_TITLE_BAR_HEIGHT: number = 56;
+// bar. The official 半模态标题栏样式 pattern reserves this as a NON-scrolling
+// Blank (TITLE_BAR_HEIGHT_MODAL = 80) so the content never slides under the
+// bar — 56vp (the bare title height) left the info card lightly touching the
+// title's baseline on-device. 80vp matches the about sheet's breathing gap.
+const SHEET_TITLE_BAR_HEIGHT: number = 80;
 
 @Component
 export struct DeviceHealthSheet {

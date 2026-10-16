@@ -8,9 +8,9 @@
  */
 
 // Fixed top spacer that clears the sheet's embedded HdsNavigation MODAL title
-// bar (56vp, main-title only) — non-scrolling, so the content never slides
-// under the bar (see DeviceHealthSheet / the official MODAL title-bar pattern).
-const SHEET_TITLE_BAR_HEIGHT: number = 56;
+// bar — non-scrolling, so the content never slides under the bar. 80vp (the
+// official TITLE_BAR_HEIGHT_MODAL) keeps both sheets' clearance identical.
+const SHEET_TITLE_BAR_HEIGHT: number = 80;
 
 export interface AboutSheetParams {
   appVersion: string;
