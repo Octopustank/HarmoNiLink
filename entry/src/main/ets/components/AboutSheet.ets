@@ -9,6 +9,10 @@
 
 export interface AboutSheetParams {
   appVersion: string;
+  /** Scroll the sheet content — the parent's HdsNavigation binds to it
+   *  (bindToScrollable) so the sheet's own title bar gets the dynamic
+   *  gradient-blur scroll effect like the main pages. */
+  scroller: Scroller;
   onLicense: () => void;
   onRepo: () => void;
   onComment: () => void;
@@ -52,7 +56,7 @@ export function AboutSheet(params: AboutSheetParams) {
   // content can exceed the sheet height — without scrolling the bottom rows
   // would be unreachable. Blank().layoutWeight(1) is gone with it: inside a
   // Scroll the column is content-sized, so no spacer is needed.
-  Scroll() {
+  Scroll(params.scroller) {
     Column() {
     Image($r('app.media.app_icon')).width(72).height(72).borderRadius(18).margin({ top: 12 })
     Text('NiLink').fontSize(22).fontWeight(FontWeight.Bold).margin({ top: 14 })

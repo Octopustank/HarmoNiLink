@@ -25,7 +25,7 @@ import { RatingPrompt } from '../service/RatingPrompt';
 import { ConfigTransfer, ConfigSnapshot } from '../service/ConfigTransfer';
 import { PairedCamera } from '../ble/protocol/NikonPairingEngine';
 import { SlaCell } from '../data/SlaTracker';
-import { HdsNavDestination, ScrollEffectType, hdsMaterial, HdsListItem } from '@kit.UIDesignKit';
+import { HdsNavDestination, ScrollEffectType, hdsMaterial, HdsListItem, HdsNavigation, HdsNavigationTitleMode, IconStyleMode } from '@kit.UIDesignKit';
 import { SwipeDeleteTriggerType } from '@hms.hds.HdsStyle';
 import { DeviceHealthSheet } from '../components/DeviceHealthSheet';
 import { AboutSheet } from '../components/AboutSheet';
@@ -63,14 +63,6 @@ export struct ConnectionPage {
       ? new uiMaterial.ImmersiveMaterial({ style: uiMaterial.ImmersiveStyle.ULTRA_THICK })
       : undefined;
 
-  /** System half-modal title — also makes the header a drag zone (pull-down
-   *  to dismiss), which a builder-only top never gets. */
-  private sheetTitleOptions(): SheetTitleOptions {
-    const options: SheetTitleOptions = {
-      title: this.sheetKind === 'about' ? '关于' : '设备信息'
-    };
-    return options;
-  }
   @State infoCameraName: string = ''; // the camera whose SLA is shown
   @State slaCells: SlaCell[] = []; // materialized snapshot (frozen at open)
   // GPS data mirrored as @State so ArkUI detects changes
@@ -91,6 +83,14 @@ export struct ConnectionPage {
   // switch animation and can desync the visual from the persisted flag).
   @State revertTick: number = 0;
   private scroller: Scroller = new Scroller();
+  // Drives the shared half-modal sheet content (关于 / 设备信息). The sheet's
+  // embedded HdsNavigation binds to it (bindToScrollable) so the sheet's own
+  // title bar gets the same dynamic gradient-blur scroll effect as the main
+  // pages' title bars.
+  private sheetScroller: Scroller = new Scroller();
+  // Plain field, same rationale as MainPage.pathStack: the embedded
+  // HdsNavigation owns it, nobody else consumes it.
+  private sheetPathStack: NavPathStack = new NavPathStack();
   // Drives the inner paired-device List. Used to collapse an expanded
   // swipe row (HdsListItem left-swipe menu) when the outer page Scroll moves
   // — ArkUI's native "滚动即收起" only fires on the List's OWN scroll, and
@@ -791,27 +791,77 @@ export struct ConnectionPage {
 
   /** Single bindSheet content dispatcher — one sheet instance serving both the
    * 关于 and 设备信息 sheets. Two chained bindSheet($$...) calls on one node
-   * fight over the same show state (点关于不弹、点信息弹关于的错乱). */
+   * fight over the same show state (点关于不弹、点信息弹关于的错乱).
+   *
+   * Each sheet embeds an HdsNavigation whose title bar carries the same recipe
+   * as the main pages (GRADIENT_BLUR + ADAPTIVE light-sense material). That is
+   * the ONLY ArkUI mechanism with a gradient-blur title bar — the sheet's
+   * built-in `title` (SheetTitleOptions) renders its own opaque uniform bar and
+   * is outside SheetOptions.systemMaterial's documented scope (panel-level:
+   * backgroundColor/borderColor/borderWidth/shadow), which is exactly the bug
+   * seen on-device. The nav binds to the sheet content's scroller so its
+   * gradient blur follows the scroll, and the title row doubles as the sheet's
+   * pull-to-dismiss drag zone (replacing dragBar). Sheet-level light sense
+   * stays on the panel via SheetOptions.systemMaterial (ULTRA_THICK). */
   @Builder sheetContent() {
-    if (this.sheetKind === 'about') {
-      AboutSheet({
-        appVersion: this.appVersion,
-        onLicense: (): void => { this.onAboutLicense(); },
-        onRepo: (): void => { this.onAboutRepo(); },
-        onComment: (): void => { this.onAboutComment(); },
-        onExport: (): void => { this.onAboutExport(); },
-        onImport: (): void => { this.onAboutImport(); },
-        onClearSla: (): void => { this.onAboutClearSla(); },
-        onReset: (): void => { this.onAboutReset(); }
-      })
-    } else {
-      DeviceHealthSheet({
-        cameraName: this.getInfoCamera()?.name ?? this.infoCameraName,
-        cameraAddress: this.getInfoCamera()?.address ?? '--',
-        stateText: this.stateLabel(this.getCameraStatus(this.infoCameraName)?.state ?? ConnectionState.Idle),
-        slaCells: this.slaCells
-      })
+    HdsNavigation(this.sheetPathStack) {
+      if (this.sheetKind === 'about') {
+        AboutSheet({
+          appVersion: this.appVersion,
+          scroller: this.sheetScroller,
+          onLicense: (): void => { this.onAboutLicense(); },
+          onRepo: (): void => { this.onAboutRepo(); },
+          onComment: (): void => { this.onAboutComment(); },
+          onExport: (): void => { this.onAboutExport(); },
+          onImport: (): void => { this.onAboutImport(); },
+          onClearSla: (): void => { this.onAboutClearSla(); },
+          onReset: (): void => { this.onAboutReset(); }
+        })
+      } else {
+        DeviceHealthSheet({
+          scroller: this.sheetScroller,
+          cameraName: this.getInfoCamera()?.name ?? this.infoCameraName,
+          cameraAddress: this.getInfoCamera()?.address ?? '--',
+          stateText: this.stateLabel(this.getCameraStatus(this.infoCameraName)?.state ?? ConnectionState.Idle),
+          slaCells: this.slaCells
+        })
+      }
     }
+    .width('100%').height('100%')
+    .hideBackButton(true)
+    .hideToolBar(true)
+    .mode(NavigationMode.Stack)
+    // MODAL: the purpose-built half-modal title bar (官方 半模态标题栏样式) —
+    // a fixed compact 56vp title (main title only), NOT the large collapsing
+    // FREE title that sat low and only shrank on scroll (reported on-device as
+    // 不好的 default). The gradient-blur + light-sense recipe is kept.
+    .titleMode(HdsNavigationTitleMode.MODAL)
+    .titleBar({
+      content: {
+        title: { mainTitle: this.sheetKind === 'about' ? '关于' : '设备信息' },
+        // Close lives in the MODAL title bar's right icon slot (IconStyleMode.
+        // SMALL with no icon resource = the default close affordance), so the
+        // sheet's own showClose is turned off to avoid a duplicate X.
+        menu: {
+          value: [{
+            content: {
+              label: 'close',
+              isEnabled: true,
+              type: IconStyleMode.SMALL,
+              action: (): void => { this.showSheet = false; }
+            }
+          }]
+        }
+      },
+      style: {
+        scrollEffectOpts: { scrollEffectType: ScrollEffectType.GRADIENT_BLUR },
+        systemMaterialEffect: {
+          materialType: hdsMaterial.MaterialType.ADAPTIVE,
+          materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE
+        },
+      },
+    })
+    .bindToScrollable([this.sheetScroller])
   }
 
   build() {
@@ -880,9 +930,15 @@ export struct ConnectionPage {
     .hideBackButton(true)
     .bindSheet($$this.showSheet, this.sheetContent(), {
       height: SheetSize.LARGE,
-      dragBar: true,
-      showClose: true,
-      title: this.sheetTitleOptions(),
+      // Clean half-modal (design review 2026-10-12): no drag handle and NO
+      // built-in `title` — that title renders an opaque uniform bar outside
+      // systemMaterial's scope. The embedded HdsNavigation title bar in
+      // sheetContent provides the gradient-blur title and doubles as the
+      // pull-down-to-dismiss drag zone, so the gesture survives.
+      dragBar: false,
+      // No built-in close: the embedded HdsNavigation's MODAL title bar renders
+      // its own close affordance in the right icon slot (see sheetContent).
+      showClose: false,
       // With a system material the material needs transparency to show
       // through; without it (API 23 fallback) keep the opaque page color.
       backgroundColor: this.sheetSystemMaterial ? Color.Transparent : $r('app.color.page_background'),

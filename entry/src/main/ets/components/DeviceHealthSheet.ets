@@ -10,6 +10,10 @@ import { SlaCell, SlaSev } from '../data/SlaTracker';
 
 @Component
 export struct DeviceHealthSheet {
+  /** Scroll the sheet content — the parent's HdsNavigation binds to it
+   *  (bindToScrollable) so the sheet's own title bar gets the dynamic
+   *  gradient-blur scroll effect like the main pages. */
+  scroller: Scroller = new Scroller();
   @Prop cameraName: string = '';
   @Prop cameraAddress: string = '--';
   @Prop stateText: string = '--';
@@ -109,9 +113,16 @@ export struct DeviceHealthSheet {
   }
 
   build() {
-    Column() {
-      // No self-drawn title: the system half-modal title bar shows 设备信息
-      // (and doubles as the pull-to-dismiss drag zone).
+    // Scroll wrapper (matches AboutSheet): the parent binds this scroller to
+    // the sheet's HdsNavigation for the title-bar gradient-blur scroll effect,
+    // and scrolling keeps content reachable on short viewports (free window).
+    // The inner column is content-sized — no Blank().layoutWeight(1): the
+    // sheet body (HdsNavigation content) must give its child an explicit
+    // 100% height, which a layoutWeight spacer can no longer receive.
+    Scroll(this.scroller) {
+      Column() {
+      // No self-drawn title: the sheet's HdsNavigation title bar shows 设备信息
+      // (gradient-blur + light sense, same recipe as the main pages).
       Column() {
         this.infoRow('名称', this.cameraName)
         Divider().strokeWidth(0.5).color($r('app.color.divider')).margin({ left: 16, right: 12 })
@@ -138,10 +149,12 @@ export struct DeviceHealthSheet {
       .width('100%').alignItems(HorizontalAlign.Start)
       .padding({ left: 16, right: 16, top: 12, bottom: 16 })
       .borderRadius(16).backgroundColor($r('app.color.card_background'))
-      .margin({ top: 12 })
-
-      Blank().layoutWeight(1)
+      .margin({ top: 12, bottom: 24 })
     }
-    .width('100%').height('100%').padding({ left: 16, right: 16 })
+    .width('100%').padding({ left: 16, right: 16 })
+    }
+    .width('100%').height('100%')
+    .scrollBar(BarState.Off)
+    .edgeEffect(EdgeEffect.Spring)
   }
 }
