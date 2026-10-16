@@ -159,6 +159,12 @@ export struct DeviceHealthSheet {
       .padding({ left: 16, right: 16, top: 12, bottom: 16 })
       .borderRadius(16).backgroundColor($r('app.color.card_background'))
       .margin({ top: 12, bottom: 24 })
+
+      // Bottom spacer: makes the Scroll fill the nav content area so the cards
+      // anchor to the top (Navigation centers a content-sized child by default,
+      // which pushed these cards to the middle on-device). When the content
+      // overflows (short viewport) the spacer collapses and the Scroll scrolls.
+      Blank().layoutWeight(1)
     }
     .width('100%').padding({ left: 16, right: 16 })
     }
