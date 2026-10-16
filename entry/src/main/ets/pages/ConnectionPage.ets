@@ -837,15 +837,6 @@ export struct ConnectionPage {
     // 不好的 default). The gradient-blur + light-sense recipe is kept.
     .titleMode(HdsNavigationTitleMode.MODAL)
     .titleBar({
-      // Treat the title bar as a component-level safe area so the sheet
-      // content clears it. Without this the content top-anchors at the sheet
-      // edge: the about sheet's logo slid under the title while the info
-      // sheet's explicit margin over-compensated — and the split differed by
-      // display ratio (phone vs floating window), since whether each sheet's
-      // content happened to clear the bar depended on its content height.
-      // This flag is exactly what the official dynamic-blur / MODAL title-bar
-      // examples pair with scrollEffectOpts, so the gradient blur is kept.
-      enableComponentSafeArea: true,
       content: {
         title: { mainTitle: this.sheetKind === 'about' ? '关于' : '设备信息' },
         // Close lives in the MODAL title bar's right icon slot (IconStyleMode.

@@ -8,6 +8,14 @@
  */
 import { SlaCell, SlaSev } from '../data/SlaTracker';
 
+// Fixed top spacer that clears the sheet's embedded HdsNavigation MODAL title
+// bar (56vp, main-title only). The official 半模态标题栏样式 pattern reserves
+// this as a NON-scrolling Blank so the content never slides under the bar —
+// using safe-area padding instead (enableComponentSafeArea) made the inset
+// scrollable, so content clipped under the bar's opaque zone. Matches
+// AboutSheet and the MODAL example's TITLE_BAR_HEIGHT_MODAL (56vp, main title).
+const SHEET_TITLE_BAR_HEIGHT: number = 56;
+
 @Component
 export struct DeviceHealthSheet {
   /** Scroll the sheet content — the parent's HdsNavigation binds to it
@@ -121,6 +129,8 @@ export struct DeviceHealthSheet {
     // 100% height, which a layoutWeight spacer can no longer receive.
     Scroll(this.scroller) {
       Column() {
+      // Non-scrolling spacer clearing the title bar (see SHEET_TITLE_BAR_HEIGHT).
+      Blank().height(SHEET_TITLE_BAR_HEIGHT).width('100%')
       // No self-drawn title: the sheet's HdsNavigation title bar shows 设备信息
       // (gradient-blur + light sense, same recipe as the main pages).
       Column() {

@@ -7,6 +7,11 @@
  * UIContext for dialogs/toasts/links and resets shared sheet state).
  */
 
+// Fixed top spacer that clears the sheet's embedded HdsNavigation MODAL title
+// bar (56vp, main-title only) — non-scrolling, so the content never slides
+// under the bar (see DeviceHealthSheet / the official MODAL title-bar pattern).
+const SHEET_TITLE_BAR_HEIGHT: number = 56;
+
 export interface AboutSheetParams {
   appVersion: string;
   /** Scroll the sheet content — the parent's HdsNavigation binds to it
@@ -54,12 +59,13 @@ function AboutRowDivider() {
 export function AboutSheet(params: AboutSheetParams) {
   // Scroll wrapper: in a floating window (or any short viewport) the sheet
   // content can exceed the sheet height — without scrolling the bottom rows
-  // would be unreachable. Blank().layoutWeight(1) is gone with it: inside a
-  // Scroll the column is content-sized, so no spacer is needed.
+  // would be unreachable. Inside a Scroll the column is content-sized, so no
+  // layoutWeight spacer is used; the title-bar clearance is the fixed Blank
+  // spacer at the top instead.
   Scroll(params.scroller) {
     Column() {
-    // No top margin: the sheet nav's enableComponentSafeArea already clears
-    // the title bar, so an extra inset here would double it.
+    // Non-scrolling spacer clearing the title bar (see SHEET_TITLE_BAR_HEIGHT).
+    Blank().height(SHEET_TITLE_BAR_HEIGHT).width('100%')
     Image($r('app.media.app_icon')).width(72).height(72).borderRadius(18)
     Text('NiLink').fontSize(22).fontWeight(FontWeight.Bold).margin({ top: 14 })
     Text('HarmoNiLink').fontSize(13).fontColor($r('app.color.text_secondary')).margin({ top: 2 })
